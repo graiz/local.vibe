@@ -1,0 +1,20 @@
+# Build artifacts
+vibe
+*.exe
+
+# Runtime files (user-local, not in repo)
+*.pid
+*.sock
+*.log
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Go
+vendor/
