@@ -41,9 +41,9 @@ The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — ch
 
 Five route types with different lifecycle semantics:
 - **sticky** — `vibe register`; persists across daemon restarts; reverse-proxied
-- **pid** — `vibe run --`; auto-removed when tracked PID dies
-- **ttl** — `--ttl` flag; auto-expires after N seconds
-- **managed** — `vibe launch` (reads `vibe.json`); daemon manages the child process, dashboard has start/stop buttons
+- **pid** — API only; auto-removed when tracked PID dies
+- **ttl** — `--ttl` flag on register; auto-expires after N seconds
+- **managed** — `vibe start` (reads `vibe.json` or inline args); daemon manages the child process, dashboard has start/stop buttons
 - **bookmark** — External URL (e.g. Tailscale address); persists across restarts; visiting `name.vibe` redirects (307) to the external URL. Added/edited via dashboard modal.
 
 ## Key patterns

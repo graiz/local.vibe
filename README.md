@@ -29,19 +29,20 @@ Browser → dnsmasq (*.vibe → 127.0.0.1) → pf (port 80 → 7999) → vibe da
 ### CLI Reference
 
 ```bash
-vibe register myapp 3000      # Map myapp.vibe → localhost:3000
-vibe deregister myapp          # Remove a route
-vibe launch                    # Launch managed app (reads vibe.json)
-vibe stop myapp                # Stop a managed app
-vibe run myapp 3000 -- npm start  # Run command, auto-deregister on exit
-vibe list                      # List all routes
-vibe open myapp                # Open in browser
-vibe dev                       # Rebuild + restart daemon (for development)
+vibe start                           # Start app from vibe.json in current dir
+vibe start myapp                     # Start an already-registered route
+vibe start myapp 3000 -- npm run dev # Register + start a new managed app
+vibe stop myapp                      # Stop a managed app
+vibe register myapp 3000             # Static port mapping (no process management)
+vibe deregister myapp                # Remove a route
+vibe list                            # List all routes
+vibe open myapp                      # Open in browser
+vibe dev                             # Rebuild + restart daemon (for development)
 ```
 
 ### vibe.json
 
-Drop this in a project root, then run `vibe launch`:
+Drop this in a project root, then run `vibe start`:
 
 ```json
 {"name": "myapp", "port": 3000, "cmd": "npm run dev"}

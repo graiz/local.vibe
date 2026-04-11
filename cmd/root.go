@@ -36,7 +36,6 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(openCmd)
-	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(serveCmd)
