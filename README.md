@@ -5,8 +5,8 @@ Friendly `.vibe` names for your local dev servers. No more remembering port numb
 ## Setup
 
 ```bash
-git clone https://github.com/graiz/Vibe.local.git
-cd Vibe.local
+git clone https://github.com/graiz/local.vibe.git
+cd local.vibe
 ./setup.sh
 ```
 

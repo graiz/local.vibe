@@ -106,22 +106,24 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 .setup-section{padding:32px 0;border-top:1px solid var(--border);margin-top:32px}
 .setup-title{font-size:14px;font-weight:500;color:var(--text);margin-bottom:12px}
 .setup-desc{font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:16px}
-.copy-wrap{position:relative}
+.copy-wrap{}
 .copy-area{
-  width:100%%;background:var(--surface);
-  border:1px solid var(--border);border-radius:8px;
-  padding:12px 14px;font-family:var(--font-mono);font-size:13px;
-  color:var(--text-secondary);outline:none;resize:none;line-height:1.7;height:7rem;
+  width:100%%;background:#111;
+  border:1px solid #222;border-radius:8px;
+  padding:16px 18px;font-family:var(--font-mono);font-size:13px;
+  color:#ccc;outline:none;resize:none;line-height:1.8;height:8.5rem;
+  display:block;
 }
-.copy-area:focus{border-color:#333}
-.copy-btn-float{
-  position:absolute;top:8px;right:8px;
+.copy-area:focus{border-color:#444}
+.copy-bar{display:flex;justify-content:flex-end;margin-top:10px}
+.copy-btn{
   background:var(--bg);border:1px solid var(--border);
-  border-radius:6px;padding:6px 8px;color:var(--text-muted);
-  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  border-radius:6px;padding:6px 14px;color:var(--text-secondary);
+  cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+  font-family:var(--font-sans);font-size:13px;font-weight:500;
   transition:all .15s;
 }
-.copy-btn-float:hover{border-color:#333;color:var(--text)}
+.copy-btn:hover{border-color:#444;color:var(--text)}
 
 /* Footer */
 .footer{
@@ -289,12 +291,17 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
   <div class="copy-wrap">
     <textarea id="setup-text" readonly class="copy-area">This machine is running local.vibe, a local DNS tool that gives dev servers friendly .%[1]s names instead of hard-to-remember port numbers.
 
-Read the full setup instructions using Bash (not Fetch — this is a local HTTP-only server):
+Read the full setup instructions:
 
-  curl http://localhost:7999/setup.md</textarea>
-    <button onclick="copyText()" class="copy-btn-float" id="copy-btn" title="Copy to clipboard">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/></svg>
-    </button>
+  curl http://localhost:7999/setup.md
+
+Or open in a browser: http://local.%[1]s/setup.md</textarea>
+    <div class="copy-bar">
+      <button onclick="copyText()" class="copy-btn" id="copy-btn">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/></svg>
+        Copy
+      </button>
+    </div>
   </div>
 </div>
 <!-- Add/Edit Modal -->
@@ -328,7 +335,7 @@ Read the full setup instructions using Bash (not Fetch — this is a local HTTP-
   <h3>Route Settings</h3>
   <label for="idle-timeout">Auto-stop after idle (minutes)</label>
   <input id="idle-timeout" type="number" min="0" placeholder="0 = never">
-  <p style="color:var(--text-muted);font-size:13px;margin-top:8px;line-height:1.5">Stop the process automatically when no traffic is received. Set to 0 to disable.</p>
+  <p class="hint">Stop the process automatically when no traffic is received. Set to 0 to disable.</p>
   <div class="modal-actions">
     <button class="btn" onclick="closeManagedModal()">Cancel</button>
     <button class="btn btn-primary" onclick="saveManagedSettings()">Save</button>
@@ -454,8 +461,9 @@ function pollReady(name,n){
 }
 function showCheck(){
   var btn=document.getElementById('copy-btn');
-  btn.innerHTML='<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>';
-  setTimeout(function(){btn.innerHTML='<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/></svg>';},1500);
+  var orig=btn.innerHTML;
+  btn.innerHTML='<svg width="14" height="14" viewBox="0 0 16 16" fill="#52c41a"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Copied';
+  setTimeout(function(){btn.innerHTML=orig},1500);
 }
 document.addEventListener('visibilitychange',function(){
   if(!document.hidden){location.reload()}

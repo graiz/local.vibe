@@ -16,7 +16,7 @@ func (s *Server) serveSetupMD(w http.ResponseWriter, r *http.Request) {
 local.vibe gives your local dev servers friendly names.
 Instead of remembering localhost:3000, use **myapp.%[1]s**.
 
-## Quick Start (Recommended)
+## Quick Start
 
 ### 1. Add a vibe.json to your project
 
@@ -24,22 +24,32 @@ Instead of remembering localhost:3000, use **myapp.%[1]s**.
 {"name": "myapp", "port": 3000, "cmd": "npm run dev"}
 `+"`"+`
 
-### 2. Launch it
+### 2. Start it
 
 `+"`"+`bash
 cd /path/to/your/project
-vibe launch
+vibe start
 `+"`"+`
 
 Your app is now available at **http://myapp.%[1]s**
 
 The daemon manages the process — if it stops, visiting myapp.%[1]s shows a
-"Start" button to relaunch it. No need to go back to the terminal.
+"Start" button to relaunch it.
 
 ### 3. Stop it
 
 `+"`"+`bash
 vibe stop myapp
+`+"`"+`
+
+## Other Ways to Start
+
+`+"`"+`bash
+# Start with inline args (no vibe.json needed)
+vibe start myapp 3000 -- npm run dev
+
+# Start an already-registered route
+vibe start myapp
 `+"`"+`
 
 ## vibe.json Reference
@@ -86,49 +96,35 @@ module.exports = {
 }
 `+"`"+`
 
-## Other Registration Methods
+## Static Port Mapping
 
-### Wrap a command (auto-deregisters on exit)
-
-`+"`"+`bash
-vibe run myapp 3000 -- npm run dev
-`+"`"+`
-
-### Sticky register (always-on services)
+For services you manage yourself (no process management needed):
 
 `+"`"+`bash
 vibe register homeassistant 8123
+vibe deregister myapp
 `+"`"+`
 
-### Remove a route
+## CLI Reference
 
 `+"`"+`bash
-vibe deregister myapp
+vibe start                           # Start app from vibe.json
+vibe start myapp                     # Start existing registered route
+vibe start myapp 3000 -- npm run dev # Register + start inline
+vibe stop myapp                      # Stop a managed app
+vibe register myapp 3000             # Static port mapping
+vibe deregister myapp                # Remove a route
+vibe list                            # List all routes
+vibe open myapp                      # Open in browser
 `+"`"+`
 
 ## Route Types
 
-| Type | Command | Behavior |
-|------|---------|----------|
-| **managed** | `+"`"+`vibe launch`+"`"+` (via vibe.json) | Daemon manages lifecycle; restart from browser |
-| **sticky** | `+"`"+`vibe register name port`+"`"+` | Persists across daemon restarts |
-| **pid-tracked** | `+"`"+`vibe run name port -- cmd`+"`"+` | Auto-removed when process exits |
-
-## Managing Routes
-
-`+"`"+`bash
-# List active routes
-vibe list
-
-# Open a route in the browser
-vibe open myapp
-
-# Stop a managed app
-vibe stop myapp
-
-# Remove a route entirely
-vibe deregister myapp
-`+"`"+`
+| Type | Created by | Behavior |
+|------|-----------|----------|
+| **managed** | `+"`"+`vibe start`+"`"+` | Daemon manages lifecycle; start/stop from dashboard |
+| **sticky** | `+"`"+`vibe register`+"`"+` | Persists across daemon restarts |
+| **bookmark** | Dashboard | Redirects (307) to an external URL |
 
 ## API
 
@@ -159,17 +155,7 @@ curl -X DELETE http://local.%[1]s/_api/routes/myapp
 ## How It Works
 
 1. **dnsmasq** resolves *.%[1]s to 127.0.0.1
-2. **pf** (macOS) or **iptables** (Linux) forwards port 80 to the daemon on port 7999
+2. **pf** (macOS) forwards port 80 to the daemon on port 7999
 3. The daemon reverse-proxies each request to the registered local port
-
-## Install
-
-`+"`"+`bash
-# macOS (one-time, requires sudo)
-sudo vibe setup
-`+"`"+`
-
-This installs dnsmasq, configures DNS for *.%[1]s, sets up port forwarding
-(80 → 7999), and registers a LaunchAgent so the daemon starts at login.
 `, tld)
 }
