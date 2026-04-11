@@ -52,10 +52,8 @@ Drop this in a project root, then run `vibe start`:
 
 | Type | Created by | Lifecycle |
 |------|-----------|-----------|
-| **managed** | `vibe launch` / dashboard | Daemon manages the process; start/stop from dashboard |
+| **managed** | `vibe start` / dashboard | Daemon manages the process; start/stop from dashboard |
 | **sticky** | `vibe register` | Persists across daemon restarts |
-| **pid** | `vibe run` | Auto-removed when tracked PID dies |
-| **ttl** | `--ttl` flag | Auto-expires after N seconds |
 | **bookmark** | Dashboard | Redirects (307) to an external URL |
 
 ### API
