@@ -1,112 +1,88 @@
 # local.vibe
 
-Give your local dev servers friendly names.
+Friendly `.vibe` names for your local dev servers. No more remembering port numbers.
 
-Instead of remembering `localhost:3000`, `localhost:5678`, `localhost:8123`...
-use `myapp.vibe`, `n8n.vibe`, `desk.vibe`.
+## Setup
 
-## How it works
+```bash
+git clone https://github.com/graiz/Vibe.local.git
+cd Vibe.local
+./setup.sh
+```
+
+This installs everything (Homebrew, Go, dnsmasq, port forwarding) and opens the dashboard.
+
+**That's it.** Everything else happens at [http://local.vibe](http://local.vibe).
+
+---
+
+## For Agents & Automation
+
+The sections below are reference documentation for CLI tools, AI agents, and automation scripts.
+
+### How it works
 
 ```
 Browser → dnsmasq (*.vibe → 127.0.0.1) → pf (port 80 → 7999) → vibe daemon → reverse proxy → your app
 ```
 
-A lightweight daemon intercepts `.vibe` DNS requests and reverse-proxies them to the right local port. Bookmark routes redirect (307) to external URLs instead of proxying.
-
-## Requirements
-
-- **macOS** (uses dnsmasq, pf, LaunchAgent)
-- **Go 1.22+** (to build from source)
-- **Homebrew** (for dnsmasq)
-
-## Install
+### CLI Reference
 
 ```bash
-go build -o vibe .
-sudo vibe setup    # installs dnsmasq, pf rules, LaunchAgent
-vibe install       # copies binary to /opt/homebrew/bin/vibe
+vibe register myapp 3000      # Map myapp.vibe → localhost:3000
+vibe deregister myapp          # Remove a route
+vibe launch                    # Launch managed app (reads vibe.json)
+vibe stop myapp                # Stop a managed app
+vibe run myapp 3000 -- npm start  # Run command, auto-deregister on exit
+vibe list                      # List all routes
+vibe open myapp                # Open in browser
+vibe dev                       # Rebuild + restart daemon (for development)
 ```
 
-## Quick start
+### vibe.json
 
-```bash
-# Register a running dev server
-vibe register myapp 3000
-# → http://myapp.vibe
+Drop this in a project root, then run `vibe launch`:
 
-# Run a command and auto-register it
-vibe run --name api --port 8080 -- npm start
-
-# Launch a managed service (reads vibe.json in current dir)
-vibe launch
-
-# List all routes
-vibe list
-
-# Open a route in your browser
-vibe open myapp
-
-# Remove a route
-vibe deregister myapp
+```json
+{"name": "myapp", "port": 3000, "cmd": "npm run dev"}
 ```
 
-## Route types
+### Route Types
 
 | Type | Created by | Lifecycle |
 |------|-----------|-----------|
+| **managed** | `vibe launch` / dashboard | Daemon manages the process; start/stop from dashboard |
 | **sticky** | `vibe register` | Persists across daemon restarts |
 | **pid** | `vibe run` | Auto-removed when tracked PID dies |
 | **ttl** | `--ttl` flag | Auto-expires after N seconds |
-| **managed** | `vibe launch` | Daemon manages the process; start/stop from dashboard |
-| **bookmark** | Dashboard UI | Redirects (307) to an external URL |
+| **bookmark** | Dashboard | Redirects (307) to an external URL |
 
-## Dashboard
+### API
 
-Visit [http://local.vibe](http://local.vibe) for a web dashboard with route management, including adding bookmarks and starting/stopping managed services.
-
-## Configuration
-
-Optional config at `~/.vibe/config.json`. All fields have sensible defaults:
-
-```json
-{
-  "daemon": {
-    "port": 7999,
-    "tld": "vibe",
-    "pid_check_interval": 5
-  },
-  "dashboard": {
-    "enabled": true,
-    "theme": "dark"
-  },
-  "logging": {
-    "level": "warn",
-    "max_size_mb": 10
-  }
-}
+```bash
+curl http://local.vibe/_api/health          # Health check
+curl http://local.vibe/_api/routes          # List routes (JSON)
+curl -X POST http://local.vibe/_api/routes \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"myapp","port":3000,"cmd":"npm run dev","dir":"/path/to/project"}'
 ```
 
-## Runtime files
+### Runtime Files
 
 | Path | Purpose |
 |------|---------|
-| `~/.vibe/config.json` | Optional configuration |
-| `~/.vibe/routes.json` | Persisted routes (sticky, managed, bookmark) |
-| `~/.vibe/daemon.pid` | Daemon PID |
-| `~/.vibe/vibe.sock` | Unix socket |
+| `~/.vibe/routes.json` | Persisted routes |
+| `~/.vibe/config.json` | Optional config |
 | `~/.vibe/daemon.log` | Daemon log |
-| `~/.vibe/{name}.log` | Per-route process logs |
+| `~/.vibe/{name}.log` | Per-route logs |
 
-## Development
+### Development
 
 ```bash
-vibe dev           # rebuild binary + restart daemon
+vibe dev           # rebuild + restart daemon
 go test ./...      # run tests
-go vet ./...       # static analysis
 ```
 
-The daemon runs from a compiled binary at `/opt/homebrew/bin/vibe` — changes aren't picked up until rebuilt. `vibe dev` handles the full cycle: build, install, kill old daemon, LaunchAgent auto-restarts with the new binary.
-
-## License
+### License
 
 [MIT](LICENSE)
