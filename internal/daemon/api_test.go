@@ -154,7 +154,7 @@ func TestAPIUpdateIdleTimeout(t *testing.T) {
 
 func TestAPIHealth(t *testing.T) {
 	s := testServer()
-	s.startedAt = s.startedAt // ensure it's set
+	// startedAt is set by testServer()
 
 	req := httptest.NewRequest("GET", "/_api/health", nil)
 	w := httptest.NewRecorder()
