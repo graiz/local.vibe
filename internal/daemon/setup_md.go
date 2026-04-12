@@ -128,20 +128,26 @@ Or use the venv's Python directly:
 If you use nvm or fnm, they're loaded via .zshrc which vibe sources
 automatically. `+"`"+`npm run dev`+"`"+` and `+"`"+`node server.js`+"`"+` should just work.
 
-### Avoid debug/reload modes that fork
+### Flask / Django
 
-Some frameworks (Flask, Django) fork a child process in debug mode.
-This can cause port conflicts and unexpected crashes. For vibe-managed
-processes, consider disabling the reloader:
+Flask and Django debug modes fork a reloader process that watches for file
+changes. Since vibe manages the process lifecycle, the reloader is redundant
+and can cause port conflicts. Disable just the reloader — you keep debug
+error pages:
 
-`+"`"+`json
-{"name": "myapi", "port": 5000, "cmd": "flask run --no-reload --port 5000"}
+**Flask** (`+"`"+`app.run`+"`"+`):
+`+"`"+`python
+app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
 `+"`"+`
 
-Or for raw Flask apps:
+**Flask CLI:**
+`+"`"+`json
+{"name": "myapi", "port": 5000, "cmd": "flask run --debug --no-reload --port 5000"}
+`+"`"+`
 
-`+"`"+`python
-app.run(debug=False, host='0.0.0.0', port=5000)
+**Django:**
+`+"`"+`json
+{"name": "myapi", "port": 8000, "cmd": "python3 manage.py runserver --noreload 0.0.0.0:8000"}
 `+"`"+`
 
 ## Static Port Mapping
