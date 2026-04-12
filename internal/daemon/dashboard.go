@@ -488,6 +488,7 @@ Or open in a browser: http://local.%[1]s/setup.md</textarea>
   <input id="idle-timeout" type="number" min="0" placeholder="0 = never">
   <p class="hint">Stop the process automatically when no traffic is received. Set to 0 to disable.</p>
   <div class="modal-actions">
+    <button class="btn btn-danger" style="margin-right:auto" onclick="deleteManagedRoute()">Delete</button>
     <button class="btn" onclick="closeManagedModal()">Cancel</button>
     <button class="btn-add" onclick="saveManagedSettings()">Save</button>
   </div>
@@ -595,6 +596,10 @@ function openManagedModal(name,idle,icon,autoIcon){
   document.getElementById('managed-overlay').classList.add('active');
 }
 function closeManagedModal(){document.getElementById('managed-overlay').classList.remove('active')}
+function deleteManagedRoute(){
+  if(!managedEditName)return;
+  fetch('/_api/routes/'+encodeURIComponent(managedEditName),{method:'DELETE',headers:{'Accept':'application/json'}}).then(function(){location.reload()});
+}
 function saveManagedSettings(){
   var idle=parseInt(document.getElementById('idle-timeout').value)||0;
   var icon=getIconValue('managed-icon');

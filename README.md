@@ -18,7 +18,10 @@ This installs everything (Homebrew, Go, dnsmasq, port forwarding) and opens the 
 
 ## For Agents & Automation
 
-The sections below are reference documentation for CLI tools, AI agents, and automation scripts.
+A quick-start guide for configuring individual projects is served by the daemon.
+Fetch it with `curl http://localhost:7999/setup.md` (or visit
+[http://local.vibe/setup.md](http://local.vibe/setup.md) in a browser).
+The sections below are the full reference documentation.
 
 ### How it works
 
@@ -142,6 +145,17 @@ export default defineConfig({ server: { allowedHosts: ['.vibe'] } })
 **Next.js**: Add to `next.config.js`:
 ```js
 module.exports = { allowedDevOrigins: ['*.vibe'] }
+```
+
+**Flask**: Disable the reloader (debug error pages still work):
+```python
+app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
+```
+Or via CLI: `flask run --debug --no-reload --port 5000`
+
+**Django**: Disable the reloader:
+```bash
+python3 manage.py runserver --noreload 0.0.0.0:8000
 ```
 
 ### Development
