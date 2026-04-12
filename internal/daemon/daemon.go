@@ -180,10 +180,16 @@ func (s *Server) saveStickyRoutes() error {
 }
 
 func (s *Server) isPortReady(port int) bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
-	if err != nil {
-		return false
+	// Try IPv4 first, then IPv6 — some tools (e.g. vite) only bind to [::1].
+	for _, addr := range []string{
+		fmt.Sprintf("127.0.0.1:%d", port),
+		fmt.Sprintf("[::1]:%d", port),
+	} {
+		conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return true
+		}
 	}
-	conn.Close()
-	return true
+	return false
 }

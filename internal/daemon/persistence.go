@@ -20,6 +20,7 @@ type stickyEntry struct {
 	Type         RouteType `json:"type,omitempty"`
 	RegisteredAt time.Time `json:"registered_at"`
 	IdleTimeout  int       `json:"idle_timeout,omitempty"`
+	Icon         string    `json:"icon,omitempty"`
 }
 
 // loadStickyRoutes restores persisted routes (sticky, managed, bookmark)
@@ -51,6 +52,7 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 			RegisteredAt: entry.RegisteredAt,
 			Type:         rt,
 			IdleTimeout:  entry.IdleTimeout,
+			Icon:         entry.Icon,
 		}
 		// Managed routes start not running until launched; others are assumed ready.
 		r.Running.Store(rt != RouteManaged)
@@ -74,6 +76,7 @@ func saveStickyRoutes(table *RouteTable, dir string) error {
 				Type:         r.Type,
 				RegisteredAt: r.RegisteredAt,
 				IdleTimeout:  r.IdleTimeout,
+				Icon:         r.Icon,
 			}
 		}
 	}

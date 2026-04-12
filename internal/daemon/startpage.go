@@ -22,39 +22,40 @@ func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *R
 body{display:flex;align-items:center;justify-content:center}
 .card{
   background:var(--surface);border:1px solid var(--border);
-  border-radius:12px;padding:40px;max-width:420px;width:100%%;
+  border-radius:var(--radius-lg);padding:40px;max-width:420px;width:100%%;
   text-align:center;
+  box-shadow:0 16px 48px rgba(0,0,0,.4);
   animation:fade-in .2s ease;
 }
 @keyframes fade-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
-h1{font-size:18px;font-weight:600;color:#fff;margin-bottom:4px}
-.url{font-size:14px;color:var(--text-muted);margin-bottom:8px}
-.status{display:flex;align-items:center;justify-content:center;gap:6px;font-size:13px;color:var(--text-muted);margin-bottom:24px}
+h1{font-family:var(--font-display);font-size:1.1rem;font-weight:400;color:var(--amber);margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em}
+.url{font-size:.85rem;color:var(--text-muted);margin-bottom:8px}
+.status{display:flex;align-items:center;justify-content:center;gap:6px;font-size:.8rem;color:var(--text-muted);margin-bottom:24px;text-transform:uppercase;letter-spacing:.06em}
 .cmd{
-  background:var(--bg);border:1px solid var(--border);border-radius:8px;
-  padding:10px 14px;font-family:var(--font-mono);font-size:13px;color:var(--text-secondary);
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  padding:10px 14px;font-family:var(--font-body);font-size:.8rem;color:var(--text-secondary);
   margin-bottom:24px;text-align:left;word-break:break-all;
 }
 .start-btn{
-  background:#fff;color:#000;border:none;border-radius:8px;
-  padding:10px 32px;font-size:14px;font-family:var(--font-sans);
-  cursor:pointer;font-weight:500;transition:all .15s;
+  background:var(--amber);color:var(--bg);border:none;border-radius:var(--radius);
+  padding:10px 32px;font-size:.85rem;font-family:var(--font-body);font-weight:600;
+  cursor:pointer;text-transform:uppercase;letter-spacing:.06em;transition:all .15s;
 }
-.start-btn:hover{background:#ededed}
-.start-btn:disabled{background:var(--surface);color:var(--text-muted);cursor:default;border:1px solid var(--border)}
+.start-btn:hover{background:#f0a048;box-shadow:0 0 12px var(--amber-glow)}
+.start-btn:disabled{background:var(--surface);color:var(--text-muted);cursor:default;border:1px solid var(--border);box-shadow:none}
 .page-spinner{
   display:none;margin:16px auto 0;width:20px;height:20px;
   border:1.5px solid #333;border-top-color:#888;
   border-radius:50%%;animation:spin .6s linear infinite;
 }
-.msg{color:var(--text-muted);font-size:13px;margin-top:10px;display:none}
+.msg{color:var(--text-muted);font-size:.8rem;margin-top:10px;display:none}
 </style>
 </head>
 <body>
 <div class="card">
   <h1>%[3]s</h1>
   <div class="url">%[3]s.%[4]s</div>
-  <div class="status"><span class="dot dot-red"></span>Stopped</div>
+  <div class="status"><span class="led led-red"></span>Stopped</div>
   <div class="cmd">%[5]s</div>
   <button class="start-btn" id="btn" onclick="startApp()">Start</button>
   <div class="page-spinner" id="spinner"></div>
@@ -83,7 +84,7 @@ function startApp(){
       btn.textContent='Start';
       spinner.style.display='none';
       msg.textContent='Failed to start';
-      msg.style.color='#ff4d4f';
+      msg.style.color='var(--red)';
     }
   };
   xhr.onerror=function(){
@@ -91,7 +92,7 @@ function startApp(){
     btn.textContent='Start';
     spinner.style.display='none';
     msg.textContent='Could not reach daemon';
-    msg.style.color='#ff4d4f';
+    msg.style.color='var(--red)';
   };
   xhr.send();
 }
@@ -99,7 +100,7 @@ function startApp(){
 function pollUntilReady(attempts){
   if(attempts>60){
     document.getElementById('msg').textContent='Taking too long \u2014 check logs';
-    document.getElementById('msg').style.color='#faad14';
+    document.getElementById('msg').style.color='var(--yellow)';
     document.getElementById('btn').disabled=false;
     document.getElementById('btn').textContent='Retry';
     document.getElementById('spinner').style.display='none';
@@ -113,7 +114,7 @@ function pollUntilReady(attempts){
       var d=JSON.parse(xhr.responseText);
       if(d.ready){
         document.getElementById('msg').textContent='Ready';
-        document.getElementById('msg').style.color='#52c41a';
+        document.getElementById('msg').style.color='var(--green)';
         setTimeout(function(){window.location.href=window.location.href;},300);
         return;
       }

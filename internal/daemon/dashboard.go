@@ -38,274 +38,392 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 %s
 <style>%s
 
-/* Dashboard layout */
-.page{max-width:1000px;margin:0 auto;padding:0 24px}
-
 /* Nav bar */
-.nav{
+.navbar{
   display:flex;align-items:center;justify-content:space-between;
-  height:64px;border-bottom:1px solid var(--border);
-  margin-bottom:0;
+  padding:0 24px;height:52px;background:var(--surface);
+  border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100;
 }
-.nav-left{display:flex;align-items:center;gap:12px}
-.nav-logo{font-size:15px;font-weight:600;color:#fff;letter-spacing:-.01em}
-.nav-logo span{color:var(--text-muted)}
-.nav-status{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-secondary)}
-.nav-right{display:flex;align-items:center;gap:8px}
+.navbar-left{display:flex;align-items:center;gap:16px}
+.brand{font-family:var(--font-display);font-size:1.15rem;color:var(--amber);letter-spacing:.5px;text-decoration:none}
+.status-pill{display:flex;align-items:center;gap:8px;font-size:.78rem;color:var(--text-secondary);letter-spacing:.04em;text-transform:uppercase}
+
+/* Main content */
+.main{max-width:960px;margin:0 auto;padding:28px 24px 60px}
 
 /* Toolbar */
-.toolbar{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:16px 0;border-bottom:1px solid var(--border);
+.toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.toolbar-left{display:flex;align-items:baseline;gap:10px}
+.toolbar-title{font-family:var(--font-display);font-size:1.1rem;color:var(--text);letter-spacing:.08em;text-transform:uppercase}
+.toolbar-count{font-size:.78rem;color:var(--text-muted);letter-spacing:.04em}
+.view-toggle{display:flex;background:var(--elevated);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.view-toggle button{
+  font-family:var(--font-body);background:none;border:none;
+  color:var(--text-muted);padding:6px 12px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;
 }
-.toolbar-left{display:flex;align-items:center;gap:16px}
-.toolbar-title{font-size:14px;font-weight:500;color:var(--text)}
-.toolbar-meta{font-size:13px;color:var(--text-muted)}
+.view-toggle button:first-child{border-right:1px solid var(--border)}
+.view-toggle button.active{background:var(--hover);color:var(--amber)}
+.view-toggle button:hover:not(.active){color:var(--text-secondary)}
+.view-toggle svg{width:16px;height:16px}
 
 /* Warning banner */
 .warn{
   display:flex;align-items:center;gap:8px;
-  padding:12px 16px;border-bottom:1px solid var(--border);
-  font-size:13px;color:var(--yellow-dot);background:transparent;
+  padding:12px 16px;margin-bottom:20px;
+  font-size:.82rem;color:var(--yellow);
+  background:rgba(212,168,42,.06);
+  border:1px solid rgba(212,168,42,.2);border-radius:var(--radius);
 }
 
-/* Route table */
+/* Route table (list view) */
+.list-view{width:100%%}
 .route-table{width:100%%;border-collapse:collapse}
-.route-table th{
-  font-size:12px;color:var(--text-muted);font-weight:400;
-  text-align:left;padding:10px 12px 10px 0;
-  border-bottom:1px solid var(--border);white-space:nowrap;
+.route-table thead th{
+  font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--text-muted);font-weight:500;text-align:left;
+  padding:0 12px 10px;border-bottom:1px solid var(--border);
 }
-.route-table th:last-child{text-align:right}
-.route-table td{
-  padding:14px 12px 14px 0;
-  border-bottom:1px solid var(--border);
-  vertical-align:middle;font-size:13px;
+.route-table tbody tr{border-bottom:1px solid var(--border-subtle);transition:background .1s}
+.route-table tbody tr:hover{background:var(--elevated)}
+.route-table td{padding:11px 12px;vertical-align:middle}
+.route-name-cell{display:flex;align-items:center;gap:10px}
+.route-icon{
+  width:28px;height:28px;border-radius:7px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:15px;line-height:1;flex-shrink:0;
+  background:var(--elevated);border:1px solid var(--border-subtle);
 }
-.route-table tr:hover td{background:#080808}
-.route-table td:last-child{text-align:right;padding-right:0}
-.col-name{min-width:200px}
-.col-type{width:120px;color:var(--text-muted);font-family:var(--font-mono);font-size:12px}
-.col-port{width:80px;color:var(--text-muted);font-family:var(--font-mono)}
-.col-age{width:80px;color:var(--text-muted)}
-.col-status{width:80px;text-align:right}
-.col-edit{width:40px;text-align:center;padding-right:0!important}
-.name-cell{display:flex;align-items:center;gap:10px}
-.name-primary{font-size:14px;font-weight:500;color:#fff;text-decoration:none;display:block;line-height:1.3}
-.name-primary:hover{text-decoration:underline}
-.name-secondary{font-size:12px;color:var(--text-muted);display:block;line-height:1.3;text-decoration:none}
-.name-secondary:hover{color:var(--text-secondary)}
-.idle-hint{font-size:11px;color:var(--text-muted);opacity:.6}
-.btn-icon{background:transparent;border:none;color:var(--text-muted);cursor:pointer;padding:4px 6px;border-radius:4px;font-size:14px;transition:color .15s}
-.btn-icon:hover{color:var(--text)}
+.route-icon-stopped{opacity:.35}
+.route-name-link{color:var(--text);text-decoration:none;font-weight:600;font-size:.92rem;transition:color .15s}
+.route-name-link:hover{color:var(--amber)}
+.route-url{color:var(--text-muted);font-size:.75rem;margin-left:4px}
+.td-type{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;font-weight:500;color:var(--text-muted)}
+.td-port{font-variant-numeric:tabular-nums;font-size:.85rem}
+.td-port a{color:var(--text-secondary);text-decoration:none;transition:color .15s}
+.td-port a:hover{color:var(--amber)}
+.td-age{color:var(--text-muted);font-size:.8rem}
+.td-actions{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+.td-stopped{opacity:.45}
+.hide-mobile{}
+
+/* Grid view */
+.grid-view{display:none}
+.grid-container{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+  gap:16px;
+}
+.grid-tile{
+  background:var(--surface);border:1px solid var(--border-subtle);
+  border-radius:var(--radius-lg);padding:20px 12px 16px;
+  display:flex;flex-direction:column;align-items:center;text-align:center;
+  cursor:pointer;transition:background .15s,border-color .15s,box-shadow .2s;
+  position:relative;text-decoration:none;color:var(--text);
+}
+.grid-tile:hover{background:var(--elevated);border-color:var(--border);box-shadow:0 2px 16px rgba(0,0,0,.3)}
+.grid-tile:hover .tile-hover-action{opacity:1}
+.tile-icon{
+  width:64px;height:64px;border-radius:16px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:30px;margin-bottom:10px;
+  background:var(--elevated);border:1px solid var(--border);
+  flex-shrink:0;
+}
+.tile-stopped .tile-icon{opacity:.35}
+.tile-name{font-weight:600;font-size:.88rem;color:var(--text);margin-bottom:3px;letter-spacing:.02em}
+.tile-url{font-size:.7rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%%}
+.tile-hover-action{position:absolute;top:8px;right:8px;opacity:0;transition:opacity .15s}
+.tile-hover-action .btn{font-size:.65rem;padding:3px 8px}
 
 /* Empty state */
-.empty{text-align:center;padding:48px 0;color:var(--text-muted);font-size:14px}
+.empty{text-align:center;padding:48px 0;color:var(--text-muted);font-size:.88rem}
 
-/* Setup section */
-.setup-section{padding:32px 0;border-top:1px solid var(--border);margin-top:32px}
-.setup-title{font-size:14px;font-weight:500;color:var(--text);margin-bottom:12px}
-.setup-desc{font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:16px}
-.copy-wrap{}
-.copy-area{
-  width:100%%;background:#111;
-  border:1px solid #222;border-radius:8px;
-  padding:16px 18px;font-family:var(--font-mono);font-size:13px;
-  color:#ccc;outline:none;resize:none;line-height:1.8;height:8.5rem;
-  display:block;
+/* Get Started section */
+.get-started{
+  margin-top:36px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;
 }
-.copy-area:focus{border-color:#444}
-.copy-bar{display:flex;justify-content:flex-end;margin-top:10px}
-.copy-btn{
-  background:var(--bg);border:1px solid var(--border);
-  border-radius:6px;padding:6px 14px;color:var(--text-secondary);
-  cursor:pointer;display:inline-flex;align-items:center;gap:6px;
-  font-family:var(--font-sans);font-size:13px;font-weight:500;
-  transition:all .15s;
+.get-started h2{
+  font-family:var(--font-display);font-size:.95rem;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--amber);margin-bottom:6px;
 }
-.copy-btn:hover{border-color:#444;color:var(--text)}
+.get-started p{font-size:.82rem;color:var(--text-secondary);margin-bottom:14px;line-height:1.5}
+.setup-box{position:relative}
+.setup-textarea{
+  width:100%%;font-family:var(--font-body);font-size:.8rem;
+  background:var(--bg);color:var(--text-secondary);
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px;resize:none;line-height:1.6;
+}
+.btn-copy{
+  position:absolute;top:10px;right:10px;
+  font-family:var(--font-body);font-size:.7rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:.06em;
+  background:var(--elevated);color:var(--text-secondary);
+  border:1px solid var(--border);padding:5px 12px;
+  border-radius:var(--radius);cursor:pointer;transition:all .15s;
+}
+.btn-copy:hover{color:var(--text);border-color:var(--text-muted)}
+
+/* Icon picker */
+.icon-picker{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.icon-pick{
+  width:36px;height:36px;border-radius:8px;border:1px solid var(--border);
+  background:var(--bg);display:flex;align-items:center;justify-content:center;
+  font-size:18px;cursor:pointer;transition:all .12s;
+}
+.icon-pick:hover{border-color:var(--amber);background:var(--elevated)}
+.icon-pick.selected{border-color:var(--amber);background:var(--elevated);box-shadow:0 0 8px var(--amber-glow)}
 
 /* Footer */
 .footer{
-  padding:16px 0;
-  border-top:1px solid var(--border);
-  color:var(--text-muted);font-size:12px;
-  display:flex;gap:16px;align-items:center;
-  margin-top:32px;
+  max-width:960px;margin:0 auto;padding:0 24px 32px;
+  display:flex;align-items:center;justify-content:center;
+  gap:20px;font-size:.72rem;color:var(--text-muted);
 }
-.footer a{color:var(--text-muted);transition:color .15s}
-.footer a:hover{color:var(--text-secondary)}
+.footer a{color:var(--text-muted);text-decoration:none;transition:color .15s}
+.footer a:hover{color:var(--amber)}
+.footer-sep{opacity:.3}
 
 @media(max-width:700px){
-  .col-type,.col-port,.col-age{display:none}
-  .route-table th.col-type,.route-table th.col-port,.route-table th.col-age{display:none}
+  .navbar{padding:0 16px}
+  .main{padding:20px 16px 48px}
+  .grid-container{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px}
+  .hide-mobile{display:none}
+}
+@media(max-width:480px){
+  .grid-container{grid-template-columns:repeat(2,1fr)}
 }
 </style>
 </head>
 <body>
-<div class="page">
 `, themeHead("local.vibe"), themeCSS)
 
 	// Nav bar
 	uptime := time.Since(s.startedAt).Round(time.Second)
-	fmt.Fprintf(&b, `<nav class="nav">
-  <div class="nav-left">
-    <span class="nav-logo">local<span>.vibe</span></span>
-    <span class="nav-status"><span class="dot dot-green"></span>Running &middot; %s</span>
+	fmt.Fprintf(&b, `<nav class="navbar">
+  <div class="navbar-left">
+    <a href="http://local.%s/" class="brand">local.vibe</a>
+    <div class="status-pill"><span class="led led-green"></span>Running &middot; %s</div>
   </div>
-  <div class="nav-right">
-    <button class="btn" onclick="openAddModal()">Add Route</button>
-  </div>
+  <button class="btn-add" onclick="openAddModal()">+ Add Route</button>
 </nav>
-`, fmtDuration(uptime))
+<main class="main">
+`, tld, fmtDuration(uptime))
 
 	// Warning banner
 	if unknownName != "" {
-		fmt.Fprintf(&b, `<div class="warn"><span class="dot dot-yellow"></span>No route for <strong style="color:var(--text);margin:0 4px">%s.%s</strong> — register it below.</div>`,
+		fmt.Fprintf(&b, `<div class="warn"><span class="led led-yellow"></span>No route for <strong style="color:var(--text);margin:0 4px">%s.%s</strong> — register it below.</div>`,
 			html.EscapeString(unknownName), tld)
 	}
 
-	// Toolbar
+	// Toolbar with view toggle
 	fmt.Fprintf(&b, `<div class="toolbar">
   <div class="toolbar-left">
     <span class="toolbar-title">Routes</span>
-    <span class="toolbar-meta">%d total</span>
+    <span class="toolbar-count">%d active</span>
+  </div>
+  <div class="view-toggle">
+    <button id="btn-list" class="active" onclick="setView('list')" title="List view">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="1" y1="3" x2="15" y2="3"/><line x1="1" y1="8" x2="15" y2="8"/><line x1="1" y1="13" x2="15" y2="13"/></svg>
+    </button>
+    <button id="btn-grid" onclick="setView('grid')" title="Grid view">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="5.5" height="5.5" rx="1"/><rect x="9.5" y="1" width="5.5" height="5.5" rx="1"/><rect x="1" y="9.5" width="5.5" height="5.5" rx="1"/><rect x="9.5" y="9.5" width="5.5" height="5.5" rx="1"/></svg>
+    </button>
   </div>
 </div>
-`, len(routes)+1) // +1 for self
+`, len(routes)+1)
 
-	// Table
-	b.WriteString(`<table class="route-table">
+	// Pool of visually distinct icons assigned by name hash so each route
+	// gets a consistent, unique-looking icon out of the box.
+	iconPool := []string{
+		"🚀", "🤖", "📦", "⚡", "🔮", "🎯", "🛠️", "💎",
+		"🧪", "🌐", "📡", "🎨", "🔒", "🗂️", "📊", "🧩",
+	}
+
+	// ── LIST VIEW ──
+	b.WriteString(`<div class="list-view" id="list-view">
+<table class="route-table">
 <thead><tr>
-  <th>Name</th>
-  <th class="col-type">Type</th>
-  <th class="col-port">Port</th>
-  <th class="col-age">Age</th>
-  <th class="col-status"></th>
-  <th class="col-edit"></th>
+  <th style="width:38%%">Name</th>
+  <th>Type</th>
+  <th>Port</th>
+  <th class="hide-mobile">Age</th>
+  <th style="text-align:right">Actions</th>
 </tr></thead>
 <tbody>`)
 
 	// Self row
 	fmt.Fprintf(&b, `<tr>
-  <td class="col-name"><div class="name-cell"><span class="dot dot-green"></span><div><a href="http://local.%s/" class="name-primary">local</a><a href="http://local.%s/" class="name-secondary">local.%s</a></div></div></td>
-  <td class="col-type">daemon</td>
-  <td class="col-port">%d</td>
-  <td class="col-age">%s</td>
-  <td class="col-status"></td>
-  <td class="col-edit"></td>
-</tr>`, tld, tld, tld, port, fmtDuration(uptime))
+  <td><div class="route-name-cell"><span class="route-icon">&#127968;</span><div><a href="http://local.%[1]s/" class="route-name-link">local</a><span class="route-url">local.%[1]s</span></div></div></td>
+  <td class="td-type">daemon</td>
+  <td class="td-port"><a href="http://localhost:%[2]d" target="_blank">%[2]d</a></td>
+  <td class="td-age hide-mobile">%[3]s</td>
+  <td></td>
+</tr>`, tld, port, fmtDuration(uptime))
 
-	if len(routes) == 0 {
-		b.WriteString(`</tbody></table>`)
-		b.WriteString(`<div class="empty">No routes registered yet.</div>`)
-	} else {
-		for _, r := range routes {
-			safeName := html.EscapeString(r.Name)
-			vibeURL := fmt.Sprintf("http://%s.%s", safeName, tld)
+	// Route rows
+	for _, r := range routes {
+		safeName := html.EscapeString(r.Name)
+		vibeURL := fmt.Sprintf("http://%s.%s", safeName, tld)
 
-			// Status dot: green=ready, yellow=starting, red=stopped
-			dotClass := "dot-gray"
-			switch r.Type {
-			case RouteManaged:
-				if s.isPortReady(r.Port) {
-					dotClass = "dot-green"
-				} else if r.Running.Load() {
-					dotClass = "dot-yellow" // process alive, port not yet listening
-				} else {
-					dotClass = "dot-red"
-				}
-			case RouteSticky:
-				dotClass = "dot-green"
-			case RoutePIDTracked:
-				dotClass = "dot-green"
-			case RouteBookmark:
-				dotClass = "dot-yellow"
-			}
+		isStopped := r.Type == RouteManaged && !s.isPortReady(r.Port) && !r.Running.Load()
 
-			// Display URL
-			urlDisplay := fmt.Sprintf("%s.%s", safeName, tld)
-			if r.Type == RouteBookmark {
-				urlDisplay = html.EscapeString(r.ExternalURL)
-			}
-
-			// Type label
-			typeLabel := string(r.Type)
-			idleStr := ""
-			if r.Type == RouteManaged && r.IdleTimeout > 0 {
-				if r.IdleTimeout >= 60 {
-					idleStr = fmt.Sprintf(` <span class="route-col-idle">(%dh idle)</span>`, r.IdleTimeout/60)
-				} else {
-					idleStr = fmt.Sprintf(` <span class="route-col-idle">(%dm idle)</span>`, r.IdleTimeout)
-				}
-			}
-
-			// Port
-			portStr := fmt.Sprintf("%d", r.Port)
-			if r.Type == RouteBookmark {
-				portStr = "—"
-			}
-
-			// Age
-			since := time.Since(r.RegisteredAt).Round(time.Second)
-
-			// Status action (Start/Stop button)
-			statusBtn := ""
-			if r.Type == RouteManaged && s.isPortReady(r.Port) {
-				statusBtn = fmt.Sprintf(`<button class="btn" onclick="routeAction(this,'%s','stop')">Stop</button>`, safeName)
-			} else if r.Type == RouteManaged {
-				statusBtn = fmt.Sprintf(`<button class="btn btn-primary" onclick="routeAction(this,'%s','start')">Start</button>`, safeName)
-			}
-
-			// Edit/settings action (always in its own column)
-			editBtn := ""
-			if r.Type == RouteManaged {
-				editBtn = fmt.Sprintf(`<button class="btn-icon" onclick="openManagedModal('%s',%d)" title="Settings">&#9998;</button>`, safeName, r.IdleTimeout)
-			} else if r.Type == RouteSticky || r.Type == RouteBookmark {
-				safeExtURL := html.EscapeString(r.ExternalURL)
-				editType := "local"
-				if r.Type == RouteBookmark {
-					editType = "bookmark"
-				}
-				editBtn = fmt.Sprintf(`<button class="btn-icon" onclick="openEditModal('%s',%d,'%s','%s')" title="Edit">&#9998;</button>`,
-					safeName, r.Port, safeExtURL, editType)
-			}
-
-			fmt.Fprintf(&b, `<tr>
-  <td class="col-name"><div class="name-cell"><span class="dot %s"></span><div><a href="%s" target="_blank" class="name-primary">%s</a><a href="%s" target="_blank" class="name-secondary">%s</a></div></div></td>
-  <td class="col-type">%s %s</td>
-  <td class="col-port">%s</td>
-  <td class="col-age">%s</td>
-  <td class="col-status">%s</td>
-  <td class="col-edit">%s</td>
-</tr>`, dotClass, vibeURL, safeName, vibeURL, urlDisplay,
-				typeLabel, idleStr, portStr, fmtDuration(since), statusBtn, editBtn)
+		// Secondary URL display
+		urlDisplay := fmt.Sprintf("%s.%s", safeName, tld)
+		if r.Type == RouteBookmark {
+			urlDisplay = html.EscapeString(r.ExternalURL)
 		}
-		b.WriteString(`</tbody></table>`)
+
+		// Type label (plain text, no color)
+		typeLabel := string(r.Type)
+
+		// Port — link to localhost:port, or dash for bookmarks
+		portCell := fmt.Sprintf(`<a href="http://localhost:%d" target="_blank">%d</a>`, r.Port, r.Port)
+		if r.Type == RouteBookmark {
+			portCell = "—"
+		}
+
+		// Age
+		since := time.Since(r.RegisteredAt).Round(time.Second)
+
+		// Action buttons
+		actionHTML := ""
+		editSVG := `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>`
+		if r.Type == RouteManaged && s.isPortReady(r.Port) {
+			actionHTML = fmt.Sprintf(`<button class="btn" onclick="routeAction(this,'%s','stop')">Stop</button>`, safeName)
+		} else if r.Type == RouteManaged {
+			actionHTML = fmt.Sprintf(`<button class="btn btn-primary" onclick="routeAction(this,'%s','start')">Start</button>`, safeName)
+		}
+
+		// Edit button — pass user icon and auto icon separately so "Clear" reverts to auto.
+		editBtn := ""
+		safeIcon := html.EscapeString(r.Icon)
+		safeAutoIcon := html.EscapeString(r.AutoIcon)
+		if r.Type == RouteManaged {
+			editBtn = fmt.Sprintf(`<button class="btn-icon" onclick="openManagedModal('%s',%d,'%s','%s')" title="Settings">%s</button>`, safeName, r.IdleTimeout, safeIcon, safeAutoIcon, editSVG)
+		} else if r.Type == RouteSticky || r.Type == RouteBookmark {
+			safeExtURL := html.EscapeString(r.ExternalURL)
+			editType := "local"
+			if r.Type == RouteBookmark {
+				editType = "bookmark"
+			}
+			editBtn = fmt.Sprintf(`<button class="btn-icon" onclick="openEditModal('%s',%d,'%s','%s','%s','%s')" title="Edit">%s</button>`,
+				safeName, r.Port, safeExtURL, editType, safeIcon, safeAutoIcon, editSVG)
+		}
+
+		portDimStyle := ""
+		if isStopped {
+			portDimStyle = ` class="td-stopped"`
+		}
+
+		// Icon — user override > auto-detected > deterministic pool pick
+		icon := iconPool[nameHash(r.Name)%len(iconPool)]
+		if r.AutoIcon != "" {
+			icon = html.EscapeString(r.AutoIcon)
+		}
+		if r.Icon != "" {
+			icon = html.EscapeString(r.Icon)
+		}
+
+		iconClass := "route-icon"
+		if isStopped {
+			iconClass = "route-icon route-icon-stopped"
+		}
+
+		fmt.Fprintf(&b, `<tr>
+  <td><div class="route-name-cell"><span class="%s">%s</span><div><a href="%s" target="_blank" class="route-name-link">%s</a><span class="route-url">%s</span></div></div></td>
+  <td class="td-type">%s</td>
+  <td class="td-port"%s>%s</td>
+  <td class="td-age hide-mobile">%s</td>
+  <td><div class="td-actions">%s%s</div></td>
+</tr>`, iconClass, iconHTML(icon), vibeURL, safeName, urlDisplay,
+			typeLabel, portDimStyle, portCell, fmtDuration(since), actionHTML, editBtn)
 	}
 
-	// Setup section
-	fmt.Fprintf(&b, `<div class="setup-section">
-  <div class="setup-title">Get Started</div>
-  <p class="setup-desc">
-    Paste this into Claude Code, Cursor, or any agentic IDE to configure a project with local.vibe.
-  </p>
-  <div class="copy-wrap">
-    <textarea id="setup-text" readonly class="copy-area">This machine is running local.vibe, a local DNS tool that gives dev servers friendly .%[1]s names instead of hard-to-remember port numbers.
+	if len(routes) == 0 {
+		b.WriteString(`</tbody></table>
+<div class="empty">No routes registered yet.</div>
+</div>`)
+	} else {
+		b.WriteString(`</tbody></table>
+</div>`)
+	}
+
+	// ── GRID VIEW ──
+	b.WriteString(`<div class="grid-view" id="grid-view"><div class="grid-container">`)
+
+	// Self tile
+	fmt.Fprintf(&b, `<a href="http://local.%s/" class="grid-tile">
+  <div class="tile-icon"><span>&#127968;</span></div>
+  <div class="tile-name">local</div>
+  <div class="tile-url">local.%s</div>
+</a>`, tld, tld)
+
+	// Route tiles
+	for _, r := range routes {
+		safeName := html.EscapeString(r.Name)
+		vibeURL := fmt.Sprintf("http://%s.%s", safeName, tld)
+
+		// URL display
+		urlDisplay := fmt.Sprintf("%s.%s", safeName, tld)
+		if r.Type == RouteBookmark {
+			urlDisplay = html.EscapeString(r.ExternalURL)
+		}
+
+		// Icon — user override > auto-detected > deterministic pool pick
+		icon := iconPool[nameHash(r.Name)%len(iconPool)]
+		if r.AutoIcon != "" {
+			icon = html.EscapeString(r.AutoIcon)
+		}
+		if r.Icon != "" {
+			icon = html.EscapeString(r.Icon)
+		}
+
+		// Stopped state — dim icon only, not text
+		isStopped := r.Type == RouteManaged && !s.isPortReady(r.Port) && !r.Running.Load()
+		tileClass := "grid-tile"
+		if isStopped {
+			tileClass = "grid-tile tile-stopped"
+		}
+
+		// Hover action
+		hoverAction := ""
+		if r.Type == RouteManaged && s.isPortReady(r.Port) {
+			hoverAction = fmt.Sprintf(`<div class="tile-hover-action"><button class="btn" onclick="event.preventDefault();routeAction(this,'%s','stop')">Stop</button></div>`, safeName)
+		} else if r.Type == RouteManaged {
+			hoverAction = fmt.Sprintf(`<div class="tile-hover-action"><button class="btn btn-primary" onclick="event.preventDefault();routeAction(this,'%s','start')">Start</button></div>`, safeName)
+		}
+
+		fmt.Fprintf(&b, `<a href="%s" target="_blank" class="%s">
+  <div class="tile-icon">%s</div>
+  <div class="tile-name">%s</div>
+  <div class="tile-url">%s</div>
+  %s
+</a>`, vibeURL, tileClass, iconHTML(icon), safeName, urlDisplay, hoverAction)
+	}
+
+	b.WriteString(`</div></div>`)
+
+	// Get Started section
+	fmt.Fprintf(&b, `
+<section class="get-started">
+  <h2>Get Started</h2>
+  <p>Paste this into Claude Code, Cursor, or any agentic IDE to configure a project with local.vibe.</p>
+  <div class="setup-box">
+    <textarea id="setup-text" class="setup-textarea" rows="5" readonly>This machine is running local.vibe, a local DNS tool that gives dev servers friendly .%[1]s names instead of hard-to-remember port numbers.
 
 Read the full setup instructions:
 
   curl http://localhost:7999/setup.md
 
 Or open in a browser: http://local.%[1]s/setup.md</textarea>
-    <div class="copy-bar">
-      <button onclick="copyText()" class="copy-btn" id="copy-btn">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/></svg>
-        Copy
-      </button>
-    </div>
+    <button class="btn-copy" id="copy-btn" onclick="copyText()">Copy</button>
   </div>
-</div>
+</section>
+</main>
+
 <!-- Add/Edit Modal -->
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
 <div class="modal">
@@ -314,20 +432,32 @@ Or open in a browser: http://local.%[1]s/setup.md</textarea>
     <button id="toggle-local" class="active" onclick="setRouteType('local')">Local Port</button>
     <button id="toggle-bookmark" onclick="setRouteType('bookmark')">External URL</button>
   </div>
-  <label for="route-name">Name</label>
-  <input id="route-name" type="text" placeholder="myapp" autocomplete="off">
-  <div id="port-field">
+  <div style="margin-bottom:16px">
+    <label for="route-name">Name</label>
+    <input id="route-name" type="text" placeholder="myapp" autocomplete="off">
+  </div>
+  <div id="port-field" style="margin-bottom:16px">
     <label for="route-port">Port</label>
     <input id="route-port" type="number" placeholder="3000">
   </div>
-  <div id="url-field" style="display:none">
+  <div id="url-field" style="display:none;margin-bottom:16px">
     <label for="route-url">URL</label>
     <input id="route-url" type="url" placeholder="https://example.com:8080/">
+  </div>
+  <div style="margin-bottom:16px">
+    <label>Icon</label>
+    <input id="route-icon" type="hidden">
+    <div class="icon-select-row">
+      <div class="icon-preview icon-preview-lg" id="icon-preview">?</div>
+      <input id="route-icon-custom" type="text" class="icon-custom-input" placeholder="Type emoji" oninput="onCustomIcon('route-icon','icon-preview','icon-clear','icon-picker')">
+      <button type="button" class="btn btn-sm" id="icon-clear" onclick="clearIcon('route-icon','icon-preview','icon-clear','icon-picker')" style="display:none">Clear</button>
+    </div>
+    <div class="icon-picker" id="icon-picker"></div>
   </div>
   <div class="modal-actions">
     <button class="btn btn-danger" id="modal-delete" style="display:none;margin-right:auto" onclick="deleteRoute()">Delete</button>
     <button class="btn" onclick="closeModal()">Cancel</button>
-    <button class="btn btn-primary" id="modal-save" onclick="saveRoute()">Add</button>
+    <button class="btn-add" id="modal-save" onclick="saveRoute()">Add</button>
   </div>
 </div>
 </div>
@@ -335,16 +465,36 @@ Or open in a browser: http://local.%[1]s/setup.md</textarea>
 <div class="modal-overlay" id="managed-overlay" onclick="if(event.target===this)closeManagedModal()">
 <div class="modal">
   <h3>Route Settings</h3>
+  <div style="margin-bottom:16px">
+    <label>Icon</label>
+    <input id="managed-icon" type="hidden">
+    <div class="icon-select-row">
+      <div class="icon-preview icon-preview-lg" id="managed-icon-preview">?</div>
+      <input id="managed-icon-custom" type="text" class="icon-custom-input" placeholder="Type emoji" oninput="onCustomIcon('managed-icon','managed-icon-preview','managed-icon-clear','managed-icon-picker')">
+      <button type="button" class="btn btn-sm" id="managed-icon-clear" onclick="clearIcon('managed-icon','managed-icon-preview','managed-icon-clear','managed-icon-picker')" style="display:none">Clear</button>
+    </div>
+    <div class="icon-picker" id="managed-icon-picker"></div>
+  </div>
   <label for="idle-timeout">Auto-stop after idle (minutes)</label>
   <input id="idle-timeout" type="number" min="0" placeholder="0 = never">
   <p class="hint">Stop the process automatically when no traffic is received. Set to 0 to disable.</p>
   <div class="modal-actions">
     <button class="btn" onclick="closeManagedModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="saveManagedSettings()">Save</button>
+    <button class="btn-add" onclick="saveManagedSettings()">Save</button>
   </div>
 </div>
 </div>
 <script>
+// View toggle
+function setView(mode){
+  var l=document.getElementById('list-view'),g=document.getElementById('grid-view');
+  var bl=document.getElementById('btn-list'),bg=document.getElementById('btn-grid');
+  if(mode==='grid'){l.style.display='none';g.style.display='block';bl.classList.remove('active');bg.classList.add('active')}
+  else{l.style.display='block';g.style.display='none';bl.classList.add('active');bg.classList.remove('active')}
+  try{localStorage.setItem('vibe-view',mode)}catch(e){}
+}
+try{if(localStorage.getItem('vibe-view')==='grid')setView('grid')}catch(e){}
+
 var modalMode='add';
 var editingName='';
 function setRouteType(t){
@@ -363,10 +513,11 @@ function openAddModal(){
   document.getElementById('route-name').disabled=false;
   document.getElementById('route-port').value='';
   document.getElementById('route-url').value='';
+  setIconField('route-icon','icon-preview','icon-clear','icon-picker','');
   setRouteType('local');
   document.getElementById('modal-overlay').classList.add('active');
 }
-function openEditModal(name,port,url,type){
+function openEditModal(name,port,url,type,icon,autoIcon){
   modalMode='edit';editingName=name;
   document.getElementById('modal-title').textContent='Edit Route';
   document.getElementById('modal-save').textContent='Save';
@@ -374,6 +525,8 @@ function openEditModal(name,port,url,type){
   document.getElementById('type-toggle').style.display='';
   document.getElementById('route-name').value=name;
   document.getElementById('route-name').disabled=false;
+  document.getElementById('route-icon').dataset.autoicon=autoIcon||'';
+  setIconField('route-icon','icon-preview','icon-clear','icon-picker',icon||'',autoIcon||'');
   if(type==='bookmark'){
     setRouteType('bookmark');
     document.getElementById('route-url').value=url;
@@ -391,6 +544,8 @@ function saveRoute(){
   if(!name)return;
   var isBookmark=document.getElementById('toggle-bookmark').className==='active';
   var body={name:name};
+  var icon=getIconValue('route-icon');
+  if(icon)body.icon=icon;
   if(isBookmark){
     var u=document.getElementById('route-url').value.trim();
     if(!u)return;
@@ -412,22 +567,81 @@ function deleteRoute(){
 }
 function copyText(){
   var ta=document.getElementById('setup-text');
+  var btn=document.getElementById('copy-btn');
   if(navigator.clipboard&&window.isSecureContext){
-    navigator.clipboard.writeText(ta.value).then(showCheck);
+    navigator.clipboard.writeText(ta.value).then(function(){
+      btn.textContent='Copied';setTimeout(function(){btn.textContent='Copy'},1500);
+    });
   }else{
-    ta.select();document.execCommand('copy');window.getSelection().removeAllRanges();showCheck();
+    ta.select();document.execCommand('copy');window.getSelection().removeAllRanges();
+    btn.textContent='Copied';setTimeout(function(){btn.textContent='Copy'},1500);
   }
 }
 var managedEditName='';
-function openManagedModal(name,idle){
+function openManagedModal(name,idle,icon,autoIcon){
   managedEditName=name;
   document.getElementById('idle-timeout').value=idle||'';
+  document.getElementById('managed-icon').dataset.autoicon=autoIcon||'';
+  setIconField('managed-icon','managed-icon-preview','managed-icon-clear','managed-icon-picker',icon||'',autoIcon||'');
   document.getElementById('managed-overlay').classList.add('active');
 }
 function closeManagedModal(){document.getElementById('managed-overlay').classList.remove('active')}
 function saveManagedSettings(){
   var idle=parseInt(document.getElementById('idle-timeout').value)||0;
-  fetch('/_api/routes/'+encodeURIComponent(managedEditName),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({idle_timeout:idle})}).then(function(){location.reload()});
+  var icon=getIconValue('managed-icon');
+  var body={idle_timeout:idle};
+  if(icon)body.icon=icon;
+  fetch('/_api/routes/'+encodeURIComponent(managedEditName),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(){location.reload()});
+}
+function setIconField(inputId,previewId,clearId,pickerId,val,autoIcon){
+  var inp=document.getElementById(inputId);
+  inp.value=val||'';
+  if(autoIcon!==undefined)inp.dataset.autoicon=autoIcon;
+  var display=val||inp.dataset.autoicon||'';
+  setIconPreviewEl(document.getElementById(previewId),display);
+  document.getElementById(clearId).style.display=val?'':'none';
+  var customInp=document.getElementById(inputId+'-custom');
+  if(customInp&&!val)customInp.value='';
+  highlightPicker(pickerId,val||'');
+}
+function getIconValue(inputId){return document.getElementById(inputId).value}
+function clearIcon(inputId,previewId,clearId,pickerId){
+  var autoIcon=document.getElementById(inputId).dataset.autoicon||'';
+  document.getElementById(inputId+'-custom').value='';
+  setIconField(inputId,previewId,clearId,pickerId,'',autoIcon);
+}
+function onCustomIcon(inputId,previewId,clearId,pickerId){
+  var val=document.getElementById(inputId+'-custom').value.trim();
+  setIconField(inputId,previewId,clearId,pickerId,val);
+}
+var iconChoices=['🚀','🤖','📦','⚡','🔮','🎯','🛠️','💎','🧪','🌐','📡','🎨','🔒','🗂️','📊','🧩'];
+function buildPicker(containerId,inputId,previewId,clearId){
+  var c=document.getElementById(containerId);
+  c.innerHTML='';
+  iconChoices.forEach(function(em){
+    var b=document.createElement('button');
+    b.type='button';b.className='icon-pick';b.textContent=em;
+    b.onclick=function(){
+      setIconField(inputId,previewId,clearId,containerId,em);
+    };
+    c.appendChild(b);
+  });
+}
+function highlightPicker(containerId,val){
+  var btns=document.getElementById(containerId).querySelectorAll('.icon-pick');
+  btns.forEach(function(b){b.classList.toggle('selected',b.textContent===val)});
+}
+buildPicker('icon-picker','route-icon','icon-preview','icon-clear');
+buildPicker('managed-icon-picker','managed-icon','managed-icon-preview','managed-icon-clear');
+
+function setIconPreviewEl(el,val){
+  if(!val){el.textContent='?';el.style.backgroundImage='';return}
+  if(val.startsWith('data:')||val.startsWith('http://')||val.startsWith('https://')){
+    el.textContent='';el.style.backgroundImage='url('+val+')';
+    el.style.backgroundSize='cover';el.style.backgroundPosition='center';
+  }else{
+    el.style.backgroundImage='';el.textContent=val;
+  }
 }
 function routeAction(btn,name,action){
   var origText=btn.textContent;
@@ -461,27 +675,22 @@ function pollReady(name,n){
     })
     .catch(function(){setTimeout(function(){pollReady(name,n+1)},500)});
 }
-function showCheck(){
-  var btn=document.getElementById('copy-btn');
-  var orig=btn.innerHTML;
-  btn.innerHTML='<svg width="14" height="14" viewBox="0 0 16 16" fill="#52c41a"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Copied';
-  setTimeout(function(){btn.innerHTML=orig},1500);
-}
-document.addEventListener('visibilitychange',function(){
-  if(!document.hidden){location.reload()}
-});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeModal();closeManagedModal()}});
+document.addEventListener('visibilitychange',function(){if(!document.hidden){location.reload()}});
 </script>
 `, tld)
 
 	// Footer
-	fmt.Fprintf(&b, `<div class="footer">
+	fmt.Fprintf(&b, `<footer class="footer">
   <span>daemon :%d</span>
+  <span class="footer-sep">|</span>
   <a href="/_api/routes">API</a>
+  <span class="footer-sep">|</span>
   <a href="/_api/health">Health</a>
-</div>
+</footer>
 `, port)
 
-	b.WriteString(`</div></body></html>`)
+	b.WriteString(`</body></html>`)
 	fmt.Fprint(w, b.String())
 }
 
@@ -490,6 +699,26 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// nameHash returns a stable hash for a route name, used to pick a default icon.
+func nameHash(name string) int {
+	h := 0
+	for _, c := range name {
+		h = h*31 + int(c)
+	}
+	if h < 0 {
+		h = -h
+	}
+	return h
+}
+
+// iconHTML returns the icon as either an emoji span or an <img> tag for URLs/data URIs.
+func iconHTML(icon string) string {
+	if strings.HasPrefix(icon, "data:") || strings.HasPrefix(icon, "http://") || strings.HasPrefix(icon, "https://") {
+		return fmt.Sprintf(`<img src="%s" style="width:100%%;height:100%%;object-fit:contain;border-radius:inherit" onerror="this.style.display='none';this.parentElement.textContent='🔲'">`, html.EscapeString(icon))
+	}
+	return icon
 }
 
 func fmtDuration(d time.Duration) string {

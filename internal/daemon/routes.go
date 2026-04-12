@@ -34,6 +34,8 @@ type Route struct {
 	Running      atomic.Bool `json:"-"`
 	Ready        atomic.Bool `json:"-"`
 	IdleTimeout  int        `json:"idle_timeout,omitempty"`  // minutes; 0 = never auto-stop
+	Icon         string     `json:"icon,omitempty"`          // user-chosen emoji or URL for dashboard
+	AutoIcon     string     `json:"auto_icon,omitempty"`     // auto-detected favicon (data URI)
 	LastActivity time.Time  `json:"-"`                       // runtime only, not serialized
 }
 

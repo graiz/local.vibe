@@ -11,13 +11,13 @@ func TestProcessStartEarlyCrashDetection(t *testing.T) {
 
 	route := &Route{
 		Name: "crasher",
-		Cmd:  "nonexistent_command_xyz",
+		Cmd:  "exit 1",
 		Dir:  t.TempDir(),
 	}
 
 	_, err := pm.Start(route)
 	if err == nil {
-		t.Fatal("expected error for nonexistent command")
+		t.Fatal("expected error for immediately-exiting command")
 	}
 	if !strings.Contains(err.Error(), "process exited immediately") {
 		t.Errorf("error = %q; want 'process exited immediately'", err)

@@ -89,8 +89,8 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 			return 0, fmt.Errorf("process exited immediately: %w", err)
 		}
 		return 0, fmt.Errorf("process exited immediately with status 0")
-	case <-time.After(500 * time.Millisecond):
-		// Still running after 500ms — likely a real server process.
+	case <-time.After(1 * time.Second):
+		// Still running after 1s — likely a real server process.
 	}
 
 	return pid, nil

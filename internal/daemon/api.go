@@ -1,9 +1,10 @@
 package daemon
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -22,6 +23,7 @@ type registerRequest struct {
 	Dir         string `json:"dir,omitempty"`
 	URL         string `json:"url,omitempty"`
 	IdleTimeout *int   `json:"idle_timeout,omitempty"` // minutes; 0 = never
+	Icon        string `json:"icon,omitempty"`
 }
 
 type routeResponse struct {
@@ -36,6 +38,7 @@ type routeResponse struct {
 	URL          string     `json:"url"`
 	ExternalURL  string     `json:"external_url,omitempty"`
 	IdleTimeout  int        `json:"idle_timeout,omitempty"`
+	Icon         string     `json:"icon,omitempty"`
 }
 
 // apiHandler routes /_api/* requests to the appropriate handler.
@@ -132,6 +135,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.IdleTimeout != nil {
 		route.IdleTimeout = *req.IdleTimeout
 	}
+	route.Icon = req.Icon
 
 	switch {
 	case req.URL != "":
@@ -155,6 +159,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Launch managed process immediately.
 	if route.Type == RouteManaged {
+		// Clear stale process on the port before launching.
+		if route.Port > 0 && s.isPortReady(route.Port) {
+			s.killPort(route.Port)
+			time.Sleep(500 * time.Millisecond)
+		}
 		pid, err := s.procs.Start(route)
 		if err != nil {
 			s.table.Remove(route.Name)
@@ -217,6 +226,9 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	if req.IdleTimeout != nil {
 		route.IdleTimeout = *req.IdleTimeout
 	}
+	if req.Icon != "" {
+		route.Icon = req.Icon
+	}
 	if req.URL != "" {
 		route.ExternalURL = req.URL
 		route.Type = RouteBookmark
@@ -241,6 +253,14 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		http.Error(w, `{"error":"route has no launch command"}`, http.StatusBadRequest)
 		return
 	}
+
+	// If the port is already in use, try to clear the stale process before starting.
+	if route.Port > 0 && s.isPortReady(route.Port) {
+		s.killPort(route.Port)
+		// Give the OS a moment to release the port.
+		time.Sleep(500 * time.Millisecond)
+	}
+
 	pid, err := s.procs.Start(route)
 	if err != nil {
 		route.Running.Store(false)
@@ -289,25 +309,17 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request, name string
 		json.NewEncoder(w).Encode(map[string]any{"ready": false})
 		return
 	}
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", route.Port), 1*time.Second)
-	if err != nil {
-		json.NewEncoder(w).Encode(map[string]any{"ready": false})
-		return
-	}
-	conn.Close()
-	json.NewEncoder(w).Encode(map[string]any{"ready": true})
+	json.NewEncoder(w).Encode(map[string]any{"ready": s.isPortReady(route.Port)})
 }
 
 // waitForReady polls the route's port until it accepts connections, then sets
-// Ready = true. Gives up after 30 seconds. This handles servers that take a
-// moment to bind their port (e.g., REPL-wrapped servers like "iex -S mix
-// phx.server" where the process is Running before the port is Ready).
+// Ready = true. If the process dies or the timeout expires, it marks the route
+// as not running so the dashboard reflects the failure immediately.
 func (s *Server) waitForReady(route *Route) {
 	timeout := s.ReadyTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	addr := fmt.Sprintf("127.0.0.1:%d", route.Port)
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -315,19 +327,137 @@ func (s *Server) waitForReady(route *Route) {
 	for {
 		select {
 		case <-deadline:
+			// Timed out — port never came up. Process may still be alive,
+			// so only mark Ready=false. Running reflects actual process state.
+			if !s.isPortReady(route.Port) {
+				route.Ready.Store(false)
+			}
 			return
 		case <-ticker.C:
+			// Check if the process died (don't wait for the monitor sweep).
+			if route.PID != nil && !processAlive(*route.PID) {
+				route.Running.Store(false)
+				route.Ready.Store(false)
+				route.PID = nil
+				return
+			}
 			if route.PID == nil || !route.Running.Load() {
 				return
 			}
-			conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
-			if err == nil {
-				conn.Close()
+			if s.isPortReady(route.Port) {
 				route.Ready.Store(true)
+				// Try to auto-detect favicon if we haven't already.
+				if route.AutoIcon == "" {
+					go s.fetchFavicon(route)
+				}
 				return
 			}
 		}
 	}
+}
+
+// fetchFavicon tries to grab a favicon from the running app and store it as a
+// data URI so it works even when the app is stopped. It checks /favicon.ico
+// first, then parses the HTML for a <link rel="icon"> tag.
+func (s *Server) fetchFavicon(route *Route) {
+	client := &http.Client{Timeout: 3 * time.Second}
+
+	// Try /favicon.ico first — most frameworks serve one automatically.
+	if dataURI := downloadAsDataURI(client, fmt.Sprintf("http://localhost:%d/favicon.ico", route.Port)); dataURI != "" {
+		route.AutoIcon = dataURI
+		_ = s.saveStickyRoutes()
+		return
+	}
+
+	// Try parsing the homepage for a <link rel="icon"> tag.
+	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/", route.Port))
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	buf := make([]byte, 16*1024)
+	n, _ := resp.Body.Read(buf)
+	page := string(buf[:n])
+
+	href := findFaviconHref(page)
+	if href == "" {
+		return
+	}
+	// Resolve relative URLs.
+	if strings.HasPrefix(href, "//") {
+		href = "http:" + href
+	} else if strings.HasPrefix(href, "/") {
+		href = fmt.Sprintf("http://localhost:%d%s", route.Port, href)
+	} else if !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") && !strings.HasPrefix(href, "data:") {
+		href = fmt.Sprintf("http://localhost:%d/%s", route.Port, href)
+	}
+	if strings.HasPrefix(href, "data:") {
+		route.AutoIcon = href
+		_ = s.saveStickyRoutes()
+		return
+	}
+	if dataURI := downloadAsDataURI(client, href); dataURI != "" {
+		route.AutoIcon = dataURI
+		_ = s.saveStickyRoutes()
+	}
+}
+
+// downloadAsDataURI fetches a URL and returns its content as a data URI.
+// Returns "" if the fetch fails or the response isn't an image.
+// Limits to 256KB to avoid storing huge icons.
+func downloadAsDataURI(client *http.Client, url string) string {
+	resp, err := client.Get(url)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "image/") {
+		return ""
+	}
+	// Strip parameters from content type (e.g. "image/png; charset=utf-8" → "image/png")
+	if idx := strings.Index(ct, ";"); idx != -1 {
+		ct = strings.TrimSpace(ct[:idx])
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("data:%s;base64,%s", ct, base64.StdEncoding.EncodeToString(data))
+}
+
+// findFaviconHref extracts the href from a <link rel="icon"> tag in HTML.
+func findFaviconHref(page string) string {
+	lower := strings.ToLower(page)
+	for _, marker := range []string{`rel="icon"`, `rel="shortcut icon"`, `rel='icon'`, `rel='shortcut icon'`} {
+		idx := strings.Index(lower, marker)
+		if idx == -1 {
+			continue
+		}
+		snippet := page[max(0, idx-200):min(len(page), idx+200)]
+		hrefIdx := strings.Index(strings.ToLower(snippet), `href="`)
+		if hrefIdx == -1 {
+			hrefIdx = strings.Index(strings.ToLower(snippet), `href='`)
+		}
+		if hrefIdx == -1 {
+			continue
+		}
+		quote := snippet[hrefIdx+5]
+		rest := snippet[hrefIdx+6:]
+		end := strings.IndexByte(rest, quote)
+		if end == -1 {
+			continue
+		}
+		return rest[:end]
+	}
+	return ""
 }
 
 func toResponse(r *Route, tld string) routeResponse {
@@ -342,6 +472,7 @@ func toResponse(r *Route, tld string) routeResponse {
 		Ready:        r.Ready.Load(),
 		ExternalURL:  r.ExternalURL,
 		IdleTimeout:  r.IdleTimeout,
+		Icon:         r.Icon,
 	}
 	if r.Type == RouteBookmark {
 		resp.URL = r.ExternalURL
