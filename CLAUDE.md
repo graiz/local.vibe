@@ -27,9 +27,9 @@ The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — ch
 2. **Client** (`internal/client/`) — HTTP wrapper. Tries Unix socket (`~/.vibe/vibe.sock`) first, falls back to TCP (`127.0.0.1:7999`).
 3. **Daemon** (`internal/daemon/`) — HTTP server with embedded HTML dashboard. Core components:
    - `daemon.go` — Server struct, Start/Stop, HTTP routing by Host header
-   - `api.go` — REST endpoints under `/_api/` (register, deregister, update, list, health, start, stop, ready). Route names validated as DNS-safe (lowercase alphanumeric + hyphens). All user input HTML-escaped in dashboard output.
+   - `api.go` — REST endpoints under `/_api/` (register, deregister, update, list, health, start, stop, ready, preferences). Route names validated as DNS-safe (lowercase alphanumeric + hyphens). All user input HTML-escaped in dashboard output.
    - `routes.go` — Thread-safe RouteTable (RWMutex + map), RouteType enum
-   - `process.go` — ProcessManager spawns/kills managed child processes (uses process groups for clean shutdown)
+   - `process.go` — ProcessManager spawns/kills managed child processes (uses process groups for clean shutdown). On immediate crash, tails the route's log file and includes output in the error message.
    - `monitor.go` — Background goroutine sweeps dead PIDs and expired TTLs every 5s
    - `persistence.go` — Saves/loads sticky, managed, and bookmark routes to `~/.vibe/routes.json`
    - `dashboard.go` — Embedded HTML dashboard with modal UI for adding/editing routes
@@ -37,7 +37,7 @@ The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — ch
    - `theme.go` — Shared CSS/HTML head (Geist fonts, Vercel-inspired dark theme)
    - `setup_md.go` — Markdown setup guide served at `/setup.md`
 
-**Config** (`internal/config/`) — Loads `~/.vibe/config.json`, falls back to defaults. Daemon port 7999, TLD "vibe", log level "warn".
+**Config** (`internal/config/`) — Loads `~/.vibe/config.json`, falls back to defaults. Daemon port 7999, TLD "vibe", log level "warn", dashboard view "list".
 
 ## Route types
 
@@ -58,7 +58,10 @@ Five route types with different lifecycle semantics:
 - **PID file safety:** Only written after successful TCP bind (tested in `daemon_test.go`).
 - **Zero-downtime restarts:** `vibe dev` kills daemon → LaunchAgent restarts → persisted routes survive.
 - **Input validation:** Route names must match `[a-z0-9-]`, "local" is reserved. All user-supplied strings HTML-escaped in dashboard output to prevent XSS.
-- **Embedded UI:** All HTML/CSS/JS is inline Go strings — no external assets, no build step. Dashboard includes a modal for CRUD operations on routes.
+- **Port conflict detection:** Before starting a managed process, verifies the port is free. If `killPort` fails to clear it, returns 409 with a clear error. The `/ready` endpoint returns both `ready` and `running` so poll loops detect post-start crashes immediately.
+- **Route icons:** Two fields — `Icon` (user-chosen emoji) and `AutoIcon` (auto-detected favicon as data URI). Display priority: Icon > AutoIcon > deterministic hash-based pool pick. Dashboard modal shows preview + emoji picker, never raw data URIs.
+- **Dashboard view persistence:** List/grid toggle saved server-side via `PUT /_api/preferences` into `config.json`. Rendered server-side on page load — no flash of wrong view.
+- **Embedded UI:** All HTML/CSS/JS is inline Go strings — no external assets, no build step. Dashboard includes a modal for CRUD operations on routes. Toast notifications surface errors from async actions.
 
 ## System setup (macOS)
 
@@ -66,7 +69,7 @@ Five route types with different lifecycle semantics:
 
 ## Files at runtime
 
-- `~/.vibe/config.json` — optional config
+- `~/.vibe/config.json` — optional config (daemon port, TLD, dashboard view preference)
 - `~/.vibe/routes.json` — persisted routes (sticky, managed, bookmark)
 - `~/.vibe/daemon.pid` — daemon PID
 - `~/.vibe/vibe.sock` — Unix socket
