@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 local.vibe — a local DNS daemon that gives dev servers friendly `.vibe` names. CLI binary is `vibe`. Single Go binary, minimal dependencies (only Cobra for CLI, rest is stdlib).
 
+## Workflow
+
+- **Never commit unless the user explicitly asks.** Do not auto-commit after completing a task or bundle commits into other actions.
+- **Always run `vibe dev` after changes** to rebuild and restart the daemon.
+
 ## Build & test
 
 ```bash
