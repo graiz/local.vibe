@@ -31,7 +31,8 @@ type routeResponse struct {
 	RegisteredAt time.Time  `json:"registered_at"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	Type         RouteType  `json:"type"`
-	Healthy      bool       `json:"healthy"`
+	Running      bool       `json:"running"`
+	Ready        bool       `json:"ready"`
 	URL          string     `json:"url"`
 	ExternalURL  string     `json:"external_url,omitempty"`
 	IdleTimeout  int        `json:"idle_timeout,omitempty"`
@@ -125,8 +126,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		PID:          req.PID,
 		ExternalURL:  req.URL,
 		RegisteredAt: time.Now(),
-		Healthy:      true,
 	}
+	route.Running.Store(true)
+	route.Ready.Store(true)
 	if req.IdleTimeout != nil {
 		route.IdleTimeout = *req.IdleTimeout
 	}
@@ -160,11 +162,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		route.PID = &pid
-		route.Healthy = true
+		route.Running.Store(true)
+		route.Ready.Store(false)
+		go s.waitForReady(route)
 	}
 
 	if route.Type == RouteSticky || route.Type == RouteManaged || route.Type == RouteBookmark {
-		_ = saveStickyRoutes(s.table)
+		_ = s.saveStickyRoutes()
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{
@@ -183,7 +187,7 @@ func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name s
 		_ = s.procs.Stop(name)
 	}
 	s.table.Remove(name)
-	_ = saveStickyRoutes(s.table)
+	_ = s.saveStickyRoutes()
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
@@ -223,7 +227,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 		route.Type = RouteSticky
 	}
 	s.table.Add(route)
-	_ = saveStickyRoutes(s.table)
+	_ = s.saveStickyRoutes()
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
@@ -239,12 +243,16 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 	}
 	pid, err := s.procs.Start(route)
 	if err != nil {
-		route.Healthy = false
+		route.Running.Store(false)
+		route.Ready.Store(false)
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
 	}
 	route.PID = &pid
+	route.Running.Store(true)
+	route.Ready.Store(false)
 	route.LastActivity = time.Now()
+	go s.waitForReady(route)
 
 	// If request came from browser form, redirect back to the app.
 	if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" || r.Header.Get("Accept") != "application/json" {
@@ -264,7 +272,8 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 	if err := s.procs.Stop(name); err != nil {
 		s.killPort(route.Port)
 	}
-	route.Healthy = false
+	route.Running.Store(false)
+	route.Ready.Store(false)
 
 	// If request came from browser form, redirect back to dashboard.
 	if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" || r.Header.Get("Accept") != "application/json" {
@@ -289,6 +298,38 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request, name string
 	json.NewEncoder(w).Encode(map[string]any{"ready": true})
 }
 
+// waitForReady polls the route's port until it accepts connections, then sets
+// Ready = true. Gives up after 30 seconds. This handles servers that take a
+// moment to bind their port (e.g., REPL-wrapped servers like "iex -S mix
+// phx.server" where the process is Running before the port is Ready).
+func (s *Server) waitForReady(route *Route) {
+	timeout := s.ReadyTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", route.Port)
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-deadline:
+			return
+		case <-ticker.C:
+			if route.PID == nil || !route.Running.Load() {
+				return
+			}
+			conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				route.Ready.Store(true)
+				return
+			}
+		}
+	}
+}
+
 func toResponse(r *Route, tld string) routeResponse {
 	resp := routeResponse{
 		Name:         r.Name,
@@ -297,7 +338,8 @@ func toResponse(r *Route, tld string) routeResponse {
 		RegisteredAt: r.RegisteredAt,
 		ExpiresAt:    r.ExpiresAt,
 		Type:         r.Type,
-		Healthy:      r.Healthy,
+		Running:      r.Running.Load(),
+		Ready:        r.Ready.Load(),
 		ExternalURL:  r.ExternalURL,
 		IdleTimeout:  r.IdleTimeout,
 	}

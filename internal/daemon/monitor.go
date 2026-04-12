@@ -44,16 +44,18 @@ func (s *Server) sweepRoutes() {
 				toRemove = append(toRemove, r.Name)
 			}
 		case RouteManaged:
-			// Mark managed routes as unhealthy if their process has died.
+			// Mark managed routes as not running/ready if their process has died.
 			if r.PID != nil && !processAlive(*r.PID) {
-				r.Healthy = false
+				r.Running.Store(false)
+				r.Ready.Store(false)
 				r.PID = nil
 			}
 			// Auto-stop idle managed routes.
 			if r.IdleTimeout > 0 && r.PID != nil && !r.LastActivity.IsZero() {
 				if now.Sub(r.LastActivity) > time.Duration(r.IdleTimeout)*time.Minute {
 					_ = s.procs.Stop(r.Name)
-					r.Healthy = false
+					r.Running.Store(false)
+					r.Ready.Store(false)
 					r.PID = nil
 				}
 			}

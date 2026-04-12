@@ -92,7 +92,8 @@ type RouteInfo struct {
 	RegisteredAt time.Time  `json:"registered_at"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	Type         string     `json:"type"`
-	Healthy      bool       `json:"healthy"`
+	Running      bool       `json:"running"`
+	Ready        bool       `json:"ready"`
 	URL          string     `json:"url"`
 }
 

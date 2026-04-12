@@ -205,7 +205,7 @@ func installPFLaunchDaemon() error {
 	<array>
 		<string>/bin/sh</string>
 		<string>-c</string>
-		<string>printf 'pass all\nrdr pass on lo0 proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 7999\n' | /sbin/pfctl -ef -</string>
+		<string>printf 'rdr pass on lo0 proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 7999\npass all\n' | /sbin/pfctl -ef -</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

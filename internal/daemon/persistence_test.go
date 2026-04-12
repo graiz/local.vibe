@@ -7,7 +7,6 @@ import (
 
 func TestPersistenceRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
 
 	// Create a table with various route types
 	table := NewRouteTable()
@@ -40,13 +39,13 @@ func TestPersistenceRoundTrip(t *testing.T) {
 		RegisteredAt: time.Now(),
 	})
 
-	if err := saveStickyRoutes(table); err != nil {
+	if err := saveStickyRoutes(table, dir); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
 	// Load into a fresh table
 	loaded := NewRouteTable()
-	if err := loadStickyRoutes(loaded); err != nil {
+	if err := loadStickyRoutes(loaded, dir); err != nil {
 		t.Fatalf("load: %v", err)
 	}
 

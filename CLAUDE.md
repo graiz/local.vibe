@@ -12,6 +12,7 @@ local.vibe — a local DNS daemon that gives dev servers friendly `.vibe` names.
 vibe dev              # rebuild binary + restart daemon (do this after every change)
 go build -o vibe .    # just build
 go test ./...         # run tests
+go vet ./...          # lint (also runs in CI)
 ```
 
 The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — changes aren't picked up until rebuilt. `vibe dev` handles the full cycle: build → install → kill old daemon → LaunchAgent auto-restarts with new binary.
@@ -33,6 +34,7 @@ The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — ch
    - `persistence.go` — Saves/loads sticky, managed, and bookmark routes to `~/.vibe/routes.json`
    - `dashboard.go` — Embedded HTML dashboard with modal UI for adding/editing routes
    - `startpage.go` — "Not running" page for stopped managed routes with Start button
+   - `theme.go` — Shared CSS/HTML head (Geist fonts, Vercel-inspired dark theme)
    - `setup_md.go` — Markdown setup guide served at `/setup.md`
 
 **Config** (`internal/config/`) — Loads `~/.vibe/config.json`, falls back to defaults. Daemon port 7999, TLD "vibe", log level "warn".
@@ -48,6 +50,7 @@ Five route types with different lifecycle semantics:
 
 ## Key patterns
 
+- **Route status:** Two separate fields — `Running` (process is alive) and `Ready` (port is accepting TCP connections). Managed routes start `Running=true, Ready=false`; a background goroutine polls the port every 500ms for up to 30s and flips `Ready=true` once the port responds. This handles REPL-wrapped servers where the process is alive before the HTTP server binds.
 - **Dual communication:** Unix socket (preferred) with TCP fallback. Same HTTP mux serves both.
 - **Thread safety:** RouteTable uses RWMutex, ProcessManager uses Mutex.
 - **Process groups:** Managed processes use `Setpgid: true` and SIGTERM to `-pgid` to kill entire process trees.

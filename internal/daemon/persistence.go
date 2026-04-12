@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/localvibe/vibe/internal/config"
 )
 
 type stickyStore struct {
@@ -26,8 +24,8 @@ type stickyEntry struct {
 
 // loadStickyRoutes restores persisted routes (sticky, managed, bookmark)
 // from ~/.vibe/routes.json on daemon startup.
-func loadStickyRoutes(table *RouteTable) error {
-	path := filepath.Join(config.Dir(), "routes.json")
+func loadStickyRoutes(table *RouteTable, dir string) error {
+	path := filepath.Join(dir, "routes.json")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
@@ -44,7 +42,7 @@ func loadStickyRoutes(table *RouteTable) error {
 		if entry.Type != "" {
 			rt = entry.Type
 		}
-		table.Add(&Route{
+		r := &Route{
 			Name:         strings.ToLower(name),
 			Port:         entry.Port,
 			Cmd:          entry.Cmd,
@@ -52,16 +50,19 @@ func loadStickyRoutes(table *RouteTable) error {
 			ExternalURL:  entry.ExternalURL,
 			RegisteredAt: entry.RegisteredAt,
 			Type:         rt,
-			Healthy:      rt != RouteManaged, // managed routes start unhealthy until launched
 			IdleTimeout:  entry.IdleTimeout,
-		})
+		}
+		// Managed routes start not running until launched; others are assumed ready.
+		r.Running.Store(rt != RouteManaged)
+		r.Ready.Store(rt != RouteManaged)
+		table.Add(r)
 	}
 	return nil
 }
 
 // saveStickyRoutes writes all persistent routes (sticky, managed, bookmark)
 // to ~/.vibe/routes.json. Called after any route change.
-func saveStickyRoutes(table *RouteTable) error {
+func saveStickyRoutes(table *RouteTable, dir string) error {
 	store := stickyStore{StickyRoutes: make(map[string]stickyEntry)}
 	for _, r := range table.List() {
 		if r.Type == RouteSticky || r.Type == RouteManaged || r.Type == RouteBookmark {
@@ -80,8 +81,8 @@ func saveStickyRoutes(table *RouteTable) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(config.Dir(), 0755); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(config.Dir(), "routes.json"), data, 0644)
+	return os.WriteFile(filepath.Join(dir, "routes.json"), data, 0644)
 }

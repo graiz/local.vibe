@@ -41,12 +41,20 @@ var devCmd = &cobra.Command{
 		}
 
 		fmt.Printf("building from %s...\n", srcDir)
-		build := exec.Command("go", "build", "-o", binary, ".")
+		// Build to a temp file first, then move into place. Building directly
+		// to the running binary path can SIGKILL the current process on macOS.
+		tmpBin := binary + ".tmp"
+		build := exec.Command("go", "build", "-o", tmpBin, ".")
 		build.Dir = srcDir
 		build.Stdout = os.Stdout
 		build.Stderr = os.Stderr
 		if err := build.Run(); err != nil {
+			os.Remove(tmpBin)
 			return fmt.Errorf("build failed: %w", err)
+		}
+		if err := os.Rename(tmpBin, binary); err != nil {
+			os.Remove(tmpBin)
+			return fmt.Errorf("install failed: %w", err)
 		}
 		fmt.Println("build ok")
 

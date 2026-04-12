@@ -7,7 +7,7 @@ import (
 	"github.com/localvibe/vibe/internal/config"
 )
 
-func TestSweepMarksDeadManagedUnhealthy(t *testing.T) {
+func TestSweepMarksDeadManagedNotRunning(t *testing.T) {
 	cfg := &config.Config{
 		Daemon: config.DaemonConfig{TLD: "test"},
 	}
@@ -15,19 +15,21 @@ func TestSweepMarksDeadManagedUnhealthy(t *testing.T) {
 
 	// Add a managed route with a fake PID that doesn't exist
 	fakePID := 999999
-	s.table.Add(&Route{
-		Name:    "dead",
-		Port:    3000,
-		Type:    RouteManaged,
-		PID:     &fakePID,
-		Healthy: true,
-	})
+	r := &Route{
+		Name: "dead",
+		Port: 3000,
+		Type: RouteManaged,
+		PID:  &fakePID,
+	}
+	r.Running.Store(true)
+	r.Ready.Store(true)
+	s.table.Add(r)
 
 	s.sweepRoutes()
 
-	r, _ := s.table.Get("dead")
-	if r.Healthy {
-		t.Error("expected Healthy=false after sweep for dead PID")
+	r, _ = s.table.Get("dead")
+	if r.Running.Load() {
+		t.Error("expected Running=false after sweep for dead PID")
 	}
 	if r.PID != nil {
 		t.Error("expected PID=nil after sweep for dead PID")
@@ -35,6 +37,7 @@ func TestSweepMarksDeadManagedUnhealthy(t *testing.T) {
 }
 
 func TestSweepIdleTimeout(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		Daemon: config.DaemonConfig{TLD: "test"},
 	}
@@ -55,7 +58,8 @@ func TestSweepIdleTimeout(t *testing.T) {
 		t.Fatalf("Start() error: %v", err)
 	}
 	route.PID = &pid
-	route.Healthy = true
+	route.Running.Store(true)
+	route.Ready.Store(true)
 	// Set last activity to 2 minutes ago (past the 1-minute timeout)
 	route.LastActivity = time.Now().Add(-2 * time.Minute)
 	s.table.Add(route)
@@ -63,8 +67,8 @@ func TestSweepIdleTimeout(t *testing.T) {
 	s.sweepRoutes()
 
 	r, _ := s.table.Get("idle-test")
-	if r.Healthy {
-		t.Error("expected Healthy=false after idle timeout sweep")
+	if r.Running.Load() {
+		t.Error("expected Running=false after idle timeout sweep")
 	}
 	if r.PID != nil {
 		t.Error("expected PID=nil after idle timeout sweep")
@@ -92,7 +96,7 @@ func TestSweepRemovesPIDTracked(t *testing.T) {
 	}
 }
 
-func TestSweepKeepsHealthyManaged(t *testing.T) {
+func TestSweepKeepsStoppedManaged(t *testing.T) {
 	cfg := &config.Config{
 		Daemon: config.DaemonConfig{TLD: "test"},
 	}
@@ -100,10 +104,9 @@ func TestSweepKeepsHealthyManaged(t *testing.T) {
 
 	// Managed route with no PID (stopped) should not be touched
 	s.table.Add(&Route{
-		Name:    "stopped",
-		Port:    3000,
-		Type:    RouteManaged,
-		Healthy: false,
+		Name: "stopped",
+		Port: 3000,
+		Type: RouteManaged,
 	})
 
 	s.sweepRoutes()

@@ -3,9 +3,13 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
+	"os"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/localvibe/vibe/internal/config"
 )
@@ -17,7 +21,10 @@ func testServer() *Server {
 			TLD:  "test",
 		},
 	}
-	return NewServer(cfg)
+	s := NewServer(cfg)
+	// Use a temp dir so tests never clobber the real ~/.vibe/routes.json.
+	s.ConfigDir = os.TempDir()
+	return s
 }
 
 func TestAPIRegisterAndList(t *testing.T) {
@@ -193,4 +200,166 @@ func TestAPIBookmarkRoute(t *testing.T) {
 	if r.ExternalURL != "https://example.com" {
 		t.Errorf("external_url = %s; want https://example.com", r.ExternalURL)
 	}
+}
+
+// TestManagedRouteReadyWaitsForPort verifies that a managed route starts with
+// Running=true but Ready=false, and only flips Ready=true once its port is
+// actually accepting connections. This covers REPL-wrapped servers (e.g.
+// iex -S mix phx.server) where the process is Running before the port is Ready.
+func TestManagedRouteReadyWaitsForPort(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	// Pick a free port by briefly listening, then closing.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Register a managed route whose command sleeps 3s before starting a listener.
+	// This simulates a REPL wrapper that's alive before the server is ready.
+	cmd := fmt.Sprintf("sleep 3 && nc -l %d", port)
+	body, _ := json.Marshal(map[string]any{
+		"name": "delayed",
+		"port": port,
+		"cmd":  cmd,
+		"dir":  t.TempDir(),
+	})
+	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("register status = %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Immediately after registration, Running should be true but Ready should be false.
+	route, ok := s.table.Get("delayed")
+	if !ok {
+		t.Fatal("route not found")
+	}
+	if !route.Running.Load() {
+		t.Error("expected Running=true immediately after start")
+	}
+	if route.Ready.Load() {
+		t.Error("expected Ready=false immediately after start (port not yet listening)")
+	}
+
+	// Wait for the server to come up (sleep 3s + some buffer).
+	deadline := time.After(6 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	ready := false
+	for !ready {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for Ready to become true")
+		case <-ticker.C:
+			ready = route.Ready.Load()
+		}
+	}
+
+	// Clean up.
+	s.procs.Stop("delayed")
+}
+
+// TestManagedRouteReadyImmediatePort verifies that when the server binds its
+// port quickly (normal case), Ready becomes true within the polling window.
+func TestManagedRouteReadyImmediatePort(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Start a listener immediately via nc.
+	cmd := fmt.Sprintf("nc -l %d", port)
+	body, _ := json.Marshal(map[string]any{
+		"name": "quick",
+		"port": port,
+		"cmd":  cmd,
+		"dir":  t.TempDir(),
+	})
+	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("register status = %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Should become ready within 2 seconds.
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for Ready=true")
+		case <-ticker.C:
+			route, _ := s.table.Get("quick")
+			if route.Ready.Load() {
+				s.procs.Stop("quick")
+				return
+			}
+		}
+	}
+}
+
+// TestManagedRouteNeverBindsPort verifies that when a process stays alive but
+// never binds its port, Ready remains false after the timeout expires. Uses a
+// short ReadyTimeout so the test completes quickly.
+func TestManagedRouteNeverBindsPort(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	s.ReadyTimeout = 2 * time.Second
+
+	// Pick a port that nothing will bind.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// "sleep 60" stays alive but never listens on the port.
+	body, _ := json.Marshal(map[string]any{
+		"name": "hangs",
+		"port": port,
+		"cmd":  "sleep 60",
+		"dir":  t.TempDir(),
+	})
+	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("register status = %d; body: %s", w.Code, w.Body.String())
+	}
+
+	route, _ := s.table.Get("hangs")
+	if !route.Running.Load() {
+		t.Error("expected Running=true")
+	}
+	if route.Ready.Load() {
+		t.Error("expected Ready=false immediately after start")
+	}
+
+	// Wait for the ReadyTimeout to expire plus a small buffer.
+	time.Sleep(3 * time.Second)
+
+	if route.Ready.Load() {
+		t.Error("expected Ready=false after timeout (process never bound port)")
+	}
+	if !route.Running.Load() {
+		t.Error("expected Running=true (process is still alive)")
+	}
+
+	s.procs.Stop("hangs")
 }

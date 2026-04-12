@@ -19,12 +19,14 @@ import (
 // Server is the vibe daemon. It listens on a TCP port and a Unix socket,
 // routing HTTP requests to registered local services by subdomain.
 type Server struct {
-	cfg       *config.Config
-	table     *RouteTable
-	procs     *ProcessManager
-	startedAt time.Time
-	quit      chan struct{}
-	httpSrv   *http.Server
+	cfg          *config.Config
+	table        *RouteTable
+	procs        *ProcessManager
+	startedAt    time.Time
+	quit         chan struct{}
+	httpSrv      *http.Server
+	ReadyTimeout time.Duration // max time to wait for port to accept connections; 0 = 30s default
+	ConfigDir    string        // override config dir for persistence; empty = default (~/.vibe)
 }
 
 // NewServer creates a daemon server with the given configuration.
@@ -44,7 +46,7 @@ func (s *Server) Start() error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	if err := loadStickyRoutes(s.table); err != nil {
+	if err := loadStickyRoutes(s.table, s.configDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load persisted routes: %v\n", err)
 	}
 
@@ -135,7 +137,7 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 			}
 			// For managed routes, check if the port is actually accepting connections.
 			if route.Type == RouteManaged && !s.isPortReady(route.Port) {
-				route.Healthy = false
+				route.Ready.Store(false)
 				s.serveStartPage(w, r, route)
 				return
 			}
@@ -164,6 +166,17 @@ func (s *Server) killPort(port int) {
 			}
 		}
 	}
+}
+
+func (s *Server) configDir() string {
+	if s.ConfigDir != "" {
+		return s.ConfigDir
+	}
+	return config.Dir()
+}
+
+func (s *Server) saveStickyRoutes() error {
+	return saveStickyRoutes(s.table, s.configDir())
 }
 
 func (s *Server) isPortReady(port int) bool {

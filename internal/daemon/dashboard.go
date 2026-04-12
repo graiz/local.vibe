@@ -188,13 +188,13 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 
 	// Self row
 	fmt.Fprintf(&b, `<tr>
-  <td class="col-name"><div class="name-cell"><span class="dot dot-green"></span><div><span class="name-primary">local</span><span class="name-secondary">local.%s</span></div></div></td>
+  <td class="col-name"><div class="name-cell"><span class="dot dot-green"></span><div><a href="http://local.%s/" class="name-primary">local</a><a href="http://local.%s/" class="name-secondary">local.%s</a></div></div></td>
   <td class="col-type">daemon</td>
   <td class="col-port">%d</td>
   <td class="col-age">%s</td>
   <td class="col-status"></td>
   <td class="col-edit"></td>
-</tr>`, tld, port, fmtDuration(uptime))
+</tr>`, tld, tld, tld, port, fmtDuration(uptime))
 
 	if len(routes) == 0 {
 		b.WriteString(`</tbody></table>`)
@@ -204,12 +204,14 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 			safeName := html.EscapeString(r.Name)
 			vibeURL := fmt.Sprintf("http://%s.%s", safeName, tld)
 
-			// Status dot
+			// Status dot: green=ready, yellow=starting, red=stopped
 			dotClass := "dot-gray"
 			switch r.Type {
 			case RouteManaged:
 				if s.isPortReady(r.Port) {
 					dotClass = "dot-green"
+				} else if r.Running.Load() {
+					dotClass = "dot-yellow" // process alive, port not yet listening
 				} else {
 					dotClass = "dot-red"
 				}
@@ -450,7 +452,7 @@ function pollStopped(name,n){
     .catch(function(){location.reload()});
 }
 function pollReady(name,n){
-  if(n>30){location.reload();return}
+  if(n>60){location.reload();return}
   fetch('/_api/routes/'+encodeURIComponent(name)+'/ready')
     .then(function(r){return r.json()})
     .then(function(d){

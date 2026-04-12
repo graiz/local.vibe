@@ -3,6 +3,7 @@ package daemon
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,7 +31,8 @@ type Route struct {
 	RegisteredAt time.Time  `json:"registered_at"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	Type         RouteType  `json:"type"`
-	Healthy      bool       `json:"healthy"`
+	Running      atomic.Bool `json:"-"`
+	Ready        atomic.Bool `json:"-"`
 	IdleTimeout  int        `json:"idle_timeout,omitempty"`  // minutes; 0 = never auto-stop
 	LastActivity time.Time  `json:"-"`                       // runtime only, not serialized
 }

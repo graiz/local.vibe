@@ -26,15 +26,21 @@ var listCmd = &cobra.Command{
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tURL\tPORT\tTYPE\tPID\tSINCE")
+		fmt.Fprintln(w, "NAME\tURL\tPORT\tTYPE\tSTATUS\tPID\tSINCE")
 		for _, r := range routes {
 			pid := "—"
 			if r.PID != nil {
 				pid = fmt.Sprintf("%d", *r.PID)
 			}
+			status := "ready"
+			if r.Running && !r.Ready {
+				status = "starting"
+			} else if !r.Running && r.Type == "managed" {
+				status = "stopped"
+			}
 			since := time.Since(r.RegisteredAt).Round(time.Second)
-			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s ago\n",
-				r.Name, r.URL, r.Port, r.Type, pid, since)
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\t%s ago\n",
+				r.Name, r.URL, r.Port, r.Type, status, pid, since)
 		}
 		return w.Flush()
 	},

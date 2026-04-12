@@ -6,6 +6,7 @@ import (
 )
 
 func TestProcessStartEarlyCrashDetection(t *testing.T) {
+	t.Parallel()
 	pm := NewProcessManager()
 
 	route := &Route{
@@ -24,6 +25,7 @@ func TestProcessStartEarlyCrashDetection(t *testing.T) {
 }
 
 func TestProcessStartNoCommand(t *testing.T) {
+	t.Parallel()
 	pm := NewProcessManager()
 
 	route := &Route{Name: "empty", Dir: t.TempDir()}
@@ -37,6 +39,7 @@ func TestProcessStartNoCommand(t *testing.T) {
 }
 
 func TestProcessStartAndStop(t *testing.T) {
+	t.Parallel()
 	pm := NewProcessManager()
 
 	route := &Route{
@@ -65,6 +68,7 @@ func TestProcessStartAndStop(t *testing.T) {
 }
 
 func TestProcessStartAlreadyRunning(t *testing.T) {
+	t.Parallel()
 	pm := NewProcessManager()
 
 	route := &Route{
