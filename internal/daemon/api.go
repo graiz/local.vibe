@@ -75,6 +75,8 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(path, "/routes/")
 		name = strings.TrimSuffix(name, "/start")
 		s.handleStart(w, r, name)
+	case r.Method == http.MethodPut && path == "/preferences":
+		s.handleSetPreferences(w, r)
 	default:
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 	}
@@ -163,6 +165,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		if route.Port > 0 && s.isPortReady(route.Port) {
 			s.killPort(route.Port)
 			time.Sleep(500 * time.Millisecond)
+			// Verify the port was actually freed.
+			if s.isPortReady(route.Port) {
+				s.table.Remove(route.Name)
+				http.Error(w, fmt.Sprintf(`{"error":"port %d is already in use by another process"}`, route.Port), http.StatusConflict)
+				return
+			}
 		}
 		pid, err := s.procs.Start(route)
 		if err != nil {
@@ -259,6 +267,11 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		s.killPort(route.Port)
 		// Give the OS a moment to release the port.
 		time.Sleep(500 * time.Millisecond)
+		// Verify the port was actually freed.
+		if s.isPortReady(route.Port) {
+			http.Error(w, fmt.Sprintf(`{"error":"port %d is already in use by another process"}`, route.Port), http.StatusConflict)
+			return
+		}
 	}
 
 	pid, err := s.procs.Start(route)
@@ -306,10 +319,28 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
-		json.NewEncoder(w).Encode(map[string]any{"ready": false})
+		json.NewEncoder(w).Encode(map[string]any{"ready": false, "running": false})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{"ready": s.isPortReady(route.Port)})
+	json.NewEncoder(w).Encode(map[string]any{
+		"ready":   s.isPortReady(route.Port),
+		"running": route.Running.Load(),
+	})
+}
+
+func (s *Server) handleSetPreferences(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		View string `json:"view"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if req.View == "list" || req.View == "grid" {
+		s.cfg.Dashboard.View = req.View
+		s.saveConfig()
+	}
+	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
 // waitForReady polls the route's port until it accepts connections, then sets

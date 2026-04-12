@@ -25,6 +25,7 @@ type DaemonConfig struct {
 type DashboardConfig struct {
 	Enabled bool   `json:"enabled"`
 	Theme   string `json:"theme"`
+	View    string `json:"view"` // "list" or "grid"
 }
 
 type LoggingConfig struct {
@@ -47,6 +48,7 @@ func DefaultConfig() *Config {
 		Dashboard: DashboardConfig{
 			Enabled: true,
 			Theme:   "dark",
+			View:    "list",
 		},
 		Logging: LoggingConfig{
 			Level:     "warn",

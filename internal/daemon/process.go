@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -85,8 +86,15 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		pm.mu.Lock()
 		delete(pm.procs, route.Name)
 		pm.mu.Unlock()
+		hint := tailLogFile(logPath, 5)
 		if err != nil {
+			if hint != "" {
+				return 0, fmt.Errorf("process exited immediately: %w\n%s", err, hint)
+			}
 			return 0, fmt.Errorf("process exited immediately: %w", err)
+		}
+		if hint != "" {
+			return 0, fmt.Errorf("process exited immediately with status 0\n%s", hint)
 		}
 		return 0, fmt.Errorf("process exited immediately with status 0")
 	case <-time.After(1 * time.Second):
@@ -94,6 +102,33 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	}
 
 	return pid, nil
+}
+
+// tailLogFile reads the last n non-empty lines from a log file to provide
+// context when a managed process crashes on startup.
+func tailLogFile(path string, n int) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	// Filter out empty lines and ANSI-heavy shell banner noise.
+	var meaningful []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			continue
+		}
+		meaningful = append(meaningful, trimmed)
+	}
+	if len(meaningful) == 0 {
+		return ""
+	}
+	start := len(meaningful) - n
+	if start < 0 {
+		start = 0
+	}
+	return strings.Join(meaningful[start:], "\n")
 }
 
 // Stop sends SIGTERM to the managed process for the given route name.

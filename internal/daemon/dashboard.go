@@ -31,6 +31,15 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	viewMode := s.cfg.Dashboard.View
+	if viewMode == "" {
+		viewMode = "list"
+	}
+	listBtnClass, gridBtnClass := "active", ""
+	if viewMode == "grid" {
+		listBtnClass, gridBtnClass = "", "active"
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, `<!DOCTYPE html>
 <html lang="en">
@@ -225,15 +234,15 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
     <span class="toolbar-count">%d active</span>
   </div>
   <div class="view-toggle">
-    <button id="btn-list" class="active" onclick="setView('list')" title="List view">
+    <button id="btn-list" class="%s" onclick="setView('list',true)" title="List view">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="1" y1="3" x2="15" y2="3"/><line x1="1" y1="8" x2="15" y2="8"/><line x1="1" y1="13" x2="15" y2="13"/></svg>
     </button>
-    <button id="btn-grid" onclick="setView('grid')" title="Grid view">
+    <button id="btn-grid" class="%s" onclick="setView('grid',true)" title="Grid view">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="5.5" height="5.5" rx="1"/><rect x="9.5" y="1" width="5.5" height="5.5" rx="1"/><rect x="1" y="9.5" width="5.5" height="5.5" rx="1"/><rect x="9.5" y="9.5" width="5.5" height="5.5" rx="1"/></svg>
     </button>
   </div>
 </div>
-`, len(routes)+1)
+`, len(routes)+1, listBtnClass, gridBtnClass)
 
 	// Pool of visually distinct icons assigned by name hash so each route
 	// gets a consistent, unique-looking icon out of the box.
@@ -243,8 +252,13 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── LIST VIEW ──
-	b.WriteString(`<div class="list-view" id="list-view">
-<table class="route-table">
+	listDisplay := "block"
+	if viewMode == "grid" {
+		listDisplay = "none"
+	}
+	fmt.Fprintf(&b, `<div class="list-view" id="list-view" style="display:%s">
+<table class="route-table">`, listDisplay)
+	b.WriteString(`
 <thead><tr>
   <th style="width:38%%">Name</th>
   <th>Type</th>
@@ -352,7 +366,11 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── GRID VIEW ──
-	b.WriteString(`<div class="grid-view" id="grid-view"><div class="grid-container">`)
+	gridDisplay := "none"
+	if viewMode == "grid" {
+		gridDisplay = "block"
+	}
+	fmt.Fprintf(&b, `<div class="grid-view" id="grid-view" style="display:%s"><div class="grid-container">`, gridDisplay)
 
 	// Self tile
 	fmt.Fprintf(&b, `<a href="http://local.%s/" class="grid-tile">
@@ -388,20 +406,11 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 			tileClass = "grid-tile tile-stopped"
 		}
 
-		// Hover action
-		hoverAction := ""
-		if r.Type == RouteManaged && s.isPortReady(r.Port) {
-			hoverAction = fmt.Sprintf(`<div class="tile-hover-action"><button class="btn" onclick="event.preventDefault();routeAction(this,'%s','stop')">Stop</button></div>`, safeName)
-		} else if r.Type == RouteManaged {
-			hoverAction = fmt.Sprintf(`<div class="tile-hover-action"><button class="btn btn-primary" onclick="event.preventDefault();routeAction(this,'%s','start')">Start</button></div>`, safeName)
-		}
-
 		fmt.Fprintf(&b, `<a href="%s" target="_blank" class="%s">
   <div class="tile-icon">%s</div>
   <div class="tile-name">%s</div>
   <div class="tile-url">%s</div>
-  %s
-</a>`, vibeURL, tileClass, iconHTML(icon), safeName, urlDisplay, hoverAction)
+</a>`, vibeURL, tileClass, iconHTML(icon), safeName, urlDisplay)
 	}
 
 	b.WriteString(`</div></div>`)
@@ -442,7 +451,7 @@ Or open in a browser: http://local.%[1]s/setup.md</textarea>
   </div>
   <div id="url-field" style="display:none;margin-bottom:16px">
     <label for="route-url">URL</label>
-    <input id="route-url" type="url" placeholder="https://example.com:8080/">
+    <input id="route-url" type="text" placeholder="example.com:8080">
   </div>
   <div style="margin-bottom:16px">
     <label>Icon</label>
@@ -486,14 +495,13 @@ Or open in a browser: http://local.%[1]s/setup.md</textarea>
 </div>
 <script>
 // View toggle
-function setView(mode){
+function setView(mode,save){
   var l=document.getElementById('list-view'),g=document.getElementById('grid-view');
   var bl=document.getElementById('btn-list'),bg=document.getElementById('btn-grid');
   if(mode==='grid'){l.style.display='none';g.style.display='block';bl.classList.remove('active');bg.classList.add('active')}
   else{l.style.display='block';g.style.display='none';bl.classList.add('active');bg.classList.remove('active')}
-  try{localStorage.setItem('vibe-view',mode)}catch(e){}
+  if(save)fetch('/_api/preferences',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({view:mode})});
 }
-try{if(localStorage.getItem('vibe-view')==='grid')setView('grid')}catch(e){}
 
 var modalMode='add';
 var editingName='';
@@ -549,6 +557,7 @@ function saveRoute(){
   if(isBookmark){
     var u=document.getElementById('route-url').value.trim();
     if(!u)return;
+    if(u.indexOf('://')===-1)u='http://'+u;
     body.url=u;
   }else{
     var p=parseInt(document.getElementById('route-port').value);
@@ -648,12 +657,18 @@ function routeAction(btn,name,action){
   btn.disabled=true;
   btn.innerHTML='<span class="spinner"></span>';
   fetch('/_api/routes/'+encodeURIComponent(name)+'/'+action,{method:'POST',headers:{'Accept':'application/json'}})
-    .then(function(r){return r.json()})
+    .then(function(r){
+      if(!r.ok)return r.json().then(function(d){throw new Error(d.error||'Request failed')});
+      return r.json();
+    })
     .then(function(){
       if(action==='start'){pollReady(name,0)}
       else{pollStopped(name,0)}
     })
-    .catch(function(){btn.disabled=false;btn.textContent=origText});
+    .catch(function(e){
+      btn.disabled=false;btn.textContent=origText;
+      showToast(e.message||'Action failed');
+    });
 }
 function pollStopped(name,n){
   if(n>20){location.reload();return}
@@ -671,9 +686,16 @@ function pollReady(name,n){
     .then(function(r){return r.json()})
     .then(function(d){
       if(d.ready){location.reload()}
+      else if(d.running===false){showToast(name+' crashed during startup');location.reload()}
       else{setTimeout(function(){pollReady(name,n+1)},500)}
     })
     .catch(function(){setTimeout(function(){pollReady(name,n+1)},500)});
+}
+function showToast(msg){
+  var el=document.createElement('div');el.className='toast';el.textContent=msg;
+  document.body.appendChild(el);
+  setTimeout(function(){el.classList.add('show')},10);
+  setTimeout(function(){el.classList.remove('show');setTimeout(function(){el.remove()},300)},4000);
 }
 document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeModal();closeManagedModal()}});
 document.addEventListener('visibilitychange',function(){if(!document.hidden){location.reload()}});

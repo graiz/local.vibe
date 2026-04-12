@@ -96,6 +96,54 @@ module.exports = {
 }
 `+"`"+`
 
+## Command Best Practices
+
+The `+"`"+`cmd`+"`"+` field runs inside a login shell (`+"`"+`$SHELL -lic`+"`"+`), so your PATH is
+available — but some common pitfalls can cause startup failures:
+
+### Use explicit binary names
+
+| Instead of | Use | Why |
+|-----------|-----|-----|
+| `+"`"+`python app.py`+"`"+` | `+"`"+`python3 app.py`+"`"+` | `+"`"+`python`+"`"+` doesn't exist on macOS by default |
+| `+"`"+`pip install && ...`+"`"+` | `+"`"+`pip3 install && ...`+"`"+` | Same issue |
+| `+"`"+`node server.js`+"`"+` | `+"`"+`node server.js`+"`"+` | Usually fine if nvm is in .zshrc |
+
+### Python: use a virtualenv
+
+Activate the venv in your command so the right Python and packages are used:
+
+`+"`"+`json
+{"name": "myapp", "port": 5000, "cmd": "source .venv/bin/activate && python app.py"}
+`+"`"+`
+
+Or use the venv's Python directly:
+
+`+"`"+`json
+{"name": "myapp", "port": 5000, "cmd": ".venv/bin/python app.py"}
+`+"`"+`
+
+### Node.js: nvm / fnm
+
+If you use nvm or fnm, they're loaded via .zshrc which vibe sources
+automatically. `+"`"+`npm run dev`+"`"+` and `+"`"+`node server.js`+"`"+` should just work.
+
+### Avoid debug/reload modes that fork
+
+Some frameworks (Flask, Django) fork a child process in debug mode.
+This can cause port conflicts and unexpected crashes. For vibe-managed
+processes, consider disabling the reloader:
+
+`+"`"+`json
+{"name": "myapi", "port": 5000, "cmd": "flask run --no-reload --port 5000"}
+`+"`"+`
+
+Or for raw Flask apps:
+
+`+"`"+`python
+app.run(debug=False, host='0.0.0.0', port=5000)
+`+"`"+`
+
 ## Static Port Mapping
 
 For services you manage yourself (no process management needed):

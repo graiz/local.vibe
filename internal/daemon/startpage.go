@@ -81,9 +81,12 @@ function startApp(){
       pollUntilReady(0);
     }else{
       btn.disabled=false;
-      btn.textContent='Start';
+      btn.textContent='Retry';
       spinner.style.display='none';
-      msg.textContent='Failed to start';
+      var errMsg='Failed to start';
+      try{var d=JSON.parse(xhr.responseText);if(d.error)errMsg=d.error;}catch(e){}
+      msg.style.whiteSpace='pre-wrap';msg.style.textAlign='left';msg.style.fontSize='.75rem';
+      msg.textContent=errMsg;
       msg.style.color='var(--red)';
     }
   };
@@ -116,6 +119,14 @@ function pollUntilReady(attempts){
         document.getElementById('msg').textContent='Ready';
         document.getElementById('msg').style.color='var(--green)';
         setTimeout(function(){window.location.href=window.location.href;},300);
+        return;
+      }
+      if(d.running===false){
+        document.getElementById('msg').textContent='Process crashed \u2014 check logs at ~/.vibe/%[3]s.log';
+        document.getElementById('msg').style.color='var(--red)';
+        document.getElementById('btn').disabled=false;
+        document.getElementById('btn').textContent='Retry';
+        document.getElementById('spinner').style.display='none';
         return;
       }
     }catch(e){}

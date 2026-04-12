@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 
@@ -362,4 +364,84 @@ func TestManagedRouteNeverBindsPort(t *testing.T) {
 	}
 
 	s.procs.Stop("hangs")
+}
+
+// TestStartManagedRoutePortOccupied verifies that starting a managed route
+// returns an error when the target port is already occupied by another process
+// that the daemon cannot kill. Uses a subprocess to hold the port so that
+// killPort's SIGTERM hits the child rather than the test process itself.
+func TestStartManagedRoutePortOccupied(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+	s.ReadyTimeout = 2 * time.Second
+
+	// Pick a free port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Spawn a subprocess that binds the port and ignores SIGTERM so killPort can't free it.
+	// Python's BaseHTTPServer is available on macOS and will bind the port.
+	holder := exec.Command("python3", "-c", fmt.Sprintf(
+		`import signal, http.server, socketserver
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandler) as s:
+    s.serve_forever()`, port))
+	holder.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := holder.Start(); err != nil {
+		t.Fatalf("start port holder: %v", err)
+	}
+	t.Cleanup(func() {
+		// Force-kill the holder since it ignores SIGTERM.
+		syscall.Kill(-holder.Process.Pid, syscall.SIGKILL)
+		holder.Wait()
+	})
+
+	// Wait for the holder to bind the port.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !s.isPortReady(port) {
+		t.Fatalf("port holder never bound port %d", port)
+	}
+
+	// Register a managed route on the occupied port.
+	body, _ := json.Marshal(map[string]any{
+		"name": "blocked",
+		"port": port,
+		"cmd":  "sleep 60",
+		"dir":  t.TempDir(),
+	})
+	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+
+	// The daemon should detect the port is still occupied after the kill attempt
+	// and return an error instead of silently starting a doomed process.
+	if w.Code == http.StatusOK {
+		route, _ := s.table.Get("blocked")
+		if route != nil {
+			s.procs.Stop("blocked")
+		}
+		t.Fatalf("expected error when port %d is occupied, but got 200 OK: %s", port, w.Body.String())
+	}
+
+	// Should get an error response indicating port conflict.
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	errMsg, _ := resp["error"].(string)
+	if errMsg == "" {
+		t.Error("expected error message in response body")
+	}
+	t.Logf("got expected error: status=%d error=%q", w.Code, errMsg)
 }

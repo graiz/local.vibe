@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -177,6 +179,12 @@ func (s *Server) configDir() string {
 
 func (s *Server) saveStickyRoutes() error {
 	return saveStickyRoutes(s.table, s.configDir())
+}
+
+func (s *Server) saveConfig() {
+	path := filepath.Join(s.configDir(), "config.json")
+	data, _ := json.MarshalIndent(s.cfg, "", "  ")
+	_ = os.WriteFile(path, data, 0644)
 }
 
 func (s *Server) isPortReady(port int) bool {

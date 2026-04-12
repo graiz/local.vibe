@@ -152,4 +152,14 @@ a:hover{color:var(--amber)}
 }
 .btn-icon:hover{color:var(--text)}
 .btn-icon svg{width:14px;height:14px}
+
+/* Toast notifications */
+.toast{
+  position:fixed;bottom:24px;left:50%%;transform:translateX(-50%) translateY(20px);
+  background:var(--surface);border:1px solid var(--border);color:var(--text);
+  padding:12px 20px;border-radius:var(--radius);font-size:.88rem;
+  box-shadow:0 8px 24px rgba(0,0,0,.4);opacity:0;transition:opacity .3s,transform .3s;
+  z-index:300;max-width:90vw;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 `
