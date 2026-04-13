@@ -10,7 +10,7 @@ cd local.vibe
 ./setup.sh
 ```
 
-This installs everything (Homebrew, Go, dnsmasq, port forwarding) and opens the dashboard. Currently macOS only — see [future plan](FUTURE_PLAN.md) for Windows/Linux.
+This installs everything (Homebrew, Go, dnsmasq, port forwarding, HTTPS certificates) and opens the dashboard. Currently macOS only.
 
 **That's it.** Everything else happens at [https://local.vibe](https://local.vibe).
 
