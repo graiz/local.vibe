@@ -223,8 +223,20 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	if req.Name != "" {
 		req.Name = strings.ToLower(req.Name)
 	}
-	// If the name changed, remove old and re-add.
+	// If the name changed, validate and remove old entry.
 	if req.Name != "" && req.Name != name {
+		if !validName.MatchString(req.Name) {
+			http.Error(w, `{"error":"invalid name — use lowercase letters, digits, and hyphens"}`, http.StatusBadRequest)
+			return
+		}
+		if req.Name == "local" {
+			http.Error(w, `{"error":"'local' is reserved for the dashboard"}`, http.StatusConflict)
+			return
+		}
+		if _, exists := s.table.Get(req.Name); exists {
+			http.Error(w, `{"error":"a route with that name already exists"}`, http.StatusConflict)
+			return
+		}
 		s.table.Remove(name)
 		route.Name = req.Name
 	}

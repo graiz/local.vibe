@@ -22,7 +22,11 @@ var daemonCmd = &cobra.Command{
 
 // openDashboard opens local.vibe or falls back to localhost direct.
 func openDashboard() {
+	cfg, _ := config.Load()
 	url := "http://local.vibe"
+	if cfg != nil && cfg.Daemon.TLS.Enabled {
+		url = "https://local.vibe"
+	}
 	if _, err := os.Stat("/etc/resolver/vibe"); err != nil {
 		url = "http://localhost:7999"
 	}

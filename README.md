@@ -12,7 +12,7 @@ cd local.vibe
 
 This installs everything (Homebrew, Go, dnsmasq, port forwarding) and opens the dashboard. Currently macOS only — see [future plan](FUTURE_PLAN.md) for Windows/Linux.
 
-**That's it.** Everything else happens at [http://local.vibe](http://local.vibe).
+**That's it.** Everything else happens at [https://local.vibe](https://local.vibe).
 
 ---
 
@@ -20,13 +20,13 @@ This installs everything (Homebrew, Go, dnsmasq, port forwarding) and opens the 
 
 A quick-start guide for configuring individual projects is served by the daemon.
 Fetch it with `curl http://localhost:7999/setup.md` (or visit
-[http://local.vibe/setup.md](http://local.vibe/setup.md) in a browser).
+[https://local.vibe/setup.md](https://local.vibe/setup.md) in a browser).
 The sections below are the full reference documentation.
 
 ### How it works
 
 ```
-Browser → dnsmasq (*.vibe → 127.0.0.1) → pf (port 80 → 7999) → vibe daemon → reverse proxy → your app
+Browser → dnsmasq (*.vibe → 127.0.0.1) → pf (443 → 7443, 80 → 7999) → vibe daemon (HTTPS/HTTP) → reverse proxy → your app
 ```
 
 ### CLI Reference
@@ -78,7 +78,7 @@ Drop this in a project root, then run `vibe start`:
 
 ### Dashboard
 
-The dashboard at [http://local.vibe](http://local.vibe) provides:
+The dashboard at [https://local.vibe](https://local.vibe) provides:
 - List and grid views (preference persisted across restarts)
 - Start/stop managed routes
 - Add/edit/delete routes via modal UI
@@ -89,7 +89,7 @@ The dashboard at [http://local.vibe](http://local.vibe) provides:
 
 ### API
 
-All endpoints are under `http://local.vibe/_api/` (or `http://localhost:7999/_api/`).
+All endpoints are under `https://local.vibe/_api/` (or `http://localhost:7999/_api/`).
 
 ```bash
 # Health & listing

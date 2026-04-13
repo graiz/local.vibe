@@ -9,10 +9,18 @@ import (
 )
 
 // serveDashboard renders the main dashboard HTML page at local.vibe.
+func (s *Server) vibeScheme() string {
+	if s.cfg.Daemon.TLS.Enabled {
+		return "https"
+	}
+	return "http"
+}
+
 func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	routes := s.table.List()
 	tld := s.cfg.Daemon.TLD
 	port := s.cfg.Daemon.Port
+	scheme := s.vibeScheme()
 
 	host := r.Host
 	if idx := strings.Index(host, ":"); idx != -1 {
@@ -213,13 +221,13 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(s.startedAt).Round(time.Second)
 	fmt.Fprintf(&b, `<nav class="navbar">
   <div class="navbar-left">
-    <a href="http://local.%s/" class="brand">local.vibe</a>
+    <a href="%s://local.%s/" class="brand">local.vibe</a>
     <div class="status-pill"><span class="led led-green"></span>Running &middot; %s</div>
   </div>
   <button class="btn-add" onclick="openAddModal()">+ Add Route</button>
 </nav>
 <main class="main">
-`, tld, fmtDuration(uptime))
+`, scheme, tld, fmtDuration(uptime))
 
 	// Warning banner
 	if unknownName != "" {
@@ -270,17 +278,17 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 
 	// Self row
 	fmt.Fprintf(&b, `<tr>
-  <td><div class="route-name-cell"><span class="route-icon">&#127968;</span><div><a href="http://local.%[1]s/" class="route-name-link">local</a><span class="route-url">local.%[1]s</span></div></div></td>
+  <td><div class="route-name-cell"><span class="route-icon">&#127968;</span><div><a href="%[4]s://local.%[1]s/" class="route-name-link">local</a><span class="route-url">local.%[1]s</span></div></div></td>
   <td class="td-type">daemon</td>
   <td class="td-port"><a href="http://localhost:%[2]d" target="_blank">%[2]d</a></td>
   <td class="td-age hide-mobile">%[3]s</td>
   <td></td>
-</tr>`, tld, port, fmtDuration(uptime))
+</tr>`, tld, port, fmtDuration(uptime), scheme)
 
 	// Route rows
 	for _, r := range routes {
 		safeName := html.EscapeString(r.Name)
-		vibeURL := fmt.Sprintf("http://%s.%s", safeName, tld)
+		vibeURL := fmt.Sprintf("%s://%s.%s", scheme, safeName, tld)
 
 		isStopped := r.Type == RouteManaged && !s.isPortReady(r.Port) && !r.Running.Load()
 
@@ -373,16 +381,16 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, `<div class="grid-view" id="grid-view" style="display:%s"><div class="grid-container">`, gridDisplay)
 
 	// Self tile
-	fmt.Fprintf(&b, `<a href="http://local.%s/" class="grid-tile">
+	fmt.Fprintf(&b, `<a href="%s://local.%s/" class="grid-tile">
   <div class="tile-icon"><span>&#127968;</span></div>
   <div class="tile-name">local</div>
   <div class="tile-url">local.%s</div>
-</a>`, tld, tld)
+</a>`, scheme, tld, tld)
 
 	// Route tiles
 	for _, r := range routes {
 		safeName := html.EscapeString(r.Name)
-		vibeURL := fmt.Sprintf("http://%s.%s", safeName, tld)
+		vibeURL := fmt.Sprintf("%s://%s.%s", scheme, safeName, tld)
 
 		// URL display
 		urlDisplay := fmt.Sprintf("%s.%s", safeName, tld)
@@ -427,7 +435,7 @@ Read the full setup instructions:
 
   curl http://localhost:7999/setup.md
 
-Or open in a browser: http://local.%[1]s/setup.md</textarea>
+Or open in a browser: %[2]s://local.%[1]s/setup.md</textarea>
     <button class="btn-copy" id="copy-btn" onclick="copyText()">Copy</button>
   </div>
 </section>
@@ -474,6 +482,10 @@ Or open in a browser: http://local.%[1]s/setup.md</textarea>
 <div class="modal-overlay" id="managed-overlay" onclick="if(event.target===this)closeManagedModal()">
 <div class="modal">
   <h3>Route Settings</h3>
+  <div style="margin-bottom:16px">
+    <label for="managed-name">Name</label>
+    <input id="managed-name" type="text" placeholder="myapp" autocomplete="off">
+  </div>
   <div style="margin-bottom:16px">
     <label>Icon</label>
     <input id="managed-icon" type="hidden">
@@ -590,6 +602,7 @@ function copyText(){
 var managedEditName='';
 function openManagedModal(name,idle,icon,autoIcon){
   managedEditName=name;
+  document.getElementById('managed-name').value=name;
   document.getElementById('idle-timeout').value=idle||'';
   document.getElementById('managed-icon').dataset.autoicon=autoIcon||'';
   setIconField('managed-icon','managed-icon-preview','managed-icon-clear','managed-icon-picker',icon||'',autoIcon||'');
@@ -601,9 +614,11 @@ function deleteManagedRoute(){
   fetch('/_api/routes/'+encodeURIComponent(managedEditName),{method:'DELETE',headers:{'Accept':'application/json'}}).then(function(){location.reload()});
 }
 function saveManagedSettings(){
+  var name=document.getElementById('managed-name').value.trim();
+  if(!name)return;
   var idle=parseInt(document.getElementById('idle-timeout').value)||0;
   var icon=getIconValue('managed-icon');
-  var body={idle_timeout:idle};
+  var body={name:name,idle_timeout:idle};
   if(icon)body.icon=icon;
   fetch('/_api/routes/'+encodeURIComponent(managedEditName),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(){location.reload()});
 }
@@ -705,7 +720,7 @@ function showToast(msg){
 document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeModal();closeManagedModal()}});
 document.addEventListener('visibilitychange',function(){if(!document.hidden){location.reload()}});
 </script>
-`, tld)
+`, tld, scheme)
 
 	// Footer
 	fmt.Fprintf(&b, `<footer class="footer">

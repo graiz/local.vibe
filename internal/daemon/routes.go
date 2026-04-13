@@ -73,6 +73,18 @@ func (t *RouteTable) Get(name string) (*Route, bool) {
 	return r, ok
 }
 
+// Names returns a sorted list of all route names.
+func (t *RouteTable) Names() []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	names := make([]string, 0, len(t.routes))
+	for name := range t.routes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (t *RouteTable) List() []*Route {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

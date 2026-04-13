@@ -33,7 +33,7 @@ Or without a vibe.json:
 vibe start myapp 3000 -- npm run dev
 ```
 
-Your app is now at **http://myapp.{{TLD}}**
+Your app is now at **https://myapp.{{TLD}}**
 
 ## Framework Configuration
 

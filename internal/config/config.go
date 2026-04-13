@@ -15,11 +15,18 @@ type Config struct {
 }
 
 type DaemonConfig struct {
-	Port             int    `json:"port"`
-	Socket           string `json:"socket"`
-	TLD              string `json:"tld"`
-	Mode             string `json:"mode"`
-	PIDCheckInterval int    `json:"pid_check_interval"`
+	Port             int       `json:"port"`
+	Socket           string    `json:"socket"`
+	TLD              string    `json:"tld"`
+	Mode             string    `json:"mode"`
+	PIDCheckInterval int       `json:"pid_check_interval"`
+	TLS              TLSConfig `json:"tls"`
+}
+
+type TLSConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Port     int    `json:"port"`
+	CertsDir string `json:"certs_dir"`
 }
 
 type DashboardConfig struct {
@@ -44,6 +51,11 @@ func DefaultConfig() *Config {
 			TLD:              "vibe",
 			Mode:             "redirect",
 			PIDCheckInterval: 5,
+			TLS: TLSConfig{
+				Enabled:  false,
+				Port:     7443,
+				CertsDir: filepath.Join(dir, "certs"),
+			},
 		},
 		Dashboard: DashboardConfig{
 			Enabled: true,

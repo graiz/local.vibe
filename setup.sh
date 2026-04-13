@@ -75,11 +75,11 @@ ok "Daemon running"
 echo ""
 echo -e "${GREEN}${BOLD}Setup complete!${RESET}"
 echo ""
-echo -e "  Dashboard:  ${BOLD}http://local.vibe${RESET}"
+echo -e "  Dashboard:  ${BOLD}https://local.vibe${RESET}"
 echo -e "  Add routes, manage services, and get per-project setup instructions there."
 echo ""
 
 # Open the dashboard
 if command -v open &>/dev/null; then
-  open http://local.vibe
+  open https://local.vibe
 fi

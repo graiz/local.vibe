@@ -135,7 +135,7 @@ a:hover{color:var(--amber)}
 /* Icon input */
 .icon-select-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
 .icon-preview-lg{width:48px;height:48px;font-size:26px}
-.icon-custom-input{width:80px!important;flex:none!important;text-align:center;font-size:1.1rem!important}
+.icon-custom-input{width:120px!important;flex:none!important;text-align:center;font-size:1.1rem!important}
 .btn-sm{font-size:.78rem;padding:4px 12px}
 .icon-preview{
   width:44px;height:44px;border-radius:12px;

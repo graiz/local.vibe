@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,9 +15,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/localvibe/vibe/internal/cert"
 	"github.com/localvibe/vibe/internal/config"
 )
 
@@ -27,8 +32,15 @@ type Server struct {
 	startedAt    time.Time
 	quit         chan struct{}
 	httpSrv      *http.Server
+	httpsSrv     *http.Server
 	ReadyTimeout time.Duration // max time to wait for port to accept connections; 0 = 30s default
 	ConfigDir    string        // override config dir for persistence; empty = default (~/.vibe)
+
+	// TLS hot-reload state
+	tlsMu   sync.RWMutex
+	tlsCert *tls.Certificate
+	caCert  *x509.Certificate
+	caKey   *ecdsa.PrivateKey
 }
 
 // NewServer creates a daemon server with the given configuration.
@@ -77,6 +89,10 @@ func (s *Server) Start() error {
 	go s.startUnixSocket(mux)
 	go s.monitorRoutes(time.Duration(s.cfg.Daemon.PIDCheckInterval) * time.Second)
 
+	if s.cfg.Daemon.TLS.Enabled {
+		go s.startTLS(mux)
+	}
+
 	fmt.Printf("vibe daemon listening on 127.0.0.1:%d\n", s.cfg.Daemon.Port)
 
 	if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -91,6 +107,9 @@ func (s *Server) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = s.httpSrv.Shutdown(ctx)
+	if s.httpsSrv != nil {
+		_ = s.httpsSrv.Shutdown(ctx)
+	}
 	_ = os.Remove(s.cfg.Daemon.Socket)
 	_ = os.Remove(fmt.Sprintf("%s/daemon.pid", config.Dir()))
 }
@@ -109,6 +128,90 @@ func (s *Server) startUnixSocket(handler http.Handler) {
 	_ = srv.Serve(ln)
 }
 
+func (s *Server) startTLS(handler http.Handler) {
+	certsDir := s.tlsCertsDir()
+
+	caCert, caKey, err := cert.EnsureCA(certsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: TLS CA setup failed: %v\n", err)
+		return
+	}
+	s.caCert = caCert
+	s.caKey = caKey
+
+	// Generate initial cert with current route names
+	if err := s.reloadTLSCert(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: TLS cert setup failed: %v\n", err)
+		return
+	}
+
+	tlsConfig := &tls.Config{
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			s.tlsMu.RLock()
+			defer s.tlsMu.RUnlock()
+			return s.tlsCert, nil
+		},
+	}
+
+	ln, err := tls.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.cfg.Daemon.TLS.Port), tlsConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: HTTPS listener failed: %v\n", err)
+		return
+	}
+
+	s.httpsSrv = &http.Server{Handler: handler}
+	fmt.Printf("vibe daemon HTTPS on 127.0.0.1:%d\n", s.cfg.Daemon.TLS.Port)
+	if err := s.httpsSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		fmt.Fprintf(os.Stderr, "HTTPS server error: %v\n", err)
+	}
+}
+
+// tlsHostnames builds the SAN list from the current route table.
+// Includes local.{tld} (dashboard) plus {name}.{tld} for every registered route.
+func (s *Server) tlsHostnames() []string {
+	tld := s.cfg.Daemon.TLD
+	names := s.table.Names()
+	hostnames := make([]string, 0, len(names)+2)
+	hostnames = append(hostnames, "local."+tld) // dashboard always
+	for _, name := range names {
+		hostnames = append(hostnames, name+"."+tld)
+	}
+	return hostnames
+}
+
+// reloadTLSCert regenerates the leaf certificate with SANs for all current routes
+// and atomically swaps it into the running TLS listener.
+func (s *Server) reloadTLSCert() error {
+	if s.caCert == nil || s.caKey == nil {
+		return nil // TLS not initialized
+	}
+	certsDir := s.tlsCertsDir()
+	hostnames := s.tlsHostnames()
+
+	certFile, keyFile, err := cert.GenerateLeaf(certsDir, s.caCert, s.caKey, hostnames)
+	if err != nil {
+		return err
+	}
+
+	tlsCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("load new TLS cert: %w", err)
+	}
+
+	s.tlsMu.Lock()
+	s.tlsCert = &tlsCert
+	s.tlsMu.Unlock()
+	return nil
+}
+
+func (s *Server) tlsCertsDir() string {
+	certsDir := s.cfg.Daemon.TLS.CertsDir
+	if certsDir == "" {
+		certsDir = filepath.Join(config.Dir(), "certs")
+	}
+	return certsDir
+}
+
 // routeRequest is the catch-all HTTP handler. It inspects the Host header
 // to determine which registered service should handle the request:
 //   - local.vibe → dashboard
@@ -120,6 +223,14 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if idx := strings.Index(host, ":"); idx != -1 {
 		host = host[:idx]
+	}
+
+	// Redirect HTTP → HTTPS when TLS is enabled (browser requests only;
+	// /_api/ has its own handler and is unaffected).
+	if s.cfg.Daemon.TLS.Enabled && r.TLS == nil {
+		target := "https://" + host + r.URL.RequestURI()
+		http.Redirect(w, r, target, http.StatusMovedPermanently)
+		return
 	}
 
 	if strings.HasSuffix(host, "."+s.cfg.Daemon.TLD) {
@@ -178,7 +289,16 @@ func (s *Server) configDir() string {
 }
 
 func (s *Server) saveStickyRoutes() error {
-	return saveStickyRoutes(s.table, s.configDir())
+	if err := saveStickyRoutes(s.table, s.configDir()); err != nil {
+		return err
+	}
+	// Regenerate TLS cert with updated route names
+	if s.cfg.Daemon.TLS.Enabled {
+		if err := s.reloadTLSCert(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: TLS cert reload failed: %v\n", err)
+		}
+	}
+	return nil
 }
 
 func (s *Server) saveConfig() {
