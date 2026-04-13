@@ -24,14 +24,14 @@ The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — ch
 
 ## Architecture
 
-**Request flow:** Browser → dnsmasq (*.vibe → 127.0.0.1) → pf (port 80 → 7999) → daemon → reverse proxy → app on target port. Bookmark routes redirect (307) to external URLs instead of proxying.
+**Request flow:** Browser → dnsmasq (*.vibe → 127.0.0.1) → pf (443 → 7443, 80 → 7999) → daemon (HTTPS or HTTP) → reverse proxy → app on target port. Bookmark routes redirect (307) to external URLs instead of proxying. HTTP requests redirect (301) to HTTPS when TLS is enabled.
 
 **Three layers, strictly separated:**
 
 1. **CLI commands** (`cmd/`) — Cobra commands. Know nothing about daemon internals. Use `internal/client` to talk to daemon.
 2. **Client** (`internal/client/`) — HTTP wrapper. Tries Unix socket (`~/.vibe/vibe.sock`) first, falls back to TCP (`127.0.0.1:7999`).
 3. **Daemon** (`internal/daemon/`) — HTTP server with embedded HTML dashboard. Core components:
-   - `daemon.go` — Server struct, Start/Stop, HTTP routing by Host header
+   - `daemon.go` — Server struct, Start/Stop, HTTP routing by Host header, TLS listener with cert hot-reload
    - `api.go` — REST endpoints under `/_api/` (register, deregister, update, list, health, start, stop, ready, preferences). Route names validated as DNS-safe (lowercase alphanumeric + hyphens). All user input HTML-escaped in dashboard output.
    - `routes.go` — Thread-safe RouteTable (RWMutex + map), RouteType enum
    - `process.go` — ProcessManager spawns/kills managed child processes (uses process groups for clean shutdown). On immediate crash, tails the route's log file and includes output in the error message.
@@ -42,7 +42,9 @@ The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — ch
    - `theme.go` — Shared CSS/HTML head (Geist fonts, Vercel-inspired dark theme)
    - `setup_md.go` — Markdown setup guide served at `/setup.md`
 
-**Config** (`internal/config/`) — Loads `~/.vibe/config.json`, falls back to defaults. Daemon port 7999, TLD "vibe", log level "warn", dashboard view "list".
+**Cert** (`internal/cert/`) — Generates local ECDSA CA + wildcard leaf certs using Go stdlib. Installs CA in macOS Keychain. Leaf certs use explicit SANs per route (Chrome rejects `*.vibe` wildcards).
+
+**Config** (`internal/config/`) — Loads `~/.vibe/config.json`, falls back to defaults. Daemon port 7999, TLS port 7443 (disabled by default, enabled by `vibe setup`), TLD "vibe", log level "warn", dashboard view "list".
 
 ## Route types
 
@@ -67,16 +69,18 @@ Five route types with different lifecycle semantics:
 - **Route icons:** Two fields — `Icon` (user-chosen emoji) and `AutoIcon` (auto-detected favicon as data URI). Display priority: Icon > AutoIcon > deterministic hash-based pool pick. Dashboard modal shows preview + emoji picker, never raw data URIs.
 - **Dashboard view persistence:** List/grid toggle saved server-side via `PUT /_api/preferences` into `config.json`. Rendered server-side on page load — no flash of wrong view.
 - **Embedded UI:** All HTML/CSS/JS is inline Go strings — no external assets, no build step. Dashboard includes a modal for CRUD operations on routes. Toast notifications surface errors from async actions.
+- **TLS hot-reload:** Daemon holds a `sync.RWMutex`-guarded `*tls.Certificate` served via `GetCertificate`. When routes change (`saveStickyRoutes`), the leaf cert is regenerated with updated SANs and atomically swapped — no restart needed. The CA (10-year, trusted in Keychain) stays fixed; only the leaf (825-day) rotates.
 
 ## System setup (macOS)
 
-`sudo vibe setup` installs: dnsmasq, `/etc/resolver/vibe`, pf LaunchDaemon (port 80→7999 at boot), user LaunchAgent (daemon at login). De-escalates brew/launchctl ops via `SUDO_USER`.
+`sudo vibe setup` installs: dnsmasq, `/etc/resolver/vibe`, pf LaunchDaemon (port 80→7999 and 443→7443 at boot), TLS certificates (local CA + leaf, trusted in macOS Keychain), enables TLS in config, user LaunchAgent (daemon at login). De-escalates brew/launchctl ops via `SUDO_USER`.
 
 ## Files at runtime
 
-- `~/.vibe/config.json` — optional config (daemon port, TLD, dashboard view preference)
+- `~/.vibe/config.json` — optional config (daemon port, TLS settings, TLD, dashboard view preference)
 - `~/.vibe/routes.json` — persisted routes (sticky, managed, bookmark)
 - `~/.vibe/daemon.pid` — daemon PID
 - `~/.vibe/vibe.sock` — Unix socket
 - `~/.vibe/daemon.log` — daemon log
 - `~/.vibe/{name}.log` — per-route process logs
+- `~/.vibe/certs/` — TLS certificates (ca.pem, ca-key.pem, vibe.pem, vibe-key.pem)

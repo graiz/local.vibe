@@ -94,7 +94,7 @@ func (s *Server) handleListRoutes(w http.ResponseWriter, _ *http.Request) {
 	routes := s.table.List()
 	resp := make([]routeResponse, len(routes))
 	for i, r := range routes {
-		resp[i] = toResponse(r, s.cfg.Daemon.TLD)
+		resp[i] = toResponse(r, s.cfg.Daemon.TLD, s.vibeScheme())
 	}
 	json.NewEncoder(w).Encode(resp)
 }
@@ -190,7 +190,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":  true,
-		"url": fmt.Sprintf("http://%s.%s", req.Name, s.cfg.Daemon.TLD),
+		"url": fmt.Sprintf("%s://%s.%s", s.vibeScheme(), req.Name, s.cfg.Daemon.TLD),
 	})
 }
 
@@ -301,7 +301,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 
 	// If request came from browser form, redirect back to the app.
 	if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" || r.Header.Get("Accept") != "application/json" {
-		http.Redirect(w, r, fmt.Sprintf("http://%s.%s/", name, s.cfg.Daemon.TLD), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), name, s.cfg.Daemon.TLD), http.StatusSeeOther)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "pid": pid})
@@ -322,7 +322,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 
 	// If request came from browser form, redirect back to dashboard.
 	if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" || r.Header.Get("Accept") != "application/json" {
-		http.Redirect(w, r, fmt.Sprintf("http://local.%s/", s.cfg.Daemon.TLD), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("%s://local.%s/", s.vibeScheme(), s.cfg.Daemon.TLD), http.StatusSeeOther)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -503,7 +503,7 @@ func findFaviconHref(page string) string {
 	return ""
 }
 
-func toResponse(r *Route, tld string) routeResponse {
+func toResponse(r *Route, tld, scheme string) routeResponse {
 	resp := routeResponse{
 		Name:         r.Name,
 		Port:         r.Port,
@@ -520,7 +520,7 @@ func toResponse(r *Route, tld string) routeResponse {
 	if r.Type == RouteBookmark {
 		resp.URL = r.ExternalURL
 	} else {
-		resp.URL = fmt.Sprintf("http://%s.%s", r.Name, tld)
+		resp.URL = fmt.Sprintf("%s://%s.%s", scheme, r.Name, tld)
 	}
 	return resp
 }
