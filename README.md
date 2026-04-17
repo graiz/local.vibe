@@ -3,7 +3,7 @@
 > `myapp.vibe` instead of `localhost:3000` — for every project on your Mac.
 
 <p align="center">
-  <img src="docs/dashboard-grid.png" alt="local.vibe dashboard" width="820">
+  <img src="docs/dashboard-grid.jpg" alt="local.vibe dashboard" width="820">
 </p>
 
 Dev work drifts into a mess of `localhost:3000`, `localhost:5173`, `localhost:8080` tabs. Which port was the blog on again? **local.vibe** gives every local project a friendly `.vibe` hostname and puts start/stop controls in one dashboard at [https://local.vibe](https://local.vibe).
@@ -12,13 +12,13 @@ macOS only. Single Go binary. No external services.
 
 ## What you get
 
-- 🔗 **Friendly hostnames** — `myapp.vibe` resolves to your local app over HTTP *and* HTTPS
-- ⚡ **Auto-assigned ports** — drop `port` from `vibe.json`, vibe picks a free one and exposes it as `$PORT`
-- 🎛️ **Dashboard** — start/stop managed apps, add bookmarks, pick icons, switch list/grid
-- 🔒 **HTTPS built-in** — a local CA is trusted in your Keychain; per-route SANs hot-reload without restart
-- 🤖 **Agent-friendly** — paste `curl http://localhost:7999/setup.md` into Claude Code / Cursor and it understands the setup
-- 🔖 **Bookmark anything** — route `tailscale.vibe` → your Tailscale machine, `office.vibe` → Home Assistant
-- 📦 **Zero hidden deps** — single binary, Cobra + Go stdlib, no Node, no Docker
+- **Friendly hostnames** — `myapp.vibe` resolves to your local app over HTTP *and* HTTPS
+- **Auto-assigned ports** — drop `port` from `vibe.json`, vibe picks a free one and exposes it as `$PORT`
+- **Dashboard** — start/stop managed apps, add bookmarks, pick icons, switch list/grid
+- **HTTPS built-in** — a local CA is trusted in your Keychain; per-route SANs hot-reload without restart
+- **Agent-friendly** — paste `curl http://localhost:7999/setup.md` into Claude Code / Cursor and it understands the setup
+- **Bookmark anything** — route `tailscale.vibe` → your Tailscale machine, `office.vibe` → Home Assistant
+- **Zero hidden deps** — single binary, Cobra + Go stdlib, no Node, no Docker
 
 ## Install
 
@@ -51,7 +51,7 @@ vibe picks a free port starting at 3000 and passes it to your app via `$PORT`. T
 ## Dashboard
 
 <p align="center">
-  <img src="docs/dashboard-list.png" alt="local.vibe list view" width="820">
+  <img src="docs/dashboard-list.jpg" alt="local.vibe list view" width="820">
 </p>
 
 Switch between grid and list views (preference persists across restarts). Each row shows route type, port, uptime, and start/stop/edit controls. The modal editor supports custom emoji or auto-detected favicons; bookmark routes can redirect to any external URL — handy for Tailscale hosts or Home Assistant dashboards.
