@@ -16,10 +16,25 @@ docs, see the [README](https://github.com/graiz/local.vibe#readme).
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | yes | Subdomain: `name.{{TLD}}` |
-| `port` | yes | Port your app listens on |
+| `port` | no | Port your app listens on (omit or `0` for auto-assign) |
 | `cmd` | yes | Shell command to start the app |
 | `icon` | no | Emoji for the dashboard (e.g. `"🚀"`) |
 | `idle_timeout` | no | Auto-stop after N minutes idle (0 = never) |
+
+### Automatic port assignment
+
+Omit `port` and vibe picks a free port (starting from 3000) and injects it as the
+`PORT` environment variable. Most frameworks respect this automatically:
+
+```json
+{
+  "name": "myapp",
+  "cmd": "npm run dev"
+}
+```
+
+Your app reads `process.env.PORT` (Node), `os.environ["PORT"]` (Python), etc.
+The assigned port is shown in CLI output and persisted across restarts.
 
 ## 2. Start it
 
@@ -64,13 +79,14 @@ module.exports = {
 Disable the reloader (debug error pages still work):
 
 ```python
-app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
+port = int(os.environ.get("PORT", 5000))
+app.run(debug=True, use_reloader=False, host='0.0.0.0', port=port)
 ```
 
-Or via CLI:
+Or via CLI (with auto-assigned port):
 
 ```json
-{"name": "myapi", "port": 5000, "cmd": "flask run --debug --no-reload --port 5000"}
+{"name": "myapi", "cmd": "flask run --debug --no-reload --port $PORT"}
 ```
 
 ### Django

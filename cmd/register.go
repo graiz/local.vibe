@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/localvibe/vibe/internal/client"
+	"github.com/graiz/local.vibe/internal/client"
 	"github.com/spf13/cobra"
 )
 

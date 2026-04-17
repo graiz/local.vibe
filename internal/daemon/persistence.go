@@ -25,7 +25,9 @@ type stickyEntry struct {
 }
 
 // loadStickyRoutes restores persisted routes (sticky, managed, bookmark)
-// from ~/.vibe/routes.json on daemon startup.
+// from ~/.vibe/routes.json on daemon startup. Entries whose names fail
+// the validName regex are skipped — a hand-edited routes.json must not
+// be able to inject `../` sequences that later flow into log or cert paths.
 func loadStickyRoutes(table *RouteTable, dir string) error {
 	path := filepath.Join(dir, "routes.json")
 	data, err := os.ReadFile(path)
@@ -40,12 +42,16 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 		return err
 	}
 	for name, entry := range store.StickyRoutes {
+		lower := strings.ToLower(name)
+		if !validName.MatchString(lower) || lower == "local" {
+			continue
+		}
 		rt := RouteSticky
 		if entry.Type != "" {
 			rt = entry.Type
 		}
 		r := &Route{
-			Name:         strings.ToLower(name),
+			Name:         lower,
 			Port:         entry.Port,
 			Cmd:          entry.Cmd,
 			Dir:          entry.Dir,
@@ -90,5 +96,32 @@ func saveStickyRoutes(table *RouteTable, dir string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "routes.json"), data, 0644)
+	// Write-then-rename so a crash mid-write can't leave routes.json
+	// truncated or half-written. The tmp file lives in the same dir so
+	// rename stays on one filesystem and is atomic.
+	target := filepath.Join(dir, "routes.json")
+	tmp, err := os.CreateTemp(dir, "routes.json.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }

@@ -23,7 +23,6 @@ const (
 type Route struct {
 	Name         string     `json:"name"`
 	Port         int        `json:"port"`
-	PID          *int       `json:"pid,omitempty"`
 	TTL          *int       `json:"ttl,omitempty"`
 	Cmd          string     `json:"cmd,omitempty"`
 	Dir          string     `json:"dir,omitempty"`
@@ -31,12 +30,51 @@ type Route struct {
 	RegisteredAt time.Time  `json:"registered_at"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	Type         RouteType  `json:"type"`
-	Running      atomic.Bool `json:"-"`
-	Ready        atomic.Bool `json:"-"`
-	IdleTimeout  int        `json:"idle_timeout,omitempty"`  // minutes; 0 = never auto-stop
-	Icon         string     `json:"icon,omitempty"`          // user-chosen emoji or URL for dashboard
-	AutoIcon     string     `json:"auto_icon,omitempty"`     // auto-detected favicon (data URI)
-	LastActivity time.Time  `json:"-"`                       // runtime only, not serialized
+	IdleTimeout  int        `json:"idle_timeout,omitempty"` // minutes; 0 = never auto-stop
+	Icon         string     `json:"icon,omitempty"`         // user-chosen emoji or URL for dashboard
+	AutoIcon     string     `json:"auto_icon,omitempty"`    // auto-detected favicon (data URI)
+
+	// Runtime-only state; safe for concurrent access.
+	Running      atomic.Bool               `json:"-"`
+	Ready        atomic.Bool               `json:"-"`
+	PID          atomic.Pointer[int]       `json:"-"` // managed/tracked process PID; nil when not running
+	LastActivity atomic.Pointer[time.Time] `json:"-"` // last proxy request; nil until first activity
+}
+
+// SetPID stores the process PID atomically.
+func (r *Route) SetPID(pid int) {
+	p := pid
+	r.PID.Store(&p)
+}
+
+// ClearPID removes any stored PID.
+func (r *Route) ClearPID() { r.PID.Store(nil) }
+
+// PIDValue returns the stored PID and whether one is set.
+func (r *Route) PIDValue() (int, bool) {
+	p := r.PID.Load()
+	if p == nil {
+		return 0, false
+	}
+	return *p, true
+}
+
+// TouchActivity records "now" as the most recent proxy request time.
+func (r *Route) TouchActivity() {
+	t := time.Now()
+	r.LastActivity.Store(&t)
+}
+
+// SetLastActivity stores an explicit activity timestamp (used by tests
+// to simulate elapsed idle time).
+func (r *Route) SetLastActivity(t time.Time) { r.LastActivity.Store(&t) }
+
+// LastActivityOr returns the last activity timestamp, or fallback if none set.
+func (r *Route) LastActivityOr(fallback time.Time) time.Time {
+	if la := r.LastActivity.Load(); la != nil && !la.IsZero() {
+		return *la
+	}
+	return fallback
 }
 
 // RouteTable is a thread-safe in-memory registry of routes, keyed by name.

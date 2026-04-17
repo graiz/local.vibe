@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -84,5 +87,54 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	// PID-tracked should not be there
 	if _, ok := loaded.Get("ephemeral"); ok {
 		t.Error("pid-tracked route should not be persisted")
+	}
+}
+
+// TestLoadStickyRoutesSkipsInvalidNames ensures a hand-edited routes.json
+// can't inject path-traversal sequences via the route name field.
+func TestLoadStickyRoutesSkipsInvalidNames(t *testing.T) {
+	dir := t.TempDir()
+	// Construct a routes.json with a malicious name.
+	raw := `{"sticky_routes":{"../../../etc/passwd":{"port":3000,"type":"sticky"},"good":{"port":4000,"type":"sticky"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "routes.json"), []byte(raw), 0644); err != nil {
+		t.Fatal(err)
+	}
+	loaded := NewRouteTable()
+	if err := loadStickyRoutes(loaded, dir); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if _, ok := loaded.Get("../../../etc/passwd"); ok {
+		t.Error("invalid route name should be rejected on load")
+	}
+	if _, ok := loaded.Get("good"); !ok {
+		t.Error("valid route name should still load")
+	}
+}
+
+// TestSaveStickyRoutesAtomic verifies the tmp-then-rename pattern: the
+// target file is never missing or half-written, and the tmp file is cleaned
+// up on a successful save.
+func TestSaveStickyRoutesAtomic(t *testing.T) {
+	dir := t.TempDir()
+	table := NewRouteTable()
+	table.Add(&Route{Name: "a", Port: 3000, Type: RouteSticky, RegisteredAt: time.Now()})
+	if err := saveStickyRoutes(table, dir); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	// The final file must exist and parse as JSON.
+	data, err := os.ReadFile(filepath.Join(dir, "routes.json"))
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	var store stickyStore
+	if err := json.Unmarshal(data, &store); err != nil {
+		t.Fatalf("target JSON invalid: %v", err)
+	}
+	// No leftover tmp files.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() != "routes.json" {
+			t.Errorf("leftover file in config dir: %s", e.Name())
+		}
 	}
 }

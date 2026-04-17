@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/localvibe/vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/config"
 )
 
 func TestSweepMarksDeadManagedNotRunning(t *testing.T) {
@@ -14,13 +14,12 @@ func TestSweepMarksDeadManagedNotRunning(t *testing.T) {
 	s := NewServer(cfg)
 
 	// Add a managed route with a fake PID that doesn't exist
-	fakePID := 999999
 	r := &Route{
 		Name: "dead",
 		Port: 3000,
 		Type: RouteManaged,
-		PID:  &fakePID,
 	}
+	r.SetPID(999999)
 	r.Running.Store(true)
 	r.Ready.Store(true)
 	s.table.Add(r)
@@ -31,7 +30,7 @@ func TestSweepMarksDeadManagedNotRunning(t *testing.T) {
 	if r.Running.Load() {
 		t.Error("expected Running=false after sweep for dead PID")
 	}
-	if r.PID != nil {
+	if _, ok := r.PIDValue(); ok {
 		t.Error("expected PID=nil after sweep for dead PID")
 	}
 }
@@ -57,11 +56,11 @@ func TestSweepIdleTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	route.PID = &pid
+	route.SetPID(pid)
 	route.Running.Store(true)
 	route.Ready.Store(true)
 	// Set last activity to 2 minutes ago (past the 1-minute timeout)
-	route.LastActivity = time.Now().Add(-2 * time.Minute)
+	route.SetLastActivity(time.Now().Add(-2 * time.Minute))
 	s.table.Add(route)
 
 	s.sweepRoutes()
@@ -70,7 +69,7 @@ func TestSweepIdleTimeout(t *testing.T) {
 	if r.Running.Load() {
 		t.Error("expected Running=false after idle timeout sweep")
 	}
-	if r.PID != nil {
+	if _, ok := r.PIDValue(); ok {
 		t.Error("expected PID=nil after idle timeout sweep")
 	}
 }
@@ -81,13 +80,13 @@ func TestSweepRemovesPIDTracked(t *testing.T) {
 	}
 	s := NewServer(cfg)
 
-	fakePID := 999999
-	s.table.Add(&Route{
+	r := &Route{
 		Name: "tracked",
 		Port: 5000,
 		Type: RoutePIDTracked,
-		PID:  &fakePID,
-	})
+	}
+	r.SetPID(999999)
+	s.table.Add(r)
 
 	s.sweepRoutes()
 
@@ -113,5 +112,46 @@ func TestSweepKeepsStoppedManaged(t *testing.T) {
 
 	if _, ok := s.table.Get("stopped"); !ok {
 		t.Error("stopped managed route should not be removed by sweep")
+	}
+}
+
+// TestSweepIdleTimeoutFallsBackToRegisteredAt covers the bug where a managed
+// route started but never visited had LastActivity=zero, and the old sweep
+// skipped the check entirely — so the route ran forever despite IdleTimeout.
+// The new behavior falls back to RegisteredAt when LastActivity is unset.
+func TestSweepIdleTimeoutFallsBackToRegisteredAt(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Daemon: config.DaemonConfig{TLD: "test"}}
+	s := NewServer(cfg)
+
+	route := &Route{
+		Name:         "never-visited",
+		Port:         3000,
+		Cmd:          "sleep 60",
+		Dir:          t.TempDir(),
+		Type:         RouteManaged,
+		IdleTimeout:  1, // 1 minute
+		RegisteredAt: time.Now().Add(-2 * time.Minute),
+	}
+
+	pid, err := s.procs.Start(route)
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	route.SetPID(pid)
+	route.Running.Store(true)
+	route.Ready.Store(true)
+	// Deliberately do NOT call SetLastActivity — this is the exact scenario
+	// where the bug manifested.
+	s.table.Add(route)
+
+	s.sweepRoutes()
+
+	r, _ := s.table.Get("never-visited")
+	if r.Running.Load() {
+		t.Error("expected Running=false: RegisteredAt is past the idle timeout")
+	}
+	if _, ok := r.PIDValue(); ok {
+		t.Error("expected PID cleared after idle timeout sweep")
 	}
 }

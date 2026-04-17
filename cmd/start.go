@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/localvibe/vibe/internal/client"
+	"github.com/graiz/local.vibe/internal/client"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +24,10 @@ var startCmd = &cobra.Command{
 
   vibe start                          Read vibe.json and start the app
   vibe start myapp                    Start an already-registered route
-  vibe start myapp 3000 -- npm dev    Register and start a new app`,
+  vibe start myapp 3000 -- npm dev    Register and start a new app
+
+If port is omitted or set to 0 in vibe.json, a free port is auto-assigned
+and injected as the PORT environment variable.`,
 	Example: `  vibe start
   vibe start myapp
   vibe start myapp 3000 -- npm run dev`,
@@ -75,8 +78,8 @@ func startFromConfig() error {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("invalid vibe.json: %w", err)
 	}
-	if cfg.Name == "" || cfg.Port == 0 || cfg.Cmd == "" {
-		return fmt.Errorf("vibe.json must have name, port, and cmd fields")
+	if cfg.Name == "" || cfg.Cmd == "" {
+		return fmt.Errorf("vibe.json must have name and cmd fields")
 	}
 
 	return startNew(cfg.Name, cfg.Port, cfg.Cmd)
@@ -109,7 +112,11 @@ func startNew(name string, port int, command string) error {
 	if err != nil {
 		return fmt.Errorf("could not register %s: %w", name, err)
 	}
-	fmt.Printf("started: %s → %s\n", name, resp.URL)
+	if port == 0 && resp.Port > 0 {
+		fmt.Printf("started: %s → %s (port %d)\n", name, resp.URL, resp.Port)
+	} else {
+		fmt.Printf("started: %s → %s\n", name, resp.URL)
+	}
 	fmt.Printf("  stop with: vibe stop %s\n", name)
 	return nil
 }

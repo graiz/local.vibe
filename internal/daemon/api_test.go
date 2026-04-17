@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/localvibe/vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/config"
 )
 
 func testServer() *Server {
@@ -201,6 +201,75 @@ func TestAPIBookmarkRoute(t *testing.T) {
 	}
 	if r.ExternalURL != "https://example.com" {
 		t.Errorf("external_url = %s; want https://example.com", r.ExternalURL)
+	}
+}
+
+// TestAPIBookmarkURLValidation rejects non-http(s) schemes and malformed
+// URLs so the 307 redirect target can't become a javascript: / file: / data:
+// open-redirect vector.
+func TestAPIBookmarkURLValidation(t *testing.T) {
+	cases := []struct {
+		name, url string
+		want      int
+	}{
+		{"js-scheme", "javascript:alert(1)", http.StatusBadRequest},
+		{"file-scheme", "file:///etc/passwd", http.StatusBadRequest},
+		{"data-scheme", "data:text/html,<script>1</script>", http.StatusBadRequest},
+		{"no-host", "https://", http.StatusBadRequest},
+		{"http-ok", "http://10.0.0.1:8080", http.StatusOK},
+		{"https-ok", "https://example.com/path?q=1", http.StatusOK},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testServer()
+			name := fmt.Sprintf("bm%d", i)
+			body, _ := json.Marshal(map[string]any{"name": name, "url": tc.url})
+			req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			s.apiHandler(w, req)
+			if w.Code != tc.want {
+				t.Errorf("status = %d; want %d; body: %s", w.Code, tc.want, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestAPIStartStopAnchoring ensures that POST /_api/<non-routes>/start
+// does NOT fall through to the start handler — prior to the fix the route
+// pattern matched on suffix only.
+func TestAPIStartStopAnchoring(t *testing.T) {
+	s := testServer()
+	for _, path := range []string{"/_api/something/stop", "/_api/something/start"} {
+		req := httptest.NewRequest("POST", path, nil)
+		w := httptest.NewRecorder()
+		s.apiHandler(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d; want 404", path, w.Code)
+		}
+	}
+}
+
+// TestAPIErrorResponseIsValidJSON covers the JSON-injection fix: prior to
+// the switch to writeJSONError, error messages with quotes or newlines
+// (e.g. tailed process output) could break the {"error":"..."} structure.
+func TestAPIErrorResponseIsValidJSON(t *testing.T) {
+	s := testServer()
+	// invalid name — exercises the error path
+	body, _ := json.Marshal(map[string]any{"name": "Bad Name!", "port": 3000})
+	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400", w.Code)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("response is not valid JSON: %v; body: %s", err, w.Body.String())
+	}
+	if parsed["error"] == "" {
+		t.Errorf("parsed error field is empty; body: %s", w.Body.String())
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/localvibe/vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/config"
 )
 
 // pickFreePort returns an available TCP port on loopback.

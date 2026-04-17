@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"html"
 	"net/http"
 )
 
@@ -11,6 +12,13 @@ import (
 func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *Route) {
 	tld := s.cfg.Daemon.TLD
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Route names are already validated to [a-z0-9-], but we escape on output
+	// defensively so this template is safe against any future relaxation. Cmd
+	// is free-form user input and MUST be escaped before HTML injection.
+	safeName := html.EscapeString(route.Name)
+	safeTLD := html.EscapeString(tld)
+	safeCmd := html.EscapeString(route.Cmd)
 
 	fmt.Fprintf(w, `<!DOCTYPE html>
 <html lang="en">
@@ -139,5 +147,5 @@ function pollUntilReady(attempts){
 </script>
 </body>
 </html>
-`, themeHead(route.Name+"."+tld), themeCSS, route.Name, tld, route.Cmd)
+`, themeHead(route.Name+"."+tld), themeCSS, safeName, safeTLD, safeCmd)
 }

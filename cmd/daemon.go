@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/localvibe/vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/config"
 	"github.com/spf13/cobra"
 )
 

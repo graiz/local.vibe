@@ -81,8 +81,9 @@ type RegisterRequest struct {
 }
 
 type RegisterResponse struct {
-	OK  bool   `json:"ok"`
-	URL string `json:"url"`
+	OK   bool   `json:"ok"`
+	URL  string `json:"url"`
+	Port int    `json:"port,omitempty"`
 }
 
 type RouteInfo struct {

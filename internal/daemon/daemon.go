@@ -19,8 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/localvibe/vibe/internal/cert"
-	"github.com/localvibe/vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/cert"
+	"github.com/graiz/local.vibe/internal/config"
 )
 
 // Server is the vibe daemon. It listens on a TCP port and a Unix socket,
@@ -254,7 +254,7 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 				s.serveStartPage(w, r, route)
 				return
 			}
-			route.LastActivity = time.Now()
+			route.TouchActivity()
 			target, _ := url.Parse(fmt.Sprintf("http://localhost:%d", route.Port))
 			proxy := httputil.NewSingleHostReverseProxy(target)
 			proxy.ServeHTTP(w, r)
@@ -305,6 +305,38 @@ func (s *Server) saveConfig() {
 	path := filepath.Join(s.configDir(), "config.json")
 	data, _ := json.MarshalIndent(s.cfg, "", "  ")
 	_ = os.WriteFile(path, data, 0644)
+}
+
+// findFreePort finds an available port starting from 3000, which is the
+// conventional range for local dev servers. It skips ports already claimed
+// by other vibe routes (even if not currently listening). Falls back to OS
+// assignment if the entire 3000-3999 range is occupied.
+func findFreePort(table *RouteTable) (int, error) {
+	claimed := make(map[int]bool)
+	for _, r := range table.List() {
+		if r.Port > 0 {
+			claimed[r.Port] = true
+		}
+	}
+	for port := 3000; port < 4000; port++ {
+		if claimed[port] {
+			continue
+		}
+		l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		l.Close()
+		return port, nil
+	}
+	// Fallback: let the OS pick.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port, nil
 }
 
 func (s *Server) isPortReady(port int) bool {

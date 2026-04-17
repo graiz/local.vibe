@@ -36,7 +36,7 @@ func (s *Server) sweepRoutes() {
 	for _, r := range s.table.List() {
 		switch r.Type {
 		case RoutePIDTracked:
-			if r.PID != nil && !processAlive(*r.PID) {
+			if pid, ok := r.PIDValue(); ok && !processAlive(pid) {
 				toRemove = append(toRemove, r.Name)
 			}
 		case RouteTTL:
@@ -45,18 +45,23 @@ func (s *Server) sweepRoutes() {
 			}
 		case RouteManaged:
 			// Mark managed routes as not running/ready if their process has died.
-			if r.PID != nil && !processAlive(*r.PID) {
+			pid, running := r.PIDValue()
+			if running && !processAlive(pid) {
 				r.Running.Store(false)
 				r.Ready.Store(false)
-				r.PID = nil
+				r.ClearPID()
+				running = false
 			}
-			// Auto-stop idle managed routes.
-			if r.IdleTimeout > 0 && r.PID != nil && !r.LastActivity.IsZero() {
-				if now.Sub(r.LastActivity) > time.Duration(r.IdleTimeout)*time.Minute {
+			// Auto-stop idle managed routes. If LastActivity is unset (e.g.
+			// registered but never received traffic), fall back to RegisteredAt
+			// so the timer still elapses instead of running forever.
+			if r.IdleTimeout > 0 && running {
+				lastActive := r.LastActivityOr(r.RegisteredAt)
+				if now.Sub(lastActive) > time.Duration(r.IdleTimeout)*time.Minute {
 					_ = s.procs.Stop(r.Name)
 					r.Running.Store(false)
 					r.Ready.Store(false)
-					r.PID = nil
+					r.ClearPID()
 				}
 			}
 		}

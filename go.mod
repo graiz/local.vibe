@@ -1,4 +1,4 @@
-module github.com/localvibe/vibe
+module github.com/graiz/local.vibe
 
 go 1.22
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -13,6 +14,32 @@ import (
 
 // validName matches DNS-safe route names: lowercase letters, digits, and hyphens.
 var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$`)
+
+// writeJSONError sends a well-formed JSON error response. Using fmt.Sprintf
+// into a literal `{"error":"..."}` string is unsafe when the message can
+// contain quotes, backslashes, or newlines (e.g. tailed process output).
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// validateExternalURL rejects any bookmark target that isn't a plain http://
+// or https:// URL. Prevents javascript:, file:, data:, etc. from being used
+// as a 307 redirect target, which would be an open-redirect vector.
+func validateExternalURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("url must use http:// or https://")
+	}
+	if u.Host == "" {
+		return fmt.Errorf("url must include a host")
+	}
+	return nil
+}
 
 type registerRequest struct {
 	Name        string `json:"name"`
@@ -67,13 +94,11 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.handleDeregister(w, r, name)
 		}
-	case r.Method == http.MethodPost && strings.HasSuffix(path, "/stop"):
-		name := strings.TrimPrefix(path, "/routes/")
-		name = strings.TrimSuffix(name, "/stop")
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/stop"):
+		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/stop")
 		s.handleStop(w, r, name)
-	case r.Method == http.MethodPost && strings.HasSuffix(path, "/start"):
-		name := strings.TrimPrefix(path, "/routes/")
-		name = strings.TrimSuffix(name, "/start")
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/start"):
+		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/start")
 		s.handleStart(w, r, name)
 	case r.Method == http.MethodPut && path == "/preferences":
 		s.handleSetPreferences(w, r)
@@ -104,33 +129,47 @@ func (s *Server) handleListRoutes(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name == "" {
-		http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if req.Port == 0 && req.URL == "" {
-		http.Error(w, `{"error":"port or url is required"}`, http.StatusBadRequest)
+	if req.Port == 0 && req.URL == "" && req.Cmd == "" {
+		writeJSONError(w, http.StatusBadRequest, "port, url, or cmd is required")
 		return
 	}
 	req.Name = strings.ToLower(req.Name)
 	if !validName.MatchString(req.Name) {
-		http.Error(w, `{"error":"name must be lowercase letters, digits, or hyphens"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "name must be lowercase letters, digits, or hyphens")
 		return
 	}
 	if req.Name == "local" {
-		http.Error(w, `{"error":"'local' is reserved for the dashboard"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "'local' is reserved for the dashboard")
+		return
+	}
+	if req.URL != "" {
+		if err := validateExternalURL(req.URL); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	// Reject if a managed route with this name is already running.
+	if existing, ok := s.table.Get(req.Name); ok && existing.Type == RouteManaged && existing.Running.Load() {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("route %q is already running on port %d", req.Name, existing.Port))
 		return
 	}
 
 	route := &Route{
 		Name:         req.Name,
 		Port:         req.Port,
-		PID:          req.PID,
 		ExternalURL:  req.URL,
 		RegisteredAt: time.Now(),
+	}
+	if req.PID != nil {
+		route.SetPID(*req.PID)
 	}
 	route.Running.Store(true)
 	route.Ready.Store(true)
@@ -161,6 +200,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Launch managed process immediately.
 	if route.Type == RouteManaged {
+		// Auto-assign a free port if none was specified.
+		if route.Port == 0 {
+			port, err := findFreePort(s.table)
+			if err != nil {
+				s.table.Remove(route.Name)
+				writeJSONError(w, http.StatusInternalServerError, "could not find a free port")
+				return
+			}
+			route.Port = port
+		}
 		// Clear stale process on the port before launching.
 		if route.Port > 0 && s.isPortReady(route.Port) {
 			s.killPort(route.Port)
@@ -168,19 +217,22 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			// Verify the port was actually freed.
 			if s.isPortReady(route.Port) {
 				s.table.Remove(route.Name)
-				http.Error(w, fmt.Sprintf(`{"error":"port %d is already in use by another process"}`, route.Port), http.StatusConflict)
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("port %d is already in use by another process", route.Port))
 				return
 			}
 		}
 		pid, err := s.procs.Start(route)
 		if err != nil {
 			s.table.Remove(route.Name)
-			http.Error(w, fmt.Sprintf(`{"error":"failed to start: %s"}`, err), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start: %s", err))
 			return
 		}
-		route.PID = &pid
+		route.SetPID(pid)
 		route.Running.Store(true)
 		route.Ready.Store(false)
+		// Seed LastActivity so the idle-timeout sweep has a baseline even if
+		// the process is started but never receives a proxy request.
+		route.TouchActivity()
 		go s.waitForReady(route)
 	}
 
@@ -189,15 +241,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{
-		"ok":  true,
-		"url": fmt.Sprintf("%s://%s.%s", s.vibeScheme(), req.Name, s.cfg.Daemon.TLD),
+		"ok":   true,
+		"url":  fmt.Sprintf("%s://%s.%s", s.vibeScheme(), req.Name, s.cfg.Daemon.TLD),
+		"port": route.Port,
 	})
 }
 
 func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
-		http.Error(w, `{"error":"route not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
 	if route.Type == RouteManaged {
@@ -212,12 +265,12 @@ func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name s
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
-		http.Error(w, `{"error":"route not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
 	var req registerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.Name != "" {
@@ -226,19 +279,25 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	// If the name changed, validate and remove old entry.
 	if req.Name != "" && req.Name != name {
 		if !validName.MatchString(req.Name) {
-			http.Error(w, `{"error":"invalid name — use lowercase letters, digits, and hyphens"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid name — use lowercase letters, digits, and hyphens")
 			return
 		}
 		if req.Name == "local" {
-			http.Error(w, `{"error":"'local' is reserved for the dashboard"}`, http.StatusConflict)
+			writeJSONError(w, http.StatusConflict, "'local' is reserved for the dashboard")
 			return
 		}
 		if _, exists := s.table.Get(req.Name); exists {
-			http.Error(w, `{"error":"a route with that name already exists"}`, http.StatusConflict)
+			writeJSONError(w, http.StatusConflict, "a route with that name already exists")
 			return
 		}
 		s.table.Remove(name)
 		route.Name = req.Name
+	}
+	if req.URL != "" {
+		if err := validateExternalURL(req.URL); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if req.Port != 0 {
 		route.Port = req.Port
@@ -266,14 +325,23 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
-		http.Error(w, `{"error":"route not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
 	if route.Cmd == "" {
-		http.Error(w, `{"error":"route has no launch command"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "route has no launch command")
 		return
 	}
 
+	// Auto-assign a free port if the route has none (e.g. auto-assigned on first start).
+	if route.Port == 0 {
+		port, err := findFreePort(s.table)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "could not find a free port")
+			return
+		}
+		route.Port = port
+	}
 	// If the port is already in use, try to clear the stale process before starting.
 	if route.Port > 0 && s.isPortReady(route.Port) {
 		s.killPort(route.Port)
@@ -281,7 +349,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		time.Sleep(500 * time.Millisecond)
 		// Verify the port was actually freed.
 		if s.isPortReady(route.Port) {
-			http.Error(w, fmt.Sprintf(`{"error":"port %d is already in use by another process"}`, route.Port), http.StatusConflict)
+			writeJSONError(w, http.StatusConflict, fmt.Sprintf("port %d is already in use by another process", route.Port))
 			return
 		}
 	}
@@ -290,13 +358,13 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 	if err != nil {
 		route.Running.Store(false)
 		route.Ready.Store(false)
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	route.PID = &pid
+	route.SetPID(pid)
 	route.Running.Store(true)
 	route.Ready.Store(false)
-	route.LastActivity = time.Now()
+	route.TouchActivity()
 	go s.waitForReady(route)
 
 	// If request came from browser form, redirect back to the app.
@@ -310,7 +378,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
-		http.Error(w, `{"error":"route not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
 	// Try the ProcessManager first, then fall back to killing whatever is on the port.
@@ -319,6 +387,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 	}
 	route.Running.Store(false)
 	route.Ready.Store(false)
+	route.ClearPID()
 
 	// If request came from browser form, redirect back to dashboard.
 	if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" || r.Header.Get("Accept") != "application/json" {
@@ -345,7 +414,7 @@ func (s *Server) handleSetPreferences(w http.ResponseWriter, r *http.Request) {
 		View string `json:"view"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.View == "list" || req.View == "grid" {
@@ -378,13 +447,14 @@ func (s *Server) waitForReady(route *Route) {
 			return
 		case <-ticker.C:
 			// Check if the process died (don't wait for the monitor sweep).
-			if route.PID != nil && !processAlive(*route.PID) {
+			pid, ok := route.PIDValue()
+			if ok && !processAlive(pid) {
 				route.Running.Store(false)
 				route.Ready.Store(false)
-				route.PID = nil
+				route.ClearPID()
 				return
 			}
-			if route.PID == nil || !route.Running.Load() {
+			if !ok || !route.Running.Load() {
 				return
 			}
 			if s.isPortReady(route.Port) {
@@ -507,7 +577,7 @@ func toResponse(r *Route, tld, scheme string) routeResponse {
 	resp := routeResponse{
 		Name:         r.Name,
 		Port:         r.Port,
-		PID:          r.PID,
+		PID:          r.PID.Load(),
 		RegisteredAt: r.RegisteredAt,
 		ExpiresAt:    r.ExpiresAt,
 		Type:         r.Type,

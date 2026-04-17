@@ -61,10 +61,23 @@ Drop this in a project root, then run `vibe start`:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | yes | Subdomain: `name.vibe` |
-| `port` | yes | Port your app listens on |
+| `port` | no | Port your app listens on (omit or `0` for auto-assign) |
 | `cmd` | yes | Shell command to start the app |
 | `icon` | no | Emoji or image URL for the dashboard |
 | `idle_timeout` | no | Auto-stop after N minutes of no traffic (0 = never) |
+
+#### Automatic port assignment
+
+Omit `port` (or set it to `0`) and vibe will auto-assign a free port starting from 3000. The port is injected as the `PORT` environment variable, which most frameworks respect out of the box:
+
+```json
+{
+  "name": "myapp",
+  "cmd": "npm run dev"
+}
+```
+
+Your app reads `process.env.PORT` (Node), `os.environ["PORT"]` (Python), etc. The assigned port is shown in CLI output and persisted across daemon restarts. Each app gets a unique port — vibe skips ports already claimed by other routes.
 
 **Command tips:** Use `python3` not `python` on macOS. For Python apps, use a venv: `".venv/bin/python app.py"`. For Flask/Django, disable the reloader (not debug mode): `app.run(debug=True, use_reloader=False)` or `flask run --debug --no-reload`.
 
@@ -96,7 +109,7 @@ All endpoints are under `https://local.vibe/_api/` (or `http://localhost:7999/_a
 curl /_api/health                            # {"status":"ok","routes":3,"uptime":120}
 curl /_api/routes                            # List all routes (JSON array)
 
-# Register a new route
+# Register a new route (port is optional for managed routes — omit for auto-assign)
 curl -X POST /_api/routes \
   -H 'Content-Type: application/json' \
   -d '{"name":"myapp","port":3000,"cmd":"npm run dev","dir":"/path/to/project"}'
@@ -122,7 +135,7 @@ curl -X PUT /_api/preferences \
   -d '{"view":"grid"}'                       # "list" or "grid"
 ```
 
-**Error handling:** Port conflicts return `409` with the occupied port number. Immediate process crashes include the last few lines of `~/.vibe/{name}.log` in the error response.
+**Error handling:** Port conflicts return `409` with the occupied port number. Duplicate route names return `409` when the route is already running. Immediate process crashes include the last few lines of `~/.vibe/{name}.log` in the error response. Auto-assigned ports are returned in the response as `"port": <number>`.
 
 ### Runtime Files
 

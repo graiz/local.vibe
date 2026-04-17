@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/localvibe/vibe/internal/cert"
+	"github.com/graiz/local.vibe/internal/cert"
 	"github.com/spf13/cobra"
 )
 

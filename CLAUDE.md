@@ -52,7 +52,7 @@ Five route types with different lifecycle semantics:
 - **sticky** — `vibe register`; persists across daemon restarts; reverse-proxied
 - **pid** — API only; auto-removed when tracked PID dies
 - **ttl** — `--ttl` flag on register; auto-expires after N seconds
-- **managed** — `vibe start` (reads `vibe.json` or inline args); daemon manages the child process, dashboard has start/stop buttons
+- **managed** — `vibe start` (reads `vibe.json` or inline args); daemon manages the child process, dashboard has start/stop buttons. Port can be omitted for auto-assignment.
 - **bookmark** — External URL (e.g. Tailscale address); persists across restarts; visiting `name.vibe` redirects (307) to the external URL. Added/edited via dashboard modal.
 
 ## Key patterns
@@ -65,7 +65,8 @@ Five route types with different lifecycle semantics:
 - **PID file safety:** Only written after successful TCP bind (tested in `daemon_test.go`).
 - **Zero-downtime restarts:** `vibe dev` kills daemon → LaunchAgent restarts → persisted routes survive.
 - **Input validation:** Route names must match `[a-z0-9-]`, "local" is reserved. All user-supplied strings HTML-escaped in dashboard output to prevent XSS.
-- **Port conflict detection:** Before starting a managed process, verifies the port is free. If `killPort` fails to clear it, returns 409 with a clear error. The `/ready` endpoint returns both `ready` and `running` so poll loops detect post-start crashes immediately.
+- **Port auto-assignment:** Managed routes can omit `port` (or set to 0). `findFreePort(table)` scans 3000-3999, skipping ports claimed by existing routes, then falls back to OS assignment. The assigned port is injected as a `PORT` env var when spawning the child process and returned in the register API response. Persisted in `routes.json` so it survives daemon restarts.
+- **Port conflict detection:** Before starting a managed process, verifies the port is free. If `killPort` fails to clear it, returns 409 with a clear error. Registering a route name that's already running returns 409 immediately. The `/ready` endpoint returns both `ready` and `running` so poll loops detect post-start crashes immediately.
 - **Route icons:** Two fields — `Icon` (user-chosen emoji) and `AutoIcon` (auto-detected favicon as data URI). Display priority: Icon > AutoIcon > deterministic hash-based pool pick. Dashboard modal shows preview + emoji picker, never raw data URIs.
 - **Dashboard view persistence:** List/grid toggle saved server-side via `PUT /_api/preferences` into `config.json`. Rendered server-side on page load — no flash of wrong view.
 - **Embedded UI:** All HTML/CSS/JS is inline Go strings — no external assets, no build step. Dashboard includes a modal for CRUD operations on routes. Toast notifications surface errors from async actions.

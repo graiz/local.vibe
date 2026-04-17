@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/localvibe/vibe/internal/config"
-	"github.com/localvibe/vibe/internal/daemon"
+	"github.com/graiz/local.vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/daemon"
 	"github.com/spf13/cobra"
 )
 

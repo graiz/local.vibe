@@ -9,8 +9,8 @@
 ## Getting started
 
 ```bash
-git clone https://github.com/localvibe/vibe.git
-cd vibe
+git clone https://github.com/graiz/local.vibe.git
+cd local.vibe
 go build -o vibe .
 sudo ./vibe setup    # one-time: installs dnsmasq, pf rules, LaunchAgent
 ./vibe install       # copies binary to /opt/homebrew/bin/vibe

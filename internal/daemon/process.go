@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/localvibe/vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/config"
 )
 
 // ProcessManager tracks managed child processes spawned by the daemon.
@@ -50,6 +50,8 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	cmd := exec.Command(shell, "-lic", route.Cmd)
 	cmd.Dir = route.Dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Inject PORT env var so frameworks can auto-detect the assigned port.
+	cmd.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", route.Port))
 
 	logDir := config.Dir()
 	_ = os.MkdirAll(logDir, 0755)

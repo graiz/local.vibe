@@ -1,6 +1,6 @@
 package main
 
-import "github.com/localvibe/vibe/cmd"
+import "github.com/graiz/local.vibe/cmd"
 
 var version = "dev"
 
