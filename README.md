@@ -1,8 +1,26 @@
 # local.vibe
 
-Friendly `.vibe` names for your local dev servers. No more remembering port numbers.
+> `myapp.vibe` instead of `localhost:3000` — for every project on your Mac.
 
-## Setup
+<p align="center">
+  <img src="docs/dashboard-grid.png" alt="local.vibe dashboard" width="820">
+</p>
+
+Dev work drifts into a mess of `localhost:3000`, `localhost:5173`, `localhost:8080` tabs. Which port was the blog on again? **local.vibe** gives every local project a friendly `.vibe` hostname and puts start/stop controls in one dashboard at [https://local.vibe](https://local.vibe).
+
+macOS only. Single Go binary. No external services.
+
+## What you get
+
+- 🔗 **Friendly hostnames** — `myapp.vibe` resolves to your local app over HTTP *and* HTTPS
+- ⚡ **Auto-assigned ports** — drop `port` from `vibe.json`, vibe picks a free one and exposes it as `$PORT`
+- 🎛️ **Dashboard** — start/stop managed apps, add bookmarks, pick icons, switch list/grid
+- 🔒 **HTTPS built-in** — a local CA is trusted in your Keychain; per-route SANs hot-reload without restart
+- 🤖 **Agent-friendly** — paste `curl http://localhost:7999/setup.md` into Claude Code / Cursor and it understands the setup
+- 🔖 **Bookmark anything** — route `tailscale.vibe` → your Tailscale machine, `office.vibe` → Home Assistant
+- 📦 **Zero hidden deps** — single binary, Cobra + Go stdlib, no Node, no Docker
+
+## Install
 
 ```bash
 git clone https://github.com/graiz/local.vibe.git
@@ -10,53 +28,55 @@ cd local.vibe
 ./setup.sh
 ```
 
-This installs everything (Homebrew, Go, dnsmasq, port forwarding, HTTPS certificates) and opens the dashboard. Currently macOS only.
+Installs Homebrew (if missing), Go, dnsmasq, `/etc/resolver/vibe`, pf rules for port forwarding, and a local TLS CA trusted in your Keychain — then opens the dashboard.
 
-**That's it.** Everything else happens at [https://local.vibe](https://local.vibe).
+## Your first app
 
----
-
-## For Agents & Automation
-
-A quick-start guide for configuring individual projects is served by the daemon.
-Fetch it with `curl http://localhost:7999/setup.md` (or visit
-[https://local.vibe/setup.md](https://local.vibe/setup.md) in a browser).
-The sections below are the full reference documentation.
-
-### How it works
-
-```
-Browser → dnsmasq (*.vibe → 127.0.0.1) → pf (443 → 7443, 80 → 7999) → vibe daemon (HTTPS/HTTP) → reverse proxy → your app
-```
-
-### CLI Reference
-
-```bash
-vibe --help                          # Show all commands
-vibe [command] --help                # Help for a specific command
-vibe start                           # Start app from vibe.json in current dir
-vibe start myapp                     # Start an already-registered route
-vibe start myapp 3000 -- npm run dev # Register + start a new managed app
-vibe stop myapp                      # Stop a managed app
-vibe register myapp 3000             # Static port mapping (no process management)
-vibe deregister myapp                # Remove a route
-vibe list                            # List all routes
-vibe status                          # Show daemon health
-vibe open myapp                      # Open in browser
-vibe dev                             # Rebuild + restart daemon (for development)
-```
-
-### vibe.json
-
-Drop this in a project root, then run `vibe start`:
+Drop this in any project root:
 
 ```json
 {
   "name": "myapp",
-  "port": 3000,
   "cmd": "npm run dev"
 }
 ```
+
+```bash
+vibe start
+# started: myapp → https://myapp.vibe (port 3000)
+```
+
+vibe picks a free port starting at 3000 and passes it to your app via `$PORT`. The daemon keeps it running; `vibe stop myapp` shuts it down. Visit `https://myapp.vibe` in any browser.
+
+## Dashboard
+
+<p align="center">
+  <img src="docs/dashboard-list.png" alt="local.vibe list view" width="820">
+</p>
+
+Switch between grid and list views (preference persists across restarts). Each row shows route type, port, uptime, and start/stop/edit controls. The modal editor supports custom emoji or auto-detected favicons; bookmark routes can redirect to any external URL — handy for Tailscale hosts or Home Assistant dashboards.
+
+---
+
+## Reference
+
+### CLI
+
+```bash
+vibe --help                          # Show all commands
+vibe start                           # Start from vibe.json in the current dir
+vibe start myapp                     # Start an already-registered route
+vibe start myapp 3000 -- npm run dev # Register + start inline
+vibe stop myapp                      # Stop a managed app
+vibe register myapp 3000             # Static mapping (no process management)
+vibe deregister myapp                # Remove a route
+vibe list                            # List all routes
+vibe status                          # Show daemon health
+vibe open myapp                      # Open in browser
+vibe dev                             # Rebuild + restart daemon (for contributors)
+```
+
+### `vibe.json`
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -66,118 +86,83 @@ Drop this in a project root, then run `vibe start`:
 | `icon` | no | Emoji or image URL for the dashboard |
 | `idle_timeout` | no | Auto-stop after N minutes of no traffic (0 = never) |
 
-#### Automatic port assignment
+**Tip:** use `python3` (not `python`) on macOS. For Python apps, prefer a venv: `".venv/bin/python app.py"`.
 
-Omit `port` (or set it to `0`) and vibe will auto-assign a free port starting from 3000. The port is injected as the `PORT` environment variable, which most frameworks respect out of the box:
+### Framework notes
 
-```json
-{
-  "name": "myapp",
-  "cmd": "npm run dev"
-}
-```
-
-Your app reads `process.env.PORT` (Node), `os.environ["PORT"]` (Python), etc. The assigned port is shown in CLI output and persisted across daemon restarts. Each app gets a unique port — vibe skips ports already claimed by other routes.
-
-**Command tips:** Use `python3` not `python` on macOS. For Python apps, use a venv: `".venv/bin/python app.py"`. For Flask/Django, disable the reloader (not debug mode): `app.run(debug=True, use_reloader=False)` or `flask run --debug --no-reload`.
-
-### Route Types
-
-| Type | Created by | Lifecycle |
-|------|-----------|-----------|
-| **managed** | `vibe start` / dashboard | Daemon manages the process; start/stop from dashboard |
-| **sticky** | `vibe register` | Persists across daemon restarts |
-| **bookmark** | Dashboard | Redirects (307) to an external URL |
-
-### Dashboard
-
-The dashboard at [https://local.vibe](https://local.vibe) provides:
-- List and grid views (preference persisted across restarts)
-- Start/stop managed routes
-- Add/edit/delete routes via modal UI
-- Auto-detected favicons from running apps
-- Custom emoji icons via picker or text input
-- Bookmark routes that redirect to external URLs
-- Toast notifications for errors (port conflicts, crash details)
-
-### API
-
-All endpoints are under `https://local.vibe/_api/` (or `http://localhost:7999/_api/`).
-
-```bash
-# Health & listing
-curl /_api/health                            # {"status":"ok","routes":3,"uptime":120}
-curl /_api/routes                            # List all routes (JSON array)
-
-# Register a new route (port is optional for managed routes — omit for auto-assign)
-curl -X POST /_api/routes \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"myapp","port":3000,"cmd":"npm run dev","dir":"/path/to/project"}'
-
-# Update an existing route
-curl -X PUT /_api/routes/myapp \
-  -H 'Content-Type: application/json' \
-  -d '{"port":3001,"icon":"🚀"}'
-
-# Start / stop managed routes
-curl -X POST /_api/routes/myapp/start        # Returns 409 if port is occupied
-curl -X POST /_api/routes/myapp/stop
-
-# Check readiness
-curl /_api/routes/myapp/ready                # {"ready":true,"running":true}
-
-# Delete a route
-curl -X DELETE /_api/routes/myapp
-
-# Set dashboard preferences
-curl -X PUT /_api/preferences \
-  -H 'Content-Type: application/json' \
-  -d '{"view":"grid"}'                       # "list" or "grid"
-```
-
-**Error handling:** Port conflicts return `409` with the occupied port number. Duplicate route names return `409` when the route is already running. Immediate process crashes include the last few lines of `~/.vibe/{name}.log` in the error response. Auto-assigned ports are returned in the response as `"port": <number>`.
-
-### Runtime Files
-
-| Path | Purpose |
-|------|---------|
-| `~/.vibe/routes.json` | Persisted routes (sticky, managed, bookmark) |
-| `~/.vibe/config.json` | Config (daemon port, TLD, dashboard view preference) |
-| `~/.vibe/daemon.log` | Daemon log |
-| `~/.vibe/{name}.log` | Per-route process logs (tailed on crash for diagnostics) |
-| `~/.vibe/daemon.pid` | Daemon PID file |
-| `~/.vibe/vibe.sock` | Unix socket for CLI-to-daemon communication |
-
-### Framework Notes
-
-**Vite** (React, Vue, Svelte): Add `.vibe` to allowed hosts in `vite.config.js`:
+**Vite** (React, Vue, Svelte) — add `.vibe` to `vite.config.js`:
 ```js
 export default defineConfig({ server: { allowedHosts: ['.vibe'] } })
 ```
 
-**Next.js**: Add to `next.config.js`:
+**Next.js** — in `next.config.js`:
 ```js
 module.exports = { allowedDevOrigins: ['*.vibe'] }
 ```
 
-**Flask**: Disable the reloader (debug error pages still work):
+**Flask** — disable the reloader (debug error pages still work):
 ```python
-app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
+app.run(debug=True, use_reloader=False, host='0.0.0.0',
+        port=int(os.environ.get("PORT", 5000)))
 ```
-Or via CLI: `flask run --debug --no-reload --port 5000`
+Or via CLI: `flask run --debug --no-reload --port $PORT`
 
-**Django**: Disable the reloader:
+**Django**:
 ```bash
-python3 manage.py runserver --noreload 0.0.0.0:8000
+python3 manage.py runserver --noreload 0.0.0.0:$PORT
 ```
 
-### Development
+### Route types
+
+| Type | Created by | Lifecycle |
+|------|-----------|-----------|
+| **managed** | `vibe start` / dashboard | Daemon manages the process; start/stop controls |
+| **sticky** | `vibe register` | Persists across daemon restarts |
+| **bookmark** | Dashboard | Redirects (307) to an external URL |
+
+### HTTP API
+
+All endpoints live under `https://local.vibe/_api/` (or `http://localhost:7999/_api/`).
 
 ```bash
-vibe dev           # rebuild + restart daemon
-go test ./...      # run tests
-go vet ./...       # lint
+curl /_api/health                                # {"status":"ok","routes":3,"uptime":120}
+curl /_api/routes                                # List all routes
+curl -X POST /_api/routes \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"app","cmd":"npm run dev","dir":"/path/to/project"}'
+curl -X PUT    /_api/routes/app -d '{"port":3001,"icon":"🚀"}'
+curl -X POST   /_api/routes/app/start            # 409 if port occupied
+curl -X POST   /_api/routes/app/stop
+curl           /_api/routes/app/ready            # {"ready":true,"running":true}
+curl -X DELETE /_api/routes/app
+curl -X PUT    /_api/preferences -d '{"view":"grid"}'
 ```
+
+Port conflicts return `409` with the occupied port. Immediate process crashes include the last few lines of `~/.vibe/{name}.log` in the error response. Auto-assigned ports come back as `"port": <number>`.
+
+### Runtime files
+
+| Path | Purpose |
+|------|---------|
+| `~/.vibe/routes.json` | Persisted routes (sticky, managed, bookmark) |
+| `~/.vibe/config.json` | Daemon config (port, TLD, dashboard view) |
+| `~/.vibe/certs/` | Local CA + leaf cert (trusted in Keychain) |
+| `~/.vibe/daemon.log` | Daemon log |
+| `~/.vibe/{name}.log` | Per-route process logs (tailed on crash) |
+| `~/.vibe/daemon.pid` | Daemon PID |
+| `~/.vibe/vibe.sock` | Unix socket for CLI ↔ daemon |
+
+### Agents & automation
+
+A per-project setup guide is served by the daemon — paste this into any agentic IDE (Claude Code, Cursor, etc.) and the agent will know how to register a `.vibe` name for the project:
+
+```bash
+curl http://localhost:7999/setup.md
+```
+
+### Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome.
 
 ### License
 
