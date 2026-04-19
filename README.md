@@ -54,7 +54,9 @@ vibe picks a free port starting at 3000 and passes it to your app via `$PORT`. T
   <img src="docs/dashboard-list.jpg" alt="local.vibe list view" width="820">
 </p>
 
-Switch between grid and list views (preference persists across restarts). Each row shows route type, port, uptime, and start/stop/edit controls. The modal editor supports custom emoji or auto-detected favicons; bookmark routes can redirect to any external URL — handy for Tailscale hosts or Home Assistant dashboards.
+Switch between grid and list views (preference persists across restarts). Each row shows route type, port, uptime, and start/stop/edit controls. The modal editor supports custom emoji or auto-detected favicons; bookmark routes either redirect or reverse-proxy to any external URL — handy for Tailscale hosts or Home Assistant dashboards. Proxy mode keeps the `.vibe` name in the browser's URL bar, with an optional opt-in for self-signed upstream certs.
+
+When a managed route's process rebinds to a different port or exits, the daemon serves a "Reconnecting…" or "Not running" page instead of a dead proxy. It auto-discovers the new port via `lsof` and log-tail regex, and surfaces recovery hints (orphan PID, port-in-use) as one-click "Kill PID X and Retry" buttons.
 
 ---
 
@@ -118,7 +120,7 @@ python3 manage.py runserver --noreload 0.0.0.0:$PORT
 |------|-----------|-----------|
 | **managed** | `vibe start` / dashboard | Daemon manages the process; start/stop controls |
 | **sticky** | `vibe register` | Persists across daemon restarts |
-| **bookmark** | Dashboard | Redirects (307) to an external URL |
+| **bookmark** | Dashboard | Redirects (307) or reverse-proxies to an external URL |
 
 ### HTTP API
 
