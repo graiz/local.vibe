@@ -514,3 +514,70 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 	}
 	t.Logf("got expected error: status=%d error=%q", w.Code, errMsg)
 }
+
+// TestWriteStartFailureIncludesRecoveryHint verifies that a StartError whose
+// Tail matches a known log-scan pattern (e.g. Next.js orphan PID) is turned
+// into a structured recovery hint in the JSON response, so the dashboard can
+// render a one-click "Kill PID X and retry" button.
+func TestWriteStartFailureIncludesRecoveryHint(t *testing.T) {
+	t.Parallel()
+	tail := "⨯ Another next dev server is already running.\n- PID: 98765\n"
+	se := &StartError{
+		Err:  fmt.Errorf("process exited immediately: exit status 1"),
+		Tail: tail,
+	}
+	w := httptest.NewRecorder()
+	writeStartFailure(w, http.StatusInternalServerError, se)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", w.Code)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not JSON: %v; body: %s", err, w.Body.String())
+	}
+	if resp["log"] != tail {
+		t.Errorf("log field = %v; want tail", resp["log"])
+	}
+	rec, ok := resp["recovery"].(map[string]any)
+	if !ok {
+		t.Fatalf("response has no recovery hint; body: %s", w.Body.String())
+	}
+	if rec["action"] != "kill_pid" {
+		t.Errorf("action = %v; want kill_pid", rec["action"])
+	}
+	if pid, _ := rec["pid"].(float64); int(pid) != 98765 {
+		t.Errorf("pid = %v; want 98765", rec["pid"])
+	}
+}
+
+// TestHandleStartSafeKillPIDRejectsDaemon ensures the recovery flow can't be
+// used to SIGTERM the daemon's own PID via a crafted kill_pid payload.
+func TestHandleStartSafeKillPIDRejectsDaemon(t *testing.T) {
+	t.Parallel()
+	s := testServer()
+
+	// Register a managed route so there's a target for /start.
+	body, _ := json.Marshal(map[string]any{"name": "owned", "port": 5555})
+	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+
+	// Attach a cmd directly so handleStart won't short-circuit on empty Cmd.
+	route, _ := s.table.Get("owned")
+	route.Cmd = "sleep 60"
+	route.Type = RouteManaged
+
+	// Try to kill the daemon itself.
+	kill, _ := json.Marshal(map[string]any{"kill_pid": os.Getpid()})
+	req = httptest.NewRequest("POST", "/_api/routes/owned/start", bytes.NewReader(kill))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	w = httptest.NewRecorder()
+	s.apiHandler(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 (refuse self-kill); body: %s", w.Code, w.Body.String())
+	}
+}

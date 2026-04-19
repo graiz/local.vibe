@@ -50,6 +50,13 @@ func (s *Server) sweepRoutes() {
 				r.Running.Store(false)
 				r.Ready.Store(false)
 				r.ClearPID()
+				// Stash a diagnostic so the start page (and polling clients)
+				// can surface "Kill PID X and retry" when the process bound
+				// its port, then crashed moments later — a race where
+				// waitForReady's success path already cleared any failure.
+				if r.LoadFailure() == nil {
+					r.SetFailure(failureFromLog(r.Name, "process exited after becoming ready"))
+				}
 				running = false
 			}
 			// Auto-stop idle managed routes. If LastActivity is unset (e.g.

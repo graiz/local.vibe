@@ -3,13 +3,18 @@ package daemon
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/graiz/local.vibe/internal/config"
 )
 
 // validName matches DNS-safe route names: lowercase letters, digits, and hyphens.
@@ -22,6 +27,40 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// failureFromError turns a Start() error into a Failure record, scanning the
+// log tail (if present) for an actionable recovery hint.
+func failureFromError(err error) *Failure {
+	if err == nil {
+		return nil
+	}
+	var se *StartError
+	f := &Failure{Message: err.Error()}
+	if errors.As(err, &se) {
+		f.Message = se.Err.Error()
+		f.Log = se.Tail
+		f.Recovery = scanLogForRecovery(se.Tail)
+	}
+	return f
+}
+
+// writeStartFailure sends a managed-process start error with the log tail and
+// a recovery hint attached when one of the known patterns matches. The
+// dashboard surfaces the hint as a one-click "kill and retry" button.
+func writeStartFailure(w http.ResponseWriter, status int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	f := failureFromError(err)
+	resp := map[string]any{"error": f.Message}
+	if f.Log != "" {
+		resp["log"] = f.Log
+	}
+	if f.Recovery != nil {
+		resp["recovery"] = f.Recovery
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // validateExternalURL rejects any bookmark target that isn't a plain http://
@@ -80,6 +119,9 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(path, "/routes/")
 		name = strings.TrimSuffix(name, "/ready")
 		s.handleReady(w, r, name)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/repair"):
+		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/repair")
+		s.handleRepair(w, r, name)
 	case r.Method == http.MethodGet && path == "/routes":
 		s.handleListRoutes(w, r)
 	case r.Method == http.MethodPost && path == "/routes":
@@ -155,7 +197,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
 	// Reject if a managed route with this name is already running.
 	if existing, ok := s.table.Get(req.Name); ok && existing.Type == RouteManaged && existing.Running.Load() {
 		writeJSONError(w, http.StatusConflict, fmt.Sprintf("route %q is already running on port %d", req.Name, existing.Port))
@@ -224,12 +265,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		pid, err := s.procs.Start(route)
 		if err != nil {
 			s.table.Remove(route.Name)
-			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start: %s", err))
+			writeStartFailure(w, http.StatusInternalServerError, err)
 			return
 		}
 		route.SetPID(pid)
 		route.Running.Store(true)
 		route.Ready.Store(false)
+		route.SetFailure(nil)
 		// Seed LastActivity so the idle-timeout sweep has a baseline even if
 		// the process is started but never receives a proxy request.
 		route.TouchActivity()
@@ -333,6 +375,28 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 
+	// Optional: the dashboard may send a recovery action with the retry, e.g.
+	// {"kill_pid": 23674} after a log-scan hint told the user a previous Next
+	// dev server is holding things up. Kill it before starting the new process.
+	var rec struct {
+		KillPID  int `json:"kill_pid,omitempty"`
+		KillPort int `json:"kill_port,omitempty"`
+	}
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") && r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&rec)
+	}
+	if rec.KillPID > 0 {
+		if err := s.safeKillPID(rec.KillPID); err != nil {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("could not kill PID %d: %s", rec.KillPID, err))
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if rec.KillPort > 0 {
+		s.killPort(rec.KillPort)
+		time.Sleep(300 * time.Millisecond)
+	}
+
 	// Auto-assign a free port if the route has none (e.g. auto-assigned on first start).
 	if route.Port == 0 {
 		port, err := findFreePort(s.table)
@@ -358,12 +422,14 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 	if err != nil {
 		route.Running.Store(false)
 		route.Ready.Store(false)
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		route.SetFailure(failureFromError(err))
+		writeStartFailure(w, http.StatusInternalServerError, err)
 		return
 	}
 	route.SetPID(pid)
 	route.Running.Store(true)
 	route.Ready.Store(false)
+	route.SetFailure(nil)
 	route.TouchActivity()
 	go s.waitForReady(route)
 
@@ -397,16 +463,110 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
+// handleRepair attempts to locate the real listening port for a route
+// whose registered port is no longer responding. When found it silently
+// updates the route, persists to routes.json, and logs a single line so
+// the user can tell the daemon self-healed.
+//
+// Response shape:
+//   { ok: true,  port: 3001, from: 3000 }    // auto-resolved
+//   { ok: true,  port: 3000, note: "..." }   // nothing to fix, already reachable
+//   { ok: false, port: 3000, reason: "...", restartable: true } // no candidate found
+func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name string) {
+	route, ok := s.table.Get(name)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "route not found")
+		return
+	}
+	if route.Type == RouteBookmark {
+		writeJSONError(w, http.StatusBadRequest, "bookmarks don't need repair")
+		return
+	}
+	if s.isPortReady(route.Port) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":   true,
+			"port": route.Port,
+			"note": "already reachable",
+		})
+		return
+	}
+
+	newPort, found := s.discoverRoutePort(route)
+	if !found {
+		resp := map[string]any{
+			"ok":     false,
+			"port":   route.Port,
+			"reason": "could not locate a listening port for this route",
+		}
+		// Offer a restart affordance when the managed child is gone.
+		if route.Type == RouteManaged {
+			pid, hasPID := route.PIDValue()
+			if !hasPID || !processAlive(pid) {
+				resp["restartable"] = true
+			}
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	// Safety: refuse to adopt a port that another route has already registered.
+	// The candidate is plausibly an orphan instance belonging to THAT route,
+	// not this one — silently rewriting would make both routes proxy to the
+	// same listener. Surface it as a non-fix so the user can clean up.
+	for _, other := range s.table.List() {
+		if other.Name != route.Name && other.Port == newPort {
+			resp := map[string]any{
+				"ok":   false,
+				"port": route.Port,
+				"reason": fmt.Sprintf(
+					"port %d is registered to route %q; refusing to adopt",
+					newPort, other.Name,
+				),
+			}
+			if route.Type == RouteManaged {
+				pid, hasPID := route.PIDValue()
+				if !hasPID || !processAlive(pid) {
+					resp["restartable"] = true
+				}
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+	}
+
+	old := route.Port
+	s.table.UpdatePort(name, newPort)
+	route.Ready.Store(true)
+	if err := s.saveStickyRoutes(); err != nil {
+		fmt.Fprintf(os.Stderr, "vibe: failed to persist repaired port for %s: %v\n", name, err)
+	}
+	fmt.Fprintf(os.Stderr, "vibe: %s port auto-updated from %d -> %d\n", name, old, newPort)
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":   true,
+		"port": newPort,
+		"from": old,
+	})
+}
+
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
 		json.NewEncoder(w).Encode(map[string]any{"ready": false, "running": false})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"ready":   s.isPortReady(route.Port),
 		"running": route.Running.Load(),
-	})
+	}
+	// Include diagnostics from the most recent failed start so the browser
+	// can render a "Kill PID X and retry" button when the process crashed
+	// asynchronously (after Start() returned success but before the port
+	// came up).
+	if f := route.LoadFailure(); f != nil {
+		resp["failure"] = f
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleSetPreferences(w http.ResponseWriter, r *http.Request) {
@@ -452,6 +612,10 @@ func (s *Server) waitForReady(route *Route) {
 				route.Running.Store(false)
 				route.Ready.Store(false)
 				route.ClearPID()
+				// Scan the log tail for an actionable recovery hint (e.g.
+				// Next.js's "Another dev server running — PID: 23674") so
+				// whoever polls /ready can offer a one-click "kill and retry".
+				route.SetFailure(failureFromLog(route.Name, "process exited before becoming ready"))
 				return
 			}
 			if !ok || !route.Running.Load() {
@@ -459,6 +623,7 @@ func (s *Server) waitForReady(route *Route) {
 			}
 			if s.isPortReady(route.Port) {
 				route.Ready.Store(true)
+				route.SetFailure(nil)
 				// Try to auto-detect favicon if we haven't already.
 				if route.AutoIcon == "" {
 					go s.fetchFavicon(route)
@@ -467,6 +632,20 @@ func (s *Server) waitForReady(route *Route) {
 			}
 		}
 	}
+}
+
+// failureFromLog builds a Failure by tailing the route's log file and
+// running the recovery-hint scanner over it. Used when a managed process
+// dies asynchronously (after Start() returned) — we don't have an error
+// value from Start, only what the process wrote to its log.
+func failureFromLog(routeName, message string) *Failure {
+	logPath := filepath.Join(config.Dir(), routeName+".log")
+	tail := tailLogFile(logPath, 12)
+	f := &Failure{Message: message, Log: tail}
+	if tail != "" {
+		f.Recovery = scanLogForRecovery(tail)
+	}
+	return f
 }
 
 // fetchFavicon tries to grab a favicon from the running app and store it as a

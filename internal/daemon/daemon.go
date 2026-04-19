@@ -248,10 +248,21 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, route.ExternalURL, http.StatusTemporaryRedirect)
 				return
 			}
-			// For managed routes, check if the port is actually accepting connections.
-			if route.Type == RouteManaged && !s.isPortReady(route.Port) {
+			// If the registered port isn't answering, pick the right failure UI.
+			// A managed route whose child process is gone → the "Stopped" start
+			// page with a Start button (unchanged). Anything else (including a
+			// managed route whose child rebound to a different port) → the
+			// repair page, which will try to auto-discover the new port.
+			if !s.isPortReady(route.Port) {
 				route.Ready.Store(false)
-				s.serveStartPage(w, r, route)
+				if route.Type == RouteManaged {
+					pid, hasPID := route.PIDValue()
+					if !hasPID || !processAlive(pid) {
+						s.serveStartPage(w, r, route)
+						return
+					}
+				}
+				s.serveRepairPage(w, r, route)
 				return
 			}
 			route.TouchActivity()
@@ -263,6 +274,30 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.serveDashboard(w, r)
+}
+
+// safeKillPID sends SIGTERM to an arbitrary PID on behalf of a user-confirmed
+// recovery action. Refuses to signal pid ≤ 1, the daemon itself, or any PID
+// the daemon already manages — those should be stopped via the route's Stop
+// handler instead so ProcessManager state stays consistent.
+func (s *Server) safeKillPID(pid int) error {
+	if pid <= 1 {
+		return fmt.Errorf("invalid pid")
+	}
+	if pid == os.Getpid() {
+		return fmt.Errorf("refusing to kill the daemon")
+	}
+	if s.procs.OwnsPID(pid) {
+		return fmt.Errorf("pid is a managed vibe route; stop the route instead")
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return fmt.Errorf("process not found")
+	}
+	return proc.Signal(syscall.SIGTERM)
 }
 
 func (s *Server) killPort(port int) {

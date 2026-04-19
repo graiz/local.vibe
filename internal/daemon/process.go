@@ -13,6 +13,23 @@ import (
 	"github.com/graiz/local.vibe/internal/config"
 )
 
+// StartError wraps a Start() failure with the tail of the process's log
+// output so callers can scan it for an actionable recovery hint (orphan PID,
+// EADDRINUSE, etc.) and surface it to the user.
+type StartError struct {
+	Err  error
+	Tail string
+}
+
+func (e *StartError) Error() string {
+	if e.Tail != "" {
+		return e.Err.Error() + "\n" + e.Tail
+	}
+	return e.Err.Error()
+}
+
+func (e *StartError) Unwrap() error { return e.Err }
+
 // ProcessManager tracks managed child processes spawned by the daemon.
 type ProcessManager struct {
 	mu    sync.Mutex
@@ -88,17 +105,14 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		pm.mu.Lock()
 		delete(pm.procs, route.Name)
 		pm.mu.Unlock()
-		hint := tailLogFile(logPath, 5)
+		tail := tailLogFile(logPath, 12)
+		var inner error
 		if err != nil {
-			if hint != "" {
-				return 0, fmt.Errorf("process exited immediately: %w\n%s", err, hint)
-			}
-			return 0, fmt.Errorf("process exited immediately: %w", err)
+			inner = fmt.Errorf("process exited immediately: %w", err)
+		} else {
+			inner = fmt.Errorf("process exited immediately with status 0")
 		}
-		if hint != "" {
-			return 0, fmt.Errorf("process exited immediately with status 0\n%s", hint)
-		}
-		return 0, fmt.Errorf("process exited immediately with status 0")
+		return 0, &StartError{Err: inner, Tail: tail}
 	case <-time.After(1 * time.Second):
 		// Still running after 1s — likely a real server process.
 	}
@@ -165,4 +179,18 @@ func (pm *ProcessManager) IsRunning(name string) bool {
 		return false
 	}
 	return cmd.Process.Signal(syscall.Signal(0)) == nil
+}
+
+// OwnsPID reports whether pid belongs to one of the daemon's managed children.
+// Used to prevent the "kill and retry" recovery flow from SIGTERM'ing our own
+// processes — the caller should stop the owning route instead.
+func (pm *ProcessManager) OwnsPID(pid int) bool {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	for _, cmd := range pm.procs {
+		if cmd.Process != nil && cmd.Process.Pid == pid {
+			return true
+		}
+	}
+	return false
 }

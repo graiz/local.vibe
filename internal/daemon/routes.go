@@ -39,6 +39,18 @@ type Route struct {
 	Ready        atomic.Bool               `json:"-"`
 	PID          atomic.Pointer[int]       `json:"-"` // managed/tracked process PID; nil when not running
 	LastActivity atomic.Pointer[time.Time] `json:"-"` // last proxy request; nil until first activity
+	LastFailure  atomic.Pointer[Failure]   `json:"-"` // diagnostics from the most recent failed start, if any
+}
+
+// Failure captures why a managed route's most recent start attempt failed,
+// including the log tail and any actionable recovery hint extracted from it.
+// Stored on the Route so that asynchronous crashes (process dies after Start
+// returned successfully) can still surface a "Kill PID X and retry" button
+// to whoever polls the /ready endpoint.
+type Failure struct {
+	Message  string    `json:"message"`
+	Log      string    `json:"log,omitempty"`
+	Recovery *Recovery `json:"recovery,omitempty"`
 }
 
 // SetPID stores the process PID atomically.
@@ -68,6 +80,14 @@ func (r *Route) TouchActivity() {
 // SetLastActivity stores an explicit activity timestamp (used by tests
 // to simulate elapsed idle time).
 func (r *Route) SetLastActivity(t time.Time) { r.LastActivity.Store(&t) }
+
+// SetFailure records diagnostics from a failed start attempt. Pass nil to
+// clear.
+func (r *Route) SetFailure(f *Failure) { r.LastFailure.Store(f) }
+
+// LoadFailure returns the most recent failure, or nil if the route has
+// started cleanly since the last reset.
+func (r *Route) LoadFailure() *Failure { return r.LastFailure.Load() }
 
 // LastActivityOr returns the last activity timestamp, or fallback if none set.
 func (r *Route) LastActivityOr(fallback time.Time) time.Time {
@@ -109,6 +129,20 @@ func (t *RouteTable) Get(name string) (*Route, bool) {
 	defer t.mu.RUnlock()
 	r, ok := t.routes[name]
 	return r, ok
+}
+
+// UpdatePort rewrites an existing route's Port field under the table lock.
+// Returns false if the route is unknown. Used by the self-healing repair
+// flow when a managed app rebinds itself to a different port.
+func (t *RouteTable) UpdatePort(name string, port int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.routes[name]
+	if !ok {
+		return false
+	}
+	r.Port = port
+	return true
 }
 
 // Names returns a sorted list of all route names.
