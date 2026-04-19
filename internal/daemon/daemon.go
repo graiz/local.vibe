@@ -243,8 +243,14 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if route, ok := s.table.Get(name); ok {
-			// Bookmarks redirect to the external URL.
+			// Bookmarks: reverse-proxy when Proxy=true so the browser keeps
+			// the .vibe host in the URL bar; otherwise 307-redirect to the
+			// external URL.
 			if route.Type == RouteBookmark && route.ExternalURL != "" {
+				if route.Proxy {
+					s.proxyBookmark(w, r, route, host)
+					return
+				}
 				http.Redirect(w, r, route.ExternalURL, http.StatusTemporaryRedirect)
 				return
 			}

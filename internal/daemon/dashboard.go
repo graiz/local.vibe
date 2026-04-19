@@ -331,8 +331,8 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 			if r.Type == RouteBookmark {
 				editType = "bookmark"
 			}
-			editBtn = fmt.Sprintf(`<button class="btn-icon" onclick="openEditModal('%s',%d,'%s','%s','%s','%s')" title="Edit">%s</button>`,
-				safeName, r.Port, safeExtURL, editType, safeIcon, safeAutoIcon, editSVG)
+			editBtn = fmt.Sprintf(`<button class="btn-icon" onclick="openEditModal('%s',%d,'%s','%s','%s','%s',%t,%t)" title="Edit">%s</button>`,
+				safeName, r.Port, safeExtURL, editType, safeIcon, safeAutoIcon, r.Proxy, r.InsecureSkipVerify, editSVG)
 		}
 
 		portDimStyle := ""
@@ -461,6 +461,20 @@ Or open in a browser: %[2]s://local.%[1]s/setup.md</textarea>
     <label for="route-url">URL</label>
     <input id="route-url" type="text" placeholder="example.com:8080">
   </div>
+  <div id="proxy-field" style="display:none;margin-bottom:12px">
+    <label class="checkbox-row">
+      <input id="route-proxy" type="checkbox" onchange="onProxyToggle()">
+      <span>Proxy instead of redirect</span>
+    </label>
+    <p class="hint">Keep <code>.vibe</code> in the browser URL. Useful for mirroring Tailscale / intranet hosts on a friendly name.</p>
+  </div>
+  <div id="insecure-field" style="display:none;margin-bottom:16px">
+    <label class="checkbox-row">
+      <input id="route-insecure" type="checkbox">
+      <span>Allow self-signed TLS cert</span>
+    </label>
+    <p class="hint">Only enable when the upstream uses an untrusted certificate (e.g. Tailscale MagicDNS).</p>
+  </div>
   <div style="margin-bottom:16px">
     <label>Icon</label>
     <input id="route-icon" type="hidden">
@@ -523,6 +537,13 @@ function setRouteType(t){
   document.getElementById('toggle-bookmark').className=t==='bookmark'?'active':'';
   document.getElementById('port-field').style.display=t==='local'?'':'none';
   document.getElementById('url-field').style.display=t==='bookmark'?'':'none';
+  document.getElementById('proxy-field').style.display=t==='bookmark'?'':'none';
+  onProxyToggle();
+}
+function onProxyToggle(){
+  var proxyOn=document.getElementById('route-proxy').checked;
+  var bookmark=document.getElementById('toggle-bookmark').className==='active';
+  document.getElementById('insecure-field').style.display=(bookmark&&proxyOn)?'':'none';
 }
 function openAddModal(){
   modalMode='add';editingName='';
@@ -534,11 +555,13 @@ function openAddModal(){
   document.getElementById('route-name').disabled=false;
   document.getElementById('route-port').value='';
   document.getElementById('route-url').value='';
+  document.getElementById('route-proxy').checked=false;
+  document.getElementById('route-insecure').checked=false;
   setIconField('route-icon','icon-preview','icon-clear','icon-picker','');
   setRouteType('local');
   document.getElementById('modal-overlay').classList.add('active');
 }
-function openEditModal(name,port,url,type,icon,autoIcon){
+function openEditModal(name,port,url,type,icon,autoIcon,proxy,insecure){
   modalMode='edit';editingName=name;
   document.getElementById('modal-title').textContent='Edit Route';
   document.getElementById('modal-save').textContent='Save';
@@ -548,6 +571,8 @@ function openEditModal(name,port,url,type,icon,autoIcon){
   document.getElementById('route-name').disabled=false;
   document.getElementById('route-icon').dataset.autoicon=autoIcon||'';
   setIconField('route-icon','icon-preview','icon-clear','icon-picker',icon||'',autoIcon||'');
+  document.getElementById('route-proxy').checked=!!proxy;
+  document.getElementById('route-insecure').checked=!!insecure;
   if(type==='bookmark'){
     setRouteType('bookmark');
     document.getElementById('route-url').value=url;
@@ -572,10 +597,14 @@ function saveRoute(){
     if(!u)return;
     if(u.indexOf('://')===-1)u='http://'+u;
     body.url=u;
+    body.proxy=document.getElementById('route-proxy').checked;
+    body.insecure_skip_verify=document.getElementById('route-insecure').checked;
   }else{
     var p=parseInt(document.getElementById('route-port').value);
     if(!p)return;
     body.port=p;
+    body.proxy=false;
+    body.insecure_skip_verify=false;
   }
   if(modalMode==='edit'){
     fetch('/_api/routes/'+encodeURIComponent(editingName),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(){location.reload()});

@@ -121,6 +121,17 @@ a:hover{color:var(--amber)}
 .modal input::placeholder{color:var(--text-muted)}
 .modal-actions{display:flex;gap:10px;margin-top:22px;justify-content:flex-end}
 .modal .hint{color:var(--text-muted);font-size:.8rem;margin-top:8px;line-height:1.5}
+.modal .hint code{background:var(--elevated);padding:1px 5px;border-radius:3px;font-family:var(--font-body);color:var(--amber);font-size:.78rem}
+/* Checkbox row — inline label + checkbox, no uppercase tiny tracking */
+.modal label.checkbox-row{
+  display:flex;align-items:center;gap:8px;
+  font-size:.88rem;font-weight:400;text-transform:none;letter-spacing:0;
+  color:var(--text);margin:0;cursor:pointer;
+}
+.modal label.checkbox-row input[type=checkbox]{
+  width:auto;margin:0;accent-color:var(--amber);
+  width:16px;height:16px;flex:none;
+}
 
 /* Type toggle */
 .type-toggle{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:18px}

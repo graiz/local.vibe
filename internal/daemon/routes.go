@@ -34,6 +34,13 @@ type Route struct {
 	Icon         string     `json:"icon,omitempty"`         // user-chosen emoji or URL for dashboard
 	AutoIcon     string     `json:"auto_icon,omitempty"`    // auto-detected favicon (data URI)
 
+	// Bookmark-only: when true, requests to name.vibe are reverse-proxied to
+	// ExternalURL instead of 307-redirected, so the browser keeps the .vibe
+	// host in the URL bar. InsecureSkipVerify disables upstream TLS
+	// verification for self-signed targets (e.g. Tailscale MagicDNS).
+	Proxy              bool `json:"proxy,omitempty"`
+	InsecureSkipVerify bool `json:"insecure_skip_verify,omitempty"`
+
 	// Runtime-only state; safe for concurrent access.
 	Running      atomic.Bool               `json:"-"`
 	Ready        atomic.Bool               `json:"-"`

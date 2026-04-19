@@ -81,30 +81,34 @@ func validateExternalURL(raw string) error {
 }
 
 type registerRequest struct {
-	Name        string `json:"name"`
-	Port        int    `json:"port"`
-	PID         *int   `json:"pid,omitempty"`
-	TTL         *int   `json:"ttl,omitempty"`
-	Cmd         string `json:"cmd,omitempty"`
-	Dir         string `json:"dir,omitempty"`
-	URL         string `json:"url,omitempty"`
-	IdleTimeout *int   `json:"idle_timeout,omitempty"` // minutes; 0 = never
-	Icon        string `json:"icon,omitempty"`
+	Name               string `json:"name"`
+	Port               int    `json:"port"`
+	PID                *int   `json:"pid,omitempty"`
+	TTL                *int   `json:"ttl,omitempty"`
+	Cmd                string `json:"cmd,omitempty"`
+	Dir                string `json:"dir,omitempty"`
+	URL                string `json:"url,omitempty"`
+	IdleTimeout        *int   `json:"idle_timeout,omitempty"` // minutes; 0 = never
+	Icon               string `json:"icon,omitempty"`
+	Proxy              *bool  `json:"proxy,omitempty"`                // bookmark: reverse-proxy instead of 307-redirect
+	InsecureSkipVerify *bool  `json:"insecure_skip_verify,omitempty"` // bookmark+proxy: skip upstream TLS verify
 }
 
 type routeResponse struct {
-	Name         string     `json:"name"`
-	Port         int        `json:"port,omitempty"`
-	PID          *int       `json:"pid,omitempty"`
-	RegisteredAt time.Time  `json:"registered_at"`
-	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
-	Type         RouteType  `json:"type"`
-	Running      bool       `json:"running"`
-	Ready        bool       `json:"ready"`
-	URL          string     `json:"url"`
-	ExternalURL  string     `json:"external_url,omitempty"`
-	IdleTimeout  int        `json:"idle_timeout,omitempty"`
-	Icon         string     `json:"icon,omitempty"`
+	Name               string     `json:"name"`
+	Port               int        `json:"port,omitempty"`
+	PID                *int       `json:"pid,omitempty"`
+	RegisteredAt       time.Time  `json:"registered_at"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	Type               RouteType  `json:"type"`
+	Running            bool       `json:"running"`
+	Ready              bool       `json:"ready"`
+	URL                string     `json:"url"`
+	ExternalURL        string     `json:"external_url,omitempty"`
+	IdleTimeout        int        `json:"idle_timeout,omitempty"`
+	Icon               string     `json:"icon,omitempty"`
+	Proxy              bool       `json:"proxy,omitempty"`
+	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"`
 }
 
 // apiHandler routes /_api/* requests to the appropriate handler.
@@ -197,6 +201,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Proxy mode is only meaningful for bookmarks (routes with a URL).
+	if req.Proxy != nil && *req.Proxy && req.URL == "" {
+		writeJSONError(w, http.StatusBadRequest, "proxy requires a url")
+		return
+	}
+
 	// Reject if a managed route with this name is already running.
 	if existing, ok := s.table.Get(req.Name); ok && existing.Type == RouteManaged && existing.Running.Load() {
 		writeJSONError(w, http.StatusConflict, fmt.Sprintf("route %q is already running on port %d", req.Name, existing.Port))
@@ -218,6 +228,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		route.IdleTimeout = *req.IdleTimeout
 	}
 	route.Icon = req.Icon
+	if req.Proxy != nil {
+		route.Proxy = *req.Proxy
+	}
+	if req.InsecureSkipVerify != nil {
+		route.InsecureSkipVerify = *req.InsecureSkipVerify
+	}
 
 	switch {
 	case req.URL != "":
@@ -341,6 +357,12 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 			return
 		}
 	}
+	// Proxy=true requires a URL: either one provided on this update, or the
+	// route is already a bookmark.
+	if req.Proxy != nil && *req.Proxy && req.URL == "" && route.Type != RouteBookmark {
+		writeJSONError(w, http.StatusBadRequest, "proxy requires a url")
+		return
+	}
 	if req.Port != 0 {
 		route.Port = req.Port
 	}
@@ -358,6 +380,14 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 		// Switching from bookmark to sticky
 		route.ExternalURL = ""
 		route.Type = RouteSticky
+		route.Proxy = false
+		route.InsecureSkipVerify = false
+	}
+	if req.Proxy != nil {
+		route.Proxy = *req.Proxy
+	}
+	if req.InsecureSkipVerify != nil {
+		route.InsecureSkipVerify = *req.InsecureSkipVerify
 	}
 	s.table.Add(route)
 	_ = s.saveStickyRoutes()
@@ -754,17 +784,19 @@ func findFaviconHref(page string) string {
 
 func toResponse(r *Route, tld, scheme string) routeResponse {
 	resp := routeResponse{
-		Name:         r.Name,
-		Port:         r.Port,
-		PID:          r.PID.Load(),
-		RegisteredAt: r.RegisteredAt,
-		ExpiresAt:    r.ExpiresAt,
-		Type:         r.Type,
-		Running:      r.Running.Load(),
-		Ready:        r.Ready.Load(),
-		ExternalURL:  r.ExternalURL,
-		IdleTimeout:  r.IdleTimeout,
-		Icon:         r.Icon,
+		Name:               r.Name,
+		Port:               r.Port,
+		PID:                r.PID.Load(),
+		RegisteredAt:       r.RegisteredAt,
+		ExpiresAt:          r.ExpiresAt,
+		Type:               r.Type,
+		Running:            r.Running.Load(),
+		Ready:              r.Ready.Load(),
+		ExternalURL:        r.ExternalURL,
+		IdleTimeout:        r.IdleTimeout,
+		Icon:               r.Icon,
+		Proxy:              r.Proxy,
+		InsecureSkipVerify: r.InsecureSkipVerify,
 	}
 	if r.Type == RouteBookmark {
 		resp.URL = r.ExternalURL

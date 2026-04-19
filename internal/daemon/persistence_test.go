@@ -34,6 +34,14 @@ func TestPersistenceRoundTrip(t *testing.T) {
 		Type:         RouteBookmark,
 		RegisteredAt: time.Now(),
 	})
+	table.Add(&Route{
+		Name:               "mirror",
+		ExternalURL:        "https://app.ts.net",
+		Type:               RouteBookmark,
+		Proxy:              true,
+		InsecureSkipVerify: true,
+		RegisteredAt:       time.Now(),
+	})
 	// PID-tracked routes should NOT be persisted
 	table.Add(&Route{
 		Name:         "ephemeral",
@@ -53,8 +61,8 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	}
 
 	routes := loaded.List()
-	if len(routes) != 3 {
-		t.Fatalf("loaded %d routes; want 3 (sticky+managed+bookmark, not pid)", len(routes))
+	if len(routes) != 4 {
+		t.Fatalf("loaded %d routes; want 4 (sticky+managed+2 bookmarks, not pid)", len(routes))
 	}
 
 	// Check managed route preserved fields
@@ -82,6 +90,26 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	}
 	if docs.ExternalURL != "https://docs.example.com" {
 		t.Errorf("docs.ExternalURL = %q", docs.ExternalURL)
+	}
+
+	// Proxy bookmark roundtrips its flags.
+	mirror, ok := loaded.Get("mirror")
+	if !ok {
+		t.Fatal("mirror route not loaded")
+	}
+	if !mirror.Proxy {
+		t.Error("mirror.Proxy = false; want true")
+	}
+	if !mirror.InsecureSkipVerify {
+		t.Error("mirror.InsecureSkipVerify = false; want true")
+	}
+	if mirror.ExternalURL != "https://app.ts.net" {
+		t.Errorf("mirror.ExternalURL = %q", mirror.ExternalURL)
+	}
+
+	// Plain redirect bookmark stays as such (proxy flag omitempty).
+	if docs.Proxy {
+		t.Error("docs.Proxy = true; want false (redirect bookmark)")
 	}
 
 	// PID-tracked should not be there
