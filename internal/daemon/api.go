@@ -113,6 +113,22 @@ type routeResponse struct {
 
 // apiHandler routes /_api/* requests to the appropriate handler.
 func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
+	// The daemon API is only meant for the dashboard host (local.vibe) and
+	// localhost/unix-socket CLI callers. On any other .vibe host, /_api/*
+	// belongs to the proxied upstream — e.g. Jekyll Admin fetches
+	// /_api/configuration — so fall through to the normal request router.
+	host := r.Host
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+	if strings.HasSuffix(host, "."+s.cfg.Daemon.TLD) {
+		name := strings.TrimSuffix(host, "."+s.cfg.Daemon.TLD)
+		if name != "local" {
+			s.routeRequest(w, r)
+			return
+		}
+	}
+
 	path := strings.TrimPrefix(r.URL.Path, "/_api")
 	w.Header().Set("Content-Type", "application/json")
 

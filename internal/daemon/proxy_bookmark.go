@@ -55,6 +55,14 @@ func (s *Server) proxyBookmark(w http.ResponseWriter, r *http.Request, route *Ro
 		// transparent URL mask, not a load balancer, so X-Forwarded-* should
 		// not appear. Nil-assignment also scrubs any client-supplied value.
 		req.Header["X-Forwarded-For"] = nil
+		// Rewrite Origin/Referer to the upstream so same-origin auth checks
+		// pass. The browser sends these as the .vibe host, but upstreams
+		// that whitelist their own host (e.g. Jekyll Admin's 403 on foreign
+		// Origins) would reject them. Since we already force req.Host to the
+		// upstream, mirroring Origin/Referer keeps the request same-origin
+		// from the upstream's point of view.
+		rewriteOriginHeader(req, target)
+		rewriteRefererHeader(req, target)
 	}
 
 	proxy.Transport = buildUpstreamTransport(target.Scheme == "https" && route.InsecureSkipVerify)
@@ -133,6 +141,39 @@ func stripCookieDomain(resp *http.Response) {
 	for _, c := range cleaned {
 		resp.Header.Add("Set-Cookie", c)
 	}
+}
+
+// rewriteOriginHeader replaces the Origin header (if present) so its scheme
+// and host match the upstream. Leaves other fields alone.
+func rewriteOriginHeader(req *http.Request, target *url.URL) {
+	orig := req.Header.Get("Origin")
+	if orig == "" {
+		return
+	}
+	u, err := url.Parse(orig)
+	if err != nil {
+		return
+	}
+	u.Scheme = target.Scheme
+	u.Host = target.Host
+	req.Header.Set("Origin", u.Scheme+"://"+u.Host)
+}
+
+// rewriteRefererHeader replaces the scheme/host in Referer with the upstream's
+// so the upstream sees a same-origin Referer. Path/query are preserved so
+// upstream analytics/debug still show where the request came from.
+func rewriteRefererHeader(req *http.Request, target *url.URL) {
+	ref := req.Header.Get("Referer")
+	if ref == "" {
+		return
+	}
+	u, err := url.Parse(ref)
+	if err != nil {
+		return
+	}
+	u.Scheme = target.Scheme
+	u.Host = target.Host
+	req.Header.Set("Referer", u.String())
 }
 
 func removeDomainAttr(cookie string) string {
