@@ -34,6 +34,11 @@ type Route struct {
 	Icon         string     `json:"icon,omitempty"`         // user-chosen emoji or URL for dashboard
 	AutoIcon     string     `json:"auto_icon,omitempty"`    // auto-detected favicon (data URI)
 
+	// Optional OAuth bridge: if set, vibe binds localhost:<OAuthCallbackPort>
+	// and redirects /auth/google/callback to {name}.{tld}. This lets apps keep
+	// localhost redirect URIs while sessions are established on the .vibe host.
+	OAuthCallbackPort int `json:"oauth_callback_port,omitempty"`
+
 	// Bookmark-only: when true, requests to name.vibe are reverse-proxied to
 	// ExternalURL instead of 307-redirected, so the browser keeps the .vibe
 	// host in the URL bar. InsecureSkipVerify disables upstream TLS

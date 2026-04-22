@@ -92,6 +92,7 @@ type registerRequest struct {
 	Icon               string `json:"icon,omitempty"`
 	Proxy              *bool  `json:"proxy,omitempty"`                // bookmark: reverse-proxy instead of 307-redirect
 	InsecureSkipVerify *bool  `json:"insecure_skip_verify,omitempty"` // bookmark+proxy: skip upstream TLS verify
+	OAuthCallbackPort  *int   `json:"oauth_callback_port,omitempty"`
 }
 
 type routeResponse struct {
@@ -109,6 +110,7 @@ type routeResponse struct {
 	Icon               string     `json:"icon,omitempty"`
 	Proxy              bool       `json:"proxy,omitempty"`
 	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"`
+	OAuthCallbackPort  int        `json:"oauth_callback_port,omitempty"`
 }
 
 // apiHandler routes /_api/* requests to the appropriate handler.
@@ -222,6 +224,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "proxy requires a url")
 		return
 	}
+	if req.OAuthCallbackPort != nil {
+		if err := s.validateOAuthBridgeConfig(req.Name, req.Port, *req.OAuthCallbackPort); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	// Reject if a managed route with this name is already running.
 	if existing, ok := s.table.Get(req.Name); ok && existing.Type == RouteManaged && existing.Running.Load() {
@@ -249,6 +257,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.InsecureSkipVerify != nil {
 		route.InsecureSkipVerify = *req.InsecureSkipVerify
+	}
+	if req.OAuthCallbackPort != nil {
+		route.OAuthCallbackPort = *req.OAuthCallbackPort
 	}
 
 	switch {
@@ -310,6 +321,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		go s.waitForReady(route)
 	}
 
+	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+		if route.Type == RouteManaged {
+			_ = s.procs.Stop(route.Name)
+		}
+		s.table.Remove(route.Name)
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
+
 	if route.Type == RouteSticky || route.Type == RouteManaged || route.Type == RouteBookmark {
 		_ = s.saveStickyRoutes()
 	}
@@ -331,6 +351,9 @@ func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name s
 		_ = s.procs.Stop(name)
 	}
 	s.table.Remove(name)
+	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: oauth bridge listener reconcile failed: %v\n", err)
+	}
 	_ = s.saveStickyRoutes()
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -379,6 +402,15 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 		writeJSONError(w, http.StatusBadRequest, "proxy requires a url")
 		return
 	}
+	originalName := route.Name
+	originalPort := route.Port
+	originalExternalURL := route.ExternalURL
+	originalType := route.Type
+	originalIdleTimeout := route.IdleTimeout
+	originalIcon := route.Icon
+	originalProxy := route.Proxy
+	originalInsecureSkipVerify := route.InsecureSkipVerify
+	originalOAuthCallbackPort := route.OAuthCallbackPort
 	if req.Port != 0 {
 		route.Port = req.Port
 	}
@@ -405,7 +437,39 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	if req.InsecureSkipVerify != nil {
 		route.InsecureSkipVerify = *req.InsecureSkipVerify
 	}
+	if req.OAuthCallbackPort != nil {
+		route.OAuthCallbackPort = *req.OAuthCallbackPort
+	}
+	if route.OAuthCallbackPort > 0 {
+		if err := s.validateOAuthBridgeConfig(route.Name, route.Port, route.OAuthCallbackPort); err != nil {
+			route.Name = originalName
+			route.Port = originalPort
+			route.ExternalURL = originalExternalURL
+			route.Type = originalType
+			route.IdleTimeout = originalIdleTimeout
+			route.Icon = originalIcon
+			route.Proxy = originalProxy
+			route.InsecureSkipVerify = originalInsecureSkipVerify
+			route.OAuthCallbackPort = originalOAuthCallbackPort
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	s.table.Add(route)
+	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+		route.Name = originalName
+		route.Port = originalPort
+		route.ExternalURL = originalExternalURL
+		route.Type = originalType
+		route.IdleTimeout = originalIdleTimeout
+		route.Icon = originalIcon
+		route.Proxy = originalProxy
+		route.InsecureSkipVerify = originalInsecureSkipVerify
+		route.OAuthCallbackPort = originalOAuthCallbackPort
+		s.table.Add(route)
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
 	_ = s.saveStickyRoutes()
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -515,9 +579,10 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 // the user can tell the daemon self-healed.
 //
 // Response shape:
-//   { ok: true,  port: 3001, from: 3000 }    // auto-resolved
-//   { ok: true,  port: 3000, note: "..." }   // nothing to fix, already reachable
-//   { ok: false, port: 3000, reason: "...", restartable: true } // no candidate found
+//
+//	{ ok: true,  port: 3001, from: 3000 }    // auto-resolved
+//	{ ok: true,  port: 3000, note: "..." }   // nothing to fix, already reachable
+//	{ ok: false, port: 3000, reason: "...", restartable: true } // no candidate found
 func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
@@ -649,6 +714,28 @@ func (s *Server) waitForReady(route *Route) {
 			// so only mark Ready=false. Running reflects actual process state.
 			if !s.isPortReady(route.Port) {
 				route.Ready.Store(false)
+				// Surface something actionable on /ready so the start page
+				// can render the log tail + a recovery button instead of a
+				// bare "check logs" timeout message. Prefer a log-scan hint
+				// (EADDRINUSE, orphan PID, etc.); otherwise fall back to
+				// "restart" — stop the stuck child and try again.
+				logPath := filepath.Join(s.configDir(), route.Name+".log")
+				tail := tailLogFile(logPath, 24)
+				f := &Failure{
+					Message: fmt.Sprintf("Server started but never bound port %d within %s.", route.Port, timeout),
+					Log:     tail,
+				}
+				if rec := scanLogForRecovery(tail); rec != nil {
+					f.Recovery = rec
+				} else if pid, ok := route.PIDValue(); ok && processAlive(pid) {
+					f.Recovery = &Recovery{
+						Action:  "restart",
+						Message: fmt.Sprintf("Process (PID %d) is running but never bound port %d. Restart it?", pid, route.Port),
+						PID:     pid,
+						Port:    route.Port,
+					}
+				}
+				route.SetFailure(f)
 			}
 			return
 		case <-ticker.C:
@@ -813,6 +900,7 @@ func toResponse(r *Route, tld, scheme string) routeResponse {
 		Icon:               r.Icon,
 		Proxy:              r.Proxy,
 		InsecureSkipVerify: r.InsecureSkipVerify,
+		OAuthCallbackPort:  r.OAuthCallbackPort,
 	}
 	if r.Type == RouteBookmark {
 		resp.URL = r.ExternalURL

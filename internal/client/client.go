@@ -72,12 +72,13 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 
 // RegisterRequest mirrors the daemon API body.
 type RegisterRequest struct {
-	Name string `json:"name"`
-	Port int    `json:"port"`
-	PID  *int   `json:"pid,omitempty"`
-	TTL  *int   `json:"ttl,omitempty"`
-	Cmd  string `json:"cmd,omitempty"`
-	Dir  string `json:"dir,omitempty"`
+	Name              string `json:"name"`
+	Port              int    `json:"port"`
+	PID               *int   `json:"pid,omitempty"`
+	TTL               *int   `json:"ttl,omitempty"`
+	Cmd               string `json:"cmd,omitempty"`
+	Dir               string `json:"dir,omitempty"`
+	OAuthCallbackPort *int   `json:"oauth_callback_port,omitempty"`
 }
 
 type RegisterResponse struct {
@@ -87,15 +88,16 @@ type RegisterResponse struct {
 }
 
 type RouteInfo struct {
-	Name         string     `json:"name"`
-	Port         int        `json:"port"`
-	PID          *int       `json:"pid,omitempty"`
-	RegisteredAt time.Time  `json:"registered_at"`
-	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
-	Type         string     `json:"type"`
-	Running      bool       `json:"running"`
-	Ready        bool       `json:"ready"`
-	URL          string     `json:"url"`
+	Name              string     `json:"name"`
+	Port              int        `json:"port"`
+	PID               *int       `json:"pid,omitempty"`
+	RegisteredAt      time.Time  `json:"registered_at"`
+	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
+	Type              string     `json:"type"`
+	Running           bool       `json:"running"`
+	Ready             bool       `json:"ready"`
+	URL               string     `json:"url"`
+	OAuthCallbackPort int        `json:"oauth_callback_port,omitempty"`
 }
 
 type HealthResponse struct {

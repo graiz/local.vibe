@@ -41,15 +41,21 @@ type Server struct {
 	tlsCert *tls.Certificate
 	caCert  *x509.Certificate
 	caKey   *ecdsa.PrivateKey
+
+	oauthBridgeMu        sync.Mutex
+	oauthBridgeServers   map[int]*http.Server
+	oauthBridgeListeners map[int]net.Listener
 }
 
 // NewServer creates a daemon server with the given configuration.
 func NewServer(cfg *config.Config) *Server {
 	return &Server{
-		cfg:   cfg,
-		table: NewRouteTable(),
-		procs: NewProcessManager(),
-		quit:  make(chan struct{}),
+		cfg:                  cfg,
+		table:                NewRouteTable(),
+		procs:                NewProcessManager(),
+		quit:                 make(chan struct{}),
+		oauthBridgeServers:   make(map[int]*http.Server),
+		oauthBridgeListeners: make(map[int]net.Listener),
 	}
 }
 
@@ -62,6 +68,9 @@ func (s *Server) Start() error {
 
 	if err := loadStickyRoutes(s.table, s.configDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load persisted routes: %v\n", err)
+	}
+	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not start oauth callback bridge listeners: %v\n", err)
 	}
 
 	s.startedAt = time.Now()
@@ -110,6 +119,7 @@ func (s *Server) Stop() {
 	if s.httpsSrv != nil {
 		_ = s.httpsSrv.Shutdown(ctx)
 	}
+	s.stopOAuthBridgeListeners()
 	_ = os.Remove(s.cfg.Daemon.Socket)
 	_ = os.Remove(fmt.Sprintf("%s/daemon.pid", config.Dir()))
 }
@@ -357,6 +367,9 @@ func findFreePort(table *RouteTable) (int, error) {
 	for _, r := range table.List() {
 		if r.Port > 0 {
 			claimed[r.Port] = true
+		}
+		if r.OAuthCallbackPort > 0 {
+			claimed[r.OAuthCallbackPort] = true
 		}
 	}
 	for port := 3000; port < 4000; port++ {

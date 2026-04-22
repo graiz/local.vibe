@@ -12,9 +12,10 @@ import (
 )
 
 type vibeConfig struct {
-	Name string `json:"name"`
-	Port int    `json:"port"`
-	Cmd  string `json:"cmd"`
+	Name              string `json:"name"`
+	Port              int    `json:"port"`
+	Cmd               string `json:"cmd"`
+	OAuthCallbackPort int    `json:"oauth_callback_port,omitempty"`
 }
 
 var startCmd = &cobra.Command{
@@ -53,7 +54,7 @@ and injected as the PORT environment variable.`,
 			if _, err := fmt.Sscan(vibeArgs[1], &port); err != nil || port < 1 || port > 65535 {
 				return fmt.Errorf("invalid port: %s", vibeArgs[1])
 			}
-			return startNew(name, port, strings.Join(appCmd, " "))
+			return startNew(name, port, strings.Join(appCmd, " "), 0)
 
 		default:
 			return fmt.Errorf("usage: vibe start [name] [port] [-- command...]")
@@ -82,7 +83,7 @@ func startFromConfig() error {
 		return fmt.Errorf("vibe.json must have name and cmd fields")
 	}
 
-	return startNew(cfg.Name, cfg.Port, cfg.Cmd)
+	return startNew(cfg.Name, cfg.Port, cfg.Cmd, cfg.OAuthCallbackPort)
 }
 
 // startExisting starts an already-registered managed route.
@@ -96,19 +97,23 @@ func startExisting(name string) error {
 }
 
 // startNew registers a managed route and starts it.
-func startNew(name string, port int, command string) error {
+func startNew(name string, port int, command string, oauthCallbackPort int) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("could not determine working directory: %w", err)
 	}
 
 	c := client.New()
-	resp, err := c.Register(client.RegisterRequest{
+	req := client.RegisterRequest{
 		Name: name,
 		Port: port,
 		Cmd:  command,
 		Dir:  dir,
-	})
+	}
+	if oauthCallbackPort > 0 {
+		req.OAuthCallbackPort = &oauthCallbackPort
+	}
+	resp, err := c.Register(req)
 	if err != nil {
 		return fmt.Errorf("could not register %s: %w", name, err)
 	}
