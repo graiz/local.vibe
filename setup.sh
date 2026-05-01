@@ -99,17 +99,23 @@ open_url() {
 echo -e "${BOLD}local.vibe${RESET} — friendly names for local dev servers"
 setup_platform
 
+# ── System dependencies ──────────────────────────────────
+step "Installing system dependencies..."
+if [[ "$OS" == "Darwin" ]] && ! command -v brew &>/dev/null; then
+  info "Installing Homebrew..."
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  setup_platform
+fi
+info "Installing dnsmasq..."
+pkg_install dnsmasq
+ok "dnsmasq installed"
+
 # ── Go ────────────────────────────────────────────────────
 step "Checking Go..."
 if command -v go &>/dev/null; then
   ok "Go $(go version | awk '{print $3}' | sed 's/go//') installed"
 else
   info "Installing Go via $PKG_MANAGER..."
-  if [[ "$PKG_MANAGER" == "brew" ]] && ! command -v brew &>/dev/null; then
-    info "Installing Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    setup_platform
-  fi
   install_go
   command -v go &>/dev/null || fail "Go installation failed"
   ok "Go installed"

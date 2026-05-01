@@ -75,7 +75,6 @@ func setupMacOS() error {
 
 	err := runSteps([]setupStep{
 		{"Checking for Homebrew", checkHomebrew},
-		{"Installing dnsmasq", installDNSMasq},
 		{"Configuring dnsmasq (*.vibe → 127.0.0.1)", configureDNSMasq},
 		{"Creating /etc/resolver/vibe", createResolver},
 		{"Starting dnsmasq as system service", startDNSMasq},
@@ -140,17 +139,6 @@ func checkHomebrew() error {
 		}
 	}
 	return nil
-}
-
-func installDNSMasq() error {
-	out, _ := brewCmd("list", "--formula", "dnsmasq").Output()
-	if strings.TrimSpace(string(out)) != "" {
-		return nil
-	}
-	cmd := brewCmd("install", "dnsmasq")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 func configureDNSMasq() error {
@@ -477,17 +465,109 @@ func chownToUser(path string) {
 }
 
 func setupLinux() error {
-	fmt.Println("Linux setup:")
+	if os.Getuid() != 0 {
+		return fmt.Errorf("setup requires root on Linux — run: sudo vibe setup")
+	}
+
+	fmt.Println("Setting up local.vibe on Linux...")
 	fmt.Println()
-	fmt.Println("1. Install and configure dnsmasq:")
-	fmt.Println("     sudo apt install dnsmasq")
-	fmt.Println("     echo 'address=/.vibe/127.0.0.1' | sudo tee -a /etc/dnsmasq.conf")
-	fmt.Println("     sudo systemctl restart dnsmasq")
+	if err := runSteps([]setupStep{
+		{"Configuring dnsmasq (*.vibe → 127.0.0.1)", configureLinuxDNSMasq},
+		{"Restarting dnsmasq service", restartLinuxService("dnsmasq", false)},
+		{"Configuring systemd-resolved for .vibe", configureSystemdResolved},
+		{"Restarting systemd-resolved", restartLinuxService("systemd-resolved", true)},
+		{"Installing loopback port forwarding (80→7999, 443→7443)", configureLinuxPortForwarding},
+	}); err != nil {
+		return err
+	}
+
 	fmt.Println()
-	fmt.Println("2. Port 80 forwarding:")
-	fmt.Println("     sudo iptables -t nat -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j REDIRECT --to-port 7999")
-	fmt.Println()
-	fmt.Println("3. Autostart (systemd user service):")
-	fmt.Println("     systemctl --user enable --now vibe")
+	fmt.Println("Setup complete.")
+	fmt.Println("Next steps:")
+	fmt.Println("  1) Start daemon: vibe daemon start")
+	fmt.Println("  2) Quick fallback while debugging DNS:")
+	fmt.Println("     echo '127.0.0.1 local.vibe' | sudo tee -a /etc/hosts")
+	return nil
+}
+
+func configureLinuxDNSMasq() error {
+	const managed = `# vibe
+listen-address=127.0.0.1
+bind-interfaces
+address=/.vibe/127.0.0.1
+`
+	for _, confPath := range []string{"/etc/dnsmasq.d/vibe.conf", "/etc/dnsmasq.conf"} {
+		dir := filepath.Dir(confPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			continue
+		}
+		if err := os.WriteFile(confPath, []byte(managed), 0644); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("could not write dnsmasq config (tried /etc/dnsmasq.d/vibe.conf and /etc/dnsmasq.conf)")
+}
+
+func configureSystemdResolved() error {
+	const dir = "/etc/systemd/resolved.conf.d"
+	const path = "/etc/systemd/resolved.conf.d/vibe.conf"
+	const content = "[Resolve]\nDNS=127.0.0.1\nDomains=~vibe\n"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	existing, _ := os.ReadFile(path)
+	if string(existing) == content {
+		return nil
+	}
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func restartLinuxService(name string, allowMissing bool) func() error {
+	return func() error {
+		cmd := exec.Command("systemctl", "restart", name)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+
+		// Some Linux environments do not provide a dnsmasq systemd unit
+		// (e.g., package not installed yet or managed by another init path).
+		check := exec.Command("systemctl", "list-unit-files", name+".service")
+		out, checkErr := check.CombinedOutput()
+		if checkErr != nil || !strings.Contains(string(out), name+".service") {
+			if allowMissing {
+				fmt.Printf(" (skipped: %s.service not found)", name)
+				return nil
+			}
+			return fmt.Errorf("%s.service not found", name)
+		}
+		if name == "dnsmasq" {
+			return fmt.Errorf("failed to restart dnsmasq.service (often caused by another DNS server already binding port 53)")
+		}
+		return fmt.Errorf("failed to restart %s.service", name)
+	}
+}
+
+func configureLinuxPortForwarding() error {
+	rules := [][]string{
+		{"-t", "nat", "-C", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", "80", "-j", "REDIRECT", "--to-port", "7999"},
+		{"-t", "nat", "-C", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", "443", "-j", "REDIRECT", "--to-port", "7443"},
+	}
+	addRules := [][]string{
+		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", "80", "-j", "REDIRECT", "--to-port", "7999"},
+		{"-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.1", "--dport", "443", "-j", "REDIRECT", "--to-port", "7443"},
+	}
+	for i := range rules {
+		if err := exec.Command("iptables", rules[i]...).Run(); err == nil {
+			continue
+		}
+		cmd := exec.Command("iptables", addRules[i]...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
