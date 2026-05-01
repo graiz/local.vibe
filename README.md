@@ -1,6 +1,6 @@
 # local.vibe
 
-> `myapp.vibe` instead of `localhost:3000` — for every project on your Mac.
+> `myapp.vibe` instead of `localhost:3000` — for every local project on macOS or Linux.
 
 <p align="center">
   <img src="docs/dashboard-grid.jpg" alt="local.vibe dashboard" width="820">
@@ -8,7 +8,7 @@
 
 Dev work drifts into a mess of `localhost:3000`, `localhost:5173`, `localhost:8080` tabs. Which port was the blog on again? **local.vibe** gives every local project a friendly `.vibe` hostname and puts start/stop controls in one dashboard at [https://local.vibe](https://local.vibe).
 
-macOS only. Single Go binary. No external services.
+Works on macOS or Linux (Debian, Fedora, Arch). Single Go binary. No external services.
 
 ## What you get
 
@@ -28,7 +28,7 @@ cd local.vibe
 ./setup.sh
 ```
 
-Installs Homebrew (if missing), Go, dnsmasq, `/etc/resolver/vibe`, pf rules for port forwarding, and a local TLS CA trusted in your Keychain — then opens the dashboard.
+Installs Go plus required system dependencies for your platform (Homebrew on macOS; apt/dnf/pacman on Linux), runs `vibe setup`, and opens the dashboard.
 
 ## Your first app
 
