@@ -59,23 +59,39 @@ var devCmd = &cobra.Command{
 		fmt.Println("build ok")
 
 		// Kill the running daemon — LaunchAgent will restart with the new binary.
-		pid, err := readDaemonPID()
-		if err == nil && pid > 0 {
-			if p, err := os.FindProcess(pid); err == nil {
-				_ = p.Signal(os.Kill)
-			}
-		}
-
-		// Wait for new daemon to come up.
-		time.Sleep(1 * time.Second)
-		if isDaemonRunning() {
-			pid, _ := readDaemonPID()
-			fmt.Printf("daemon restarted (pid %d)\n", pid)
-		} else {
-			fmt.Println("daemon not running — start with: vibe daemon start")
+		if err := restartDaemon(binary); err != nil {
+			return err
 		}
 		return nil
 	},
+}
+
+func restartDaemon(binary string) error {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+		cmd := exec.Command("sudo", "-u", sudoUser, binary, "daemon", "restart")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("restart daemon as %s: %w", sudoUser, err)
+		}
+		return nil
+	}
+
+	pid, err := readDaemonPID()
+	if err == nil && pid > 0 {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Signal(os.Kill)
+		}
+	}
+
+	time.Sleep(1 * time.Second)
+	if isDaemonRunning() {
+		pid, _ := readDaemonPID()
+		fmt.Printf("daemon restarted (pid %d)\n", pid)
+	} else {
+		fmt.Println("daemon not running — start with: vibe daemon start")
+	}
+	return nil
 }
 
 func init() {

@@ -58,13 +58,9 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		return 0, fmt.Errorf("no command configured for %s", route.Name)
 	}
 
-	// Use interactive login shell so the user's full PATH is available,
-	// including tools initialized in .zshrc/.bashrc (rbenv, nvm, pyenv, etc.)
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/zsh"
-	}
-	cmd := exec.Command(shell, "-lic", route.Cmd)
+	// Use a shell command runner that works across macOS and Linux.
+	shell := preferredShell()
+	cmd := exec.Command(shell, "-c", route.Cmd)
 	cmd.Dir = route.Dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Inject PORT env var so frameworks can auto-detect the assigned port.
@@ -118,6 +114,23 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	}
 
 	return pid, nil
+}
+
+func preferredShell() string {
+	if sh := os.Getenv("SHELL"); sh != "" {
+		if _, err := os.Stat(sh); err == nil {
+			return sh
+		}
+		if resolved, err := exec.LookPath(filepath.Base(sh)); err == nil {
+			return resolved
+		}
+	}
+	for _, candidate := range []string{"bash", "sh"} {
+		if resolved, err := exec.LookPath(candidate); err == nil {
+			return resolved
+		}
+	}
+	return "/bin/sh"
 }
 
 // tailLogFile reads the last n non-empty lines from a log file to provide

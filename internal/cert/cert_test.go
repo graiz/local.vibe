@@ -1,6 +1,7 @@
 package cert
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -279,9 +280,18 @@ func writeExpiringCert(t *testing.T, dir string, ca *x509.Certificate, caKey int
 	t.Helper()
 	certPath := filepath.Join(dir, "vibe.pem")
 
-	data, _ := os.ReadFile(certPath)
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatalf("read existing cert: %v", err)
+	}
 	block, _ := pem.Decode(data)
-	existing, _ := x509.ParseCertificate(block.Bytes)
+	if block == nil {
+		t.Fatal("decode existing cert pem: nil block")
+	}
+	existing, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse existing cert: %v", err)
+	}
 
 	template := &x509.Certificate{
 		SerialNumber: existing.SerialNumber,
@@ -293,11 +303,20 @@ func writeExpiringCert(t *testing.T, dir string, ca *x509.Certificate, caKey int
 		ExtKeyUsage:  existing.ExtKeyUsage,
 	}
 
-	keyData, _ := os.ReadFile(filepath.Join(dir, "vibe-key.pem"))
+	keyData, err := os.ReadFile(filepath.Join(dir, "vibe-key.pem"))
+	if err != nil {
+		t.Fatalf("read leaf key: %v", err)
+	}
 	keyBlock, _ := pem.Decode(keyData)
-	leafKey, _ := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if keyBlock == nil {
+		t.Fatal("decode leaf key pem: nil block")
+	}
+	leafKey, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		t.Fatalf("parse leaf key: %v", err)
+	}
 
-	certDER, err := x509.CreateCertificate(nil, template, ca, &leafKey.PublicKey, caKey)
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca, &leafKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatalf("create expiring cert: %v", err)
 	}

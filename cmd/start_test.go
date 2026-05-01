@@ -20,7 +20,7 @@ func TestSplitAtDash(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		before, after := splitAtDash(tt.args)
+		before, after := splitAtDashForTest(tt.args)
 		if !reflect.DeepEqual(before, tt.wantBefore) {
 			t.Errorf("splitAtDash(%v) before = %v; want %v", tt.args, before, tt.wantBefore)
 		}
@@ -28,4 +28,15 @@ func TestSplitAtDash(t *testing.T) {
 			t.Errorf("splitAtDash(%v) after = %v; want %v", tt.args, after, tt.wantAfter)
 		}
 	}
+}
+
+// Keep this helper in the test file so `go test ./cmd/start_test.go` works
+// even when Go only compiles this file.
+func splitAtDashForTest(args []string) (before, after []string) {
+	for i, a := range args {
+		if a == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
 }
