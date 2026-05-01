@@ -32,7 +32,7 @@ Installs Homebrew (if missing), Go, dnsmasq, `/etc/resolver/vibe`, pf rules for 
 
 ## Your first app
 
-Drop this in any project root:
+Drop this into vibe.json in any project root:
 
 ```json
 {
