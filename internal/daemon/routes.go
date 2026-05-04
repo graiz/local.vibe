@@ -155,6 +155,23 @@ func (t *RouteTable) Get(name string) (*Route, bool) {
 	return r, ok
 }
 
+// UpdateManagedConfig rewrites the Cmd, OAuthCallbackPort, and ReservePorts
+// fields of a managed route under the table lock so concurrent readers (the
+// monitor goroutine, dashboard renderer, route lookups) never observe a torn
+// write. Returns false if the route is unknown.
+func (t *RouteTable) UpdateManagedConfig(name, cmd string, oauthCallbackPort int, reservePorts map[string]int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.routes[name]
+	if !ok {
+		return false
+	}
+	r.Cmd = cmd
+	r.OAuthCallbackPort = oauthCallbackPort
+	r.ReservePorts = reservePorts
+	return true
+}
+
 // UpdatePort rewrites an existing route's Port field under the table lock.
 // Returns false if the route is unknown. Used by the self-healing repair
 // flow when a managed app rebinds itself to a different port.

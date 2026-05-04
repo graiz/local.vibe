@@ -25,18 +25,9 @@ func (s *Server) validateOAuthBridgeConfig(routeName string, appPort, callbackPo
 		}
 	}
 
-	s.oauthBridgeMu.Lock()
-	_, alreadyListening := s.oauthBridgeListeners[callbackPort]
-	s.oauthBridgeMu.Unlock()
-	if alreadyListening {
-		return nil
-	}
-
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", callbackPort))
-	if err != nil {
-		return fmt.Errorf("oauth_callback_port %d is not available: %w", callbackPort, err)
-	}
-	_ = ln.Close()
+	// Bindability is enforced by reconcileOAuthBridgeListeners (which holds
+	// the actual listener); a probe-and-close here would race against any
+	// concurrent listener acquiring the port between the probe and reconcile.
 	return nil
 }
 

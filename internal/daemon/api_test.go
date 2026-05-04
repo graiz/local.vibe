@@ -140,6 +140,34 @@ func TestAPIUpdate(t *testing.T) {
 	}
 }
 
+// TestAPIUpdateRenameWithValidationFailure regresses a bug where a rename
+// + later validation failure (bad URL) removed the old key from the table
+// but never re-added it, silently deleting the route.
+func TestAPIUpdateRenameWithValidationFailure(t *testing.T) {
+	s := testServer()
+
+	body, _ := json.Marshal(map[string]any{"name": "foo", "port": 3000})
+	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiHandler(httptest.NewRecorder(), req)
+
+	body, _ = json.Marshal(map[string]any{"name": "bar", "url": "not-a-valid-url"})
+	req = httptest.NewRequest("PUT", "/_api/routes/foo", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("expected validation error, got 200")
+	}
+	if _, ok := s.table.Get("foo"); !ok {
+		t.Errorf("route foo vanished after failed rename+update")
+	}
+	if _, ok := s.table.Get("bar"); ok {
+		t.Errorf("route bar should not exist after failed validation")
+	}
+}
+
 func TestAPIUpdateIdleTimeout(t *testing.T) {
 	s := testServer()
 

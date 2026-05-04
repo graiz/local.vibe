@@ -595,7 +595,11 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	if req.Name != "" {
 		req.Name = strings.ToLower(req.Name)
 	}
-	// If the name changed, validate and remove old entry.
+	// Validate a rename up-front, but defer the table mutation until after
+	// every other validation has passed — otherwise a later early-return
+	// (bad URL, OAuth port collision, etc.) would leave the route removed
+	// from the table but never re-added under any name.
+	renaming := false
 	if req.Name != "" && req.Name != name {
 		if !validName.MatchString(req.Name) {
 			writeJSONError(w, http.StatusBadRequest, "invalid name — use lowercase letters, digits, and hyphens")
@@ -609,8 +613,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 			writeJSONError(w, http.StatusConflict, "a route with that name already exists")
 			return
 		}
-		s.table.Remove(name)
-		route.Name = req.Name
+		renaming = true
 	}
 	if req.URL != "" {
 		if err := validateExternalURL(req.URL); err != nil {
@@ -625,6 +628,9 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 		return
 	}
 	originalName := route.Name
+	if renaming {
+		route.Name = req.Name
+	}
 	originalPort := route.Port
 	originalExternalURL := route.ExternalURL
 	originalType := route.Type
@@ -682,8 +688,16 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 			return
 		}
 	}
+	// Commit any rename now that all validation has succeeded: remove the
+	// old key, then re-add under the (possibly new) name.
+	if renaming {
+		s.table.Remove(name)
+	}
 	s.table.Add(route)
 	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+		if renaming {
+			s.table.Remove(route.Name)
+		}
 		route.Name = originalName
 		route.Port = originalPort
 		route.ExternalURL = originalExternalURL

@@ -81,20 +81,15 @@ func (s *Server) syncRouteFromVibeJSON(route *Route) error {
 		return fmt.Errorf("reserve_ports value %d conflicts with route %q", conflictPort, conflictRoute)
 	}
 
-	changed := false
-	if newCmd != route.Cmd {
-		route.Cmd = newCmd
-		changed = true
-	}
-	if newOAuth != route.OAuthCallbackPort {
-		route.OAuthCallbackPort = newOAuth
-		changed = true
-	}
-	if !reflect.DeepEqual(newReserve, route.ReservePorts) {
-		route.ReservePorts = newReserve
-		changed = true
-	}
+	changed := newCmd != route.Cmd ||
+		newOAuth != route.OAuthCallbackPort ||
+		!reflect.DeepEqual(newReserve, route.ReservePorts)
 	if !changed {
+		return nil
+	}
+	// Mutate under the table lock so concurrent readers (monitor, dashboard,
+	// routeRequest) never see a torn write of these plain struct fields.
+	if !s.table.UpdateManagedConfig(route.Name, newCmd, newOAuth, newReserve) {
 		return nil
 	}
 
