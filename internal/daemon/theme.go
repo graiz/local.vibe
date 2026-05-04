@@ -13,7 +13,7 @@ func themeHead(title string) string {
 }
 
 // themeCSS is the shared base stylesheet — retro-futurist command center design.
-// NOTE: Used inside fmt.Fprintf so literal %% must be %%.
+// NOTE: Used inside fmt.Fprintf so literal % must be %.
 const themeCSS = `
 :root{
   --bg:#111113;
@@ -81,11 +81,11 @@ a:hover{color:var(--amber)}
 
 /* Spinner */
 @keyframes spin{to{transform:rotate(360deg)}}
-.spinner{display:inline-block;width:12px;height:12px;border:1.5px solid #333;border-top-color:#888;border-radius:50%%;animation:spin .6s linear infinite}
+.spinner{display:inline-block;width:12px;height:12px;border:1.5px solid #333;border-top-color:#888;border-radius:50%;animation:spin .6s linear infinite}
 
 /* LED indicators */
-.led{width:9px;height:9px;border-radius:50%%;flex-shrink:0;display:inline-block;position:relative}
-.led::after{content:'';position:absolute;inset:-3px;border-radius:50%%;opacity:.6;filter:blur(3px)}
+.led{width:9px;height:9px;border-radius:50%;flex-shrink:0;display:inline-block;position:relative}
+.led::after{content:'';position:absolute;inset:-3px;border-radius:50%;opacity:.6;filter:blur(3px)}
 .led-green{background:var(--green);box-shadow:0 0 4px var(--green),0 0 8px var(--green-glow)}
 .led-green::after{background:var(--green-glow)}
 .led-red{background:var(--red);box-shadow:0 0 4px var(--red),0 0 8px var(--red-glow)}
@@ -95,65 +95,192 @@ a:hover{color:var(--amber)}
 .led-gray{background:#4a4a52}
 
 /* Modal */
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);z-index:200;align-items:center;justify-content:center}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(6,6,10,.55);backdrop-filter:blur(14px) saturate(120%);z-index:200;align-items:center;justify-content:center;padding:24px}
 .modal-overlay.active{display:flex}
 .modal{
-  background:var(--surface);border:1px solid var(--border);
-  border-radius:var(--radius-lg);padding:28px;width:420px;max-width:92vw;
-  box-shadow:0 16px 48px rgba(0,0,0,.5);
-  animation:modal-in .2s ease;
+  position:relative;
+  background:#1c1c22;
+  border:1px solid var(--border);
+  border-radius:14px;width:460px;max-width:100%;max-height:calc(100vh - 48px);
+  overflow:hidden;display:flex;flex-direction:column;
+  box-shadow:0 24px 64px -8px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.02) inset;
+  animation:modal-in .22s cubic-bezier(.2,.8,.2,1);
 }
-@keyframes modal-in{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+.modal::before{
+  content:'';position:absolute;top:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(232,148,58,.4) 30%,rgba(232,148,58,.4) 70%,transparent);
+  pointer-events:none;
+}
+@keyframes modal-in{from{opacity:0;transform:translateY(12px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+
+.modal-header{
+  padding:22px 28px 20px;flex-shrink:0;
+  display:flex;align-items:center;gap:18px;
+  border-bottom:1px solid var(--border-subtle);
+}
+.modal-header-text{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:2px}
+.modal-eyebrow{
+  display:flex;align-items:center;gap:7px;
+  font-family:var(--font-display);font-size:.66rem;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--amber);
+}
+.modal-eyebrow::before{
+  content:'';width:5px;height:5px;border-radius:50%;
+  background:var(--amber);box-shadow:0 0 6px var(--amber-glow);
+}
 .modal h3{
-  font-family:var(--font-display);font-size:1rem;
-  letter-spacing:.08em;text-transform:uppercase;
-  color:var(--amber);margin-bottom:20px;
+  font-family:var(--font-display);font-size:1.3rem;
+  letter-spacing:.02em;color:var(--text);
+  text-transform:none;line-height:1.1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.modal label{display:block;font-size:.7rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted);margin-bottom:6px;margin-top:16px}
-.modal label:first-of-type{margin-top:0}
+.modal-sub{font-size:.74rem;color:var(--text-muted);letter-spacing:.02em;line-height:1.4}
+
+/* Header icon — clickable, opens picker popover */
+.icon-trigger{
+  width:56px;height:56px;border-radius:12px;flex-shrink:0;
+  background:linear-gradient(180deg,#22222a,#1a1a20);
+  border:1px solid var(--border);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  font-size:30px;line-height:1;position:relative;
+  background-size:cover;background-position:center;
+  transition:border-color .15s,box-shadow .15s,transform .12s;
+}
+.icon-trigger:hover{border-color:var(--amber);box-shadow:0 0 0 3px rgba(232,148,58,.1)}
+.icon-trigger:active{transform:scale(.96)}
+
+/* Icon popover — anchored under the header icon */
+.icon-popover{
+  position:absolute;top:84px;left:28px;z-index:10;
+  width:320px;padding:14px;
+  background:#1c1c22;border:1px solid var(--border);
+  border-radius:12px;
+  box-shadow:0 12px 32px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.02) inset;
+  display:none;
+  animation:popover-in .15s ease;
+}
+.icon-popover.active{display:block}
+@keyframes popover-in{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+.icon-popover .icon-popover-row{display:flex;gap:8px;margin-bottom:10px}
+.icon-popover input{
+  flex:1;width:auto!important;background:rgba(0,0,0,.35);border:1px solid var(--border);
+  border-radius:8px;padding:8px 10px;color:var(--text);
+  font-family:var(--font-body);font-size:.9rem;outline:none;
+}
+.icon-popover input:focus{border-color:var(--amber)}
+.icon-popover .btn-sm{font-size:.7rem;padding:0 12px}
+
+.modal-body{padding:22px 28px;overflow-y:auto;flex:1;min-height:0}
+.modal-body::-webkit-scrollbar{width:6px}
+.modal-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+.field{margin-bottom:18px}
+.field:last-child{margin-bottom:0}
+.field-row{display:flex;gap:12px;margin-bottom:18px}
+.field-row .field{flex:1;margin-bottom:0;min-width:0}
+.field-row .field-port{flex:0 0 120px}
+.modal label{display:block;font-size:.66rem;font-weight:600;text-transform:uppercase;letter-spacing:.14em;color:var(--text-muted);margin-bottom:8px}
 .modal input,.modal select{
-  width:100%%;background:var(--bg);border:1px solid var(--border);
-  border-radius:var(--radius);padding:10px 12px;color:var(--text);
-  font-family:var(--font-body);font-size:.88rem;outline:none;
-  transition:border-color .15s;
+  display:block;box-sizing:border-box;
+  width:100%;min-width:0;
+  background:rgba(0,0,0,.35);border:1px solid var(--border);
+  border-radius:8px;padding:11px 13px;color:var(--text);
+  font-family:var(--font-body);font-size:.9rem;outline:none;
+  transition:border-color .15s,background .15s,box-shadow .15s;
 }
-.modal input:focus,.modal select:focus{border-color:var(--amber)}
-.modal input::placeholder{color:var(--text-muted)}
-.modal-actions{display:flex;gap:10px;margin-top:22px;justify-content:flex-end}
-.modal .hint{color:var(--text-muted);font-size:.8rem;margin-top:8px;line-height:1.5}
-.modal .hint code{background:var(--elevated);padding:1px 5px;border-radius:3px;font-family:var(--font-body);color:var(--amber);font-size:.78rem}
-/* Checkbox row — inline label + checkbox, no uppercase tiny tracking */
+.modal input:hover{border-color:var(--text-muted)}
+.modal input:focus,.modal select:focus{border-color:var(--amber);background:rgba(0,0,0,.5);box-shadow:0 0 0 3px rgba(232,148,58,.12)}
+.modal input::placeholder{color:#4a4a52}
+
+.modal .hint{color:var(--text-muted);font-size:.76rem;margin-top:6px;line-height:1.55}
+.modal .hint code{background:rgba(232,148,58,.08);padding:1px 6px;border-radius:4px;font-family:var(--font-body);color:var(--amber);font-size:.74rem;border:1px solid rgba(232,148,58,.15)}
+
+/* Options card — groups checkbox-style toggles with subtle container */
+.options-card{
+  background:rgba(0,0,0,.22);border:1px solid var(--border-subtle);
+  border-radius:10px;padding:4px 14px;margin-bottom:18px;
+}
+.options-card .opt{padding:12px 0;border-bottom:1px solid var(--border-subtle)}
+.options-card .opt:last-child{border-bottom:none}
 .modal label.checkbox-row{
-  display:flex;align-items:center;gap:8px;
-  font-size:.88rem;font-weight:400;text-transform:none;letter-spacing:0;
+  display:flex;align-items:center;gap:10px;
+  font-size:.88rem;font-weight:500;text-transform:none;letter-spacing:0;
   color:var(--text);margin:0;cursor:pointer;
 }
 .modal label.checkbox-row input[type=checkbox]{
-  width:auto;margin:0;accent-color:var(--amber);
-  width:16px;height:16px;flex:none;
+  width:16px;height:16px;margin:0;accent-color:var(--amber);flex:none;cursor:pointer;
 }
+.options-card .hint{margin-left:26px;margin-top:4px;font-size:.74rem}
 
-/* Type toggle */
-.type-toggle{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:18px}
+/* Type toggle — refined segmented control with amber underline */
+.type-toggle{
+  display:flex;background:rgba(0,0,0,.3);border:1px solid var(--border);
+  border-radius:8px;padding:3px;margin-bottom:20px;position:relative;
+}
 .type-toggle button{
-  flex:1;padding:9px;background:none;border:none;
-  font-family:var(--font-body);font-size:.78rem;font-weight:600;
-  text-transform:uppercase;letter-spacing:.05em;
-  color:var(--text-muted);cursor:pointer;transition:all .15s;
+  flex:1;padding:8px 12px;background:none;border:none;border-radius:6px;
+  font-family:var(--font-body);font-size:.74rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:.1em;
+  color:var(--text-muted);cursor:pointer;transition:all .18s;
+  position:relative;
 }
-.type-toggle button.active{background:var(--elevated);color:var(--amber)}
+.type-toggle button:hover:not(.active){color:var(--text-secondary)}
+.type-toggle button.active{
+  background:linear-gradient(180deg,rgba(232,148,58,.14),rgba(232,148,58,.06));
+  color:var(--amber);
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset,0 0 0 1px rgba(232,148,58,.25);
+}
 
-/* Icon input */
-.icon-select-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-.icon-preview-lg{width:48px;height:48px;font-size:26px}
-.icon-custom-input{width:120px!important;flex:none!important;text-align:center;font-size:1.1rem!important}
-.btn-sm{font-size:.78rem;padding:4px 12px}
+/* Icon picker — large preview tile + inline custom input */
+.icon-select-row{display:flex;align-items:stretch;gap:10px;margin-bottom:12px}
+.icon-preview-lg{
+  width:54px;height:54px;border-radius:12px;font-size:28px;
+  background:linear-gradient(180deg,#22222a,#1a1a20);
+  border:1px solid var(--border);flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  background-size:cover;background-position:center;
+  box-shadow:0 1px 0 rgba(255,255,255,.03) inset;
+}
 .icon-preview{
-  width:44px;height:44px;border-radius:12px;
+  width:44px;height:44px;border-radius:10px;
   background:var(--elevated);border:1px solid var(--border);
   display:flex;align-items:center;justify-content:center;
   font-size:22px;flex-shrink:0;background-size:cover;background-position:center;
 }
+.icon-custom-input{flex:1!important;width:auto!important;text-align:left;font-size:.9rem!important}
+.btn-sm{font-size:.7rem;padding:0 12px;height:auto;align-self:stretch}
+
+.icon-picker{
+  display:grid;grid-template-columns:repeat(8,1fr);gap:6px;
+  padding:10px;background:rgba(0,0,0,.22);
+  border:1px solid var(--border-subtle);border-radius:10px;
+}
+.icon-pick{
+  aspect-ratio:1;width:auto;height:auto;
+  border-radius:8px;border:1px solid transparent;
+  background:var(--elevated);
+  display:flex;align-items:center;justify-content:center;
+  font-size:18px;cursor:pointer;transition:all .12s;
+}
+.icon-pick:hover{background:var(--hover);transform:translateY(-1px)}
+.icon-pick.selected{
+  border-color:var(--amber);background:rgba(232,148,58,.12);
+  box-shadow:0 0 0 1px var(--amber),0 0 12px var(--amber-glow);
+}
+
+/* Action bar — hairline top border, Delete left as ghost */
+.modal-actions{
+  display:flex;gap:10px;align-items:center;
+  padding:16px 28px;flex-shrink:0;
+  border-top:1px solid var(--border-subtle);
+  background:rgba(0,0,0,.18);
+}
+.modal-actions .btn-add{padding:8px 20px}
+.modal-actions .btn-danger{
+  background:transparent;border-color:transparent;color:var(--text-muted);
+  padding:6px 10px;
+}
+.modal-actions .btn-danger:hover{color:var(--red);background:rgba(229,69,69,.08);border-color:rgba(229,69,69,.2)}
 
 /* Btn icon (edit pencil) */
 .btn-icon{
@@ -166,7 +293,7 @@ a:hover{color:var(--amber)}
 
 /* Toast notifications */
 .toast{
-  position:fixed;bottom:24px;left:50%%;transform:translateX(-50%) translateY(20px);
+  position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);
   background:var(--surface);border:1px solid var(--border);color:var(--text);
   padding:12px 20px;border-radius:var(--radius);font-size:.88rem;
   box-shadow:0 8px 24px rgba(0,0,0,.4);opacity:0;transition:opacity .3s,transform .3s;

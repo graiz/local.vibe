@@ -55,7 +55,7 @@ func (s *Server) sweepRoutes() {
 				// its port, then crashed moments later — a race where
 				// waitForReady's success path already cleared any failure.
 				if r.LoadFailure() == nil {
-					r.SetFailure(failureFromLog(r.Name, "process exited after becoming ready"))
+					r.SetFailure(failureFromLog(r.Name, "process exited after becoming ready", r.Cmd))
 				}
 				running = false
 			}

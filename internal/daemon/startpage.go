@@ -171,15 +171,22 @@ function showRecovery(rec, logTail){
   lastRecovery=rec;
   var box=document.getElementById('recovery');
   var btn=document.getElementById('recovery-btn');
-  btn.style.display='inline-flex';
-  btn.disabled=false;
   document.getElementById('recovery-msg').textContent=rec.message||'Recoverable error';
-  var label='Kill and Retry';
-  if(rec.action==='kill_pid' && rec.pid) label='Kill PID '+rec.pid+' and Retry';
-  else if(rec.action==='kill_port' && rec.port) label='Free Port '+rec.port+' and Retry';
-  else if(rec.action==='restart') label=(rec.pid?'Restart Process (PID '+rec.pid+')':'Restart Process');
-  btn.textContent=label;
   var logEl=document.getElementById('log-tail');
+  // "info" actions are diagnostic only (e.g., missing pip module) — render
+  // the message + log tail with no button, since the fix requires user input.
+  if(rec.action==='info'){
+    btn.style.display='none';
+  }else{
+    btn.style.display='inline-flex';
+    btn.disabled=false;
+    var label='Kill and Retry';
+    if(rec.action==='kill_pid' && rec.pid) label='Kill PID '+rec.pid+' and Retry';
+    else if(rec.action==='kill_port' && rec.port) label='Free Port '+rec.port+' and Retry';
+    else if(rec.action==='restart') label=(rec.pid?'Restart Process (PID '+rec.pid+')':'Restart Process');
+    else if(rec.action==='edit_cmd' && rec.suggested_cmd) label='Use \u0060'+rec.suggested_cmd+'\u0060 and Retry';
+    btn.textContent=label;
+  }
   if(logTail){logEl.textContent=logTail;logEl.style.display='block';}else{logEl.style.display='none';}
   box.style.display='block';
 }
@@ -274,7 +281,8 @@ function cancelLaunch(){
 
 function recoverAndRetry(){
   if(!lastRecovery)return;
-  document.getElementById('recovery-btn').disabled=true;
+  var rbtn=document.getElementById('recovery-btn');
+  rbtn.disabled=true;
   // "restart" means: stop the stuck child, then start fresh. Used when the
   // process is alive but never bound its port — safeKillPID refuses to
   // signal managed-owned PIDs, so a plain kill_pid won't work here.
@@ -284,6 +292,32 @@ function recoverAndRetry(){
     stop.onload=function(){setTimeout(function(){startApp();},300);};
     stop.onerror=function(){startApp();};
     stop.send();
+    return;
+  }
+  // "edit_cmd" rewrites the route's cmd (e.g. python → python3) via PUT,
+  // updates the visible cmd preview, then retries. The cmd field on this
+  // page is server-rendered, so we patch its textContent in-place too.
+  if(lastRecovery.action==='edit_cmd' && lastRecovery.suggested_cmd){
+    var put=new XMLHttpRequest();
+    put.open('PUT','/_api/routes/%[3]s');
+    put.setRequestHeader('Content-Type','application/json');
+    put.onload=function(){
+      if(put.status>=200&&put.status<300){
+        var cmdEl=document.querySelector('.cmd');
+        if(cmdEl)cmdEl.textContent=lastRecovery.suggested_cmd;
+        startApp();
+      }else{
+        rbtn.disabled=false;
+        var em=document.getElementById('msg');
+        em.style.display='block';em.textContent='Failed to update command';em.style.color='var(--red)';
+      }
+    };
+    put.onerror=function(){
+      rbtn.disabled=false;
+      var em=document.getElementById('msg');
+      em.style.display='block';em.textContent='Could not reach daemon';em.style.color='var(--red)';
+    };
+    put.send(JSON.stringify({cmd:lastRecovery.suggested_cmd}));
     return;
   }
   var body={};
@@ -360,7 +394,7 @@ func (s *Server) startPageRecoveryInitJS(route *Route) string {
 		if tail == "" {
 			return ""
 		}
-		rec := scanLogForRecovery(tail)
+		rec := scanLogForRecovery(tail, route.Cmd)
 		if rec == nil {
 			return ""
 		}
