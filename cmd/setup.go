@@ -368,7 +368,17 @@ func verifyDNS() error {
 
 func generateCerts() error {
 	home, _ := realUserHome()
-	certsDir := filepath.Join(home, ".vibe", "certs")
+	vibeDir := filepath.Join(home, ".vibe")
+	certsDir := filepath.Join(vibeDir, "certs")
+
+	// Ensure ~/.vibe/ exists and is owned by the real user before any cert
+	// work. Without this, cert.EnsureCA's MkdirAll creates ~/.vibe/ as root,
+	// and the user-mode daemon (LaunchAgent) later can't write daemon.pid,
+	// daemon.log, or the unix socket. See issues #2 and #5.
+	if err := os.MkdirAll(vibeDir, 0755); err != nil {
+		return fmt.Errorf("create %s: %w", vibeDir, err)
+	}
+	chownToUser(vibeDir)
 
 	caCert, caKey, err := cert.EnsureCA(certsDir)
 	if err != nil {
