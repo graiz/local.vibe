@@ -290,7 +290,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		safeName := html.EscapeString(r.Name)
 		vibeURL := fmt.Sprintf("%s://%s.%s", scheme, safeName, tld)
 
-		isStopped := r.Type == RouteManaged && !s.isPortReady(r.Port) && !r.Running.Load()
+		isStopped := r.Type == RouteManaged && !r.Running.Load()
 
 		// Secondary URL display
 		urlDisplay := fmt.Sprintf("%s.%s", safeName, tld)
@@ -313,7 +313,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		// Action buttons
 		actionHTML := ""
 		editSVG := `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>`
-		if r.Type == RouteManaged && s.isPortReady(r.Port) {
+		if r.Type == RouteManaged && r.Running.Load() {
 			actionHTML = fmt.Sprintf(`<button class="btn" onclick="routeAction(this,'%s','stop')">Stop</button>`, safeName)
 		} else if r.Type == RouteManaged {
 			actionHTML = fmt.Sprintf(`<button class="btn btn-primary" onclick="routeAction(this,'%s','start')">Start</button>`, safeName)
@@ -408,7 +408,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Stopped state — dim icon only, not text
-		isStopped := r.Type == RouteManaged && !s.isPortReady(r.Port) && !r.Running.Load()
+		isStopped := r.Type == RouteManaged && !r.Running.Load()
 		tileClass := "grid-tile"
 		if isStopped {
 			tileClass = "grid-tile tile-stopped"

@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-const oauthCallbackPath = "/auth/google/callback"
-
 func (s *Server) validateOAuthBridgeConfig(routeName string, appPort, callbackPort int) error {
 	if callbackPort < 1 || callbackPort > 65535 {
 		return fmt.Errorf("oauth_callback_port must be between 1 and 65535")
@@ -109,11 +107,6 @@ func (s *Server) stopOAuthBridgeListeners() {
 }
 
 func (s *Server) handleOAuthCallbackBridge(w http.ResponseWriter, r *http.Request, callbackPort int) {
-	if r.URL.Path != oauthCallbackPath {
-		http.NotFound(w, r)
-		return
-	}
-
 	var route *Route
 	for _, rt := range s.table.List() {
 		if rt.OAuthCallbackPort == callbackPort {

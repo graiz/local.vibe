@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +46,156 @@ func failureFromError(err error) *Failure {
 	return f
 }
 
+// reservePortNamePattern restricts reserve_port keys to env-var-safe identifiers.
+// The name is uppercased and prefixed with "PORT_" when injected as an env
+// var (e.g. {"server": 3001} → PORT_SERVER=3001), so the key has to be a
+// legal POSIX env var suffix to begin with.
+var reservePortNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+
+// validateReservePorts checks a reserve_ports map for: legal name shape, no
+// collision with the primary or oauth_callback_port, no port out of range,
+// no two names mapping to the same port. Returns a normalized copy with
+// names lower-cased so config files can use either case interchangeably
+// (env var injection always uppercases on the way out).
+//
+// The forbidden name "PORT" is rejected explicitly — using it would make
+// PORT_<NAME> = PORT, which would either shadow or duplicate the primary
+// port's env var depending on map iteration order. Confusing either way.
+func validateReservePorts(reserve map[string]int, primary, oauthCallback int) (map[string]int, error) {
+	if len(reserve) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]int, len(reserve))
+	seenPort := make(map[int]string, len(reserve))
+	for rawName, p := range reserve {
+		name := strings.ToLower(strings.TrimSpace(rawName))
+		if name == "" {
+			return nil, fmt.Errorf("reserve_ports has empty name")
+		}
+		if !reservePortNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("reserve_ports name %q must match [a-zA-Z][a-zA-Z0-9_]*", rawName)
+		}
+		if strings.EqualFold(name, "port") {
+			return nil, fmt.Errorf("reserve_ports name %q is reserved (it would collide with the primary $PORT env var)", rawName)
+		}
+		if p < 1 || p > 65535 {
+			return nil, fmt.Errorf("reserve_ports[%q] = %d is out of range (1-65535)", rawName, p)
+		}
+		if p == primary {
+			return nil, fmt.Errorf("reserve_ports[%q] = %d collides with the route's primary port", rawName, p)
+		}
+		if oauthCallback > 0 && p == oauthCallback {
+			return nil, fmt.Errorf("reserve_ports[%q] = %d collides with oauth_callback_port", rawName, p)
+		}
+		if other, dup := seenPort[p]; dup {
+			return nil, fmt.Errorf("reserve_ports[%q] and reserve_ports[%q] both map to port %d", other, rawName, p)
+		}
+		if _, exists := out[name]; exists {
+			return nil, fmt.Errorf("reserve_ports has duplicate name %q (case-insensitive)", rawName)
+		}
+		seenPort[p] = rawName
+		out[name] = p
+	}
+	return out, nil
+}
+
+// reservePortValuesSorted returns the port numbers from a reserve_ports map
+// sorted by name, so iteration order is deterministic for preflight checks
+// and env var injection.
+func reservePortValuesSorted(reserve map[string]int) []struct {
+	Name string
+	Port int
+} {
+	if len(reserve) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(reserve))
+	for n := range reserve {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]struct {
+		Name string
+		Port int
+	}, len(names))
+	for i, n := range names {
+		out[i].Name = n
+		out[i].Port = reserve[n]
+	}
+	return out
+}
+
+// reservePortConflictsWith returns the offending port and the route that owns
+// it if any of this route's reserve_ports values is already claimed by another
+// route's primary, OAuth callback, or reserve port. Used to surface config-time
+// collisions before the spawn.
+func reservePortConflictsWith(table *RouteTable, ownName string, reserve map[string]int) (int, string) {
+	if len(reserve) == 0 {
+		return 0, ""
+	}
+	want := make(map[int]bool, len(reserve))
+	for _, p := range reserve {
+		want[p] = true
+	}
+	for _, r := range table.List() {
+		if r.Name == ownName {
+			continue
+		}
+		if r.Port > 0 && want[r.Port] {
+			return r.Port, r.Name
+		}
+		if r.OAuthCallbackPort > 0 && want[r.OAuthCallbackPort] {
+			return r.OAuthCallbackPort, r.Name
+		}
+		for _, p := range r.ReservePorts {
+			if want[p] {
+				return p, r.Name
+			}
+		}
+	}
+	return 0, ""
+}
+
+// preflightPort verifies that a port is currently free, attempting to clear
+// any stale process via killPort before giving up. Returns a Recovery hint
+// when the port is still held by an external process after the kill attempt;
+// returns nil when the port is free (or only held by daemon-managed PIDs).
+//
+// This is the shared entry point used for the route's primary port AND each
+// of its reserve_ports — both go through the same kill-and-recheck flow so
+// the user gets a single, consistent recovery UX regardless of which port
+// is the offender.
+func (s *Server) preflightPort(port int) *Recovery {
+	if port <= 0 {
+		return nil
+	}
+	if !s.isPortReady(port) {
+		return nil
+	}
+	s.killPort(port)
+	time.Sleep(500 * time.Millisecond)
+	if !s.isPortReady(port) {
+		return nil
+	}
+	return s.buildPortConflictRecovery(port)
+}
+
+// writePortConflict sends a 409 Conflict with a recovery hint identifying the
+// process holding the port (when one can be discovered). The startpage reads
+// the recovery field and renders a one-click "Kill PID X and retry" button
+// instead of just a useless "Retry" that would hit the same conflict.
+func writePortConflict(w http.ResponseWriter, port int, recovery *Recovery) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	resp := map[string]any{
+		"error": fmt.Sprintf("port %d is already in use by another process", port),
+	}
+	if recovery != nil {
+		resp["recovery"] = recovery
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // writeStartFailure sends a managed-process start error with the log tail and
 // a recovery hint attached when one of the known patterns matches. The
 // dashboard surfaces the hint as a one-click "kill and retry" button.
@@ -61,6 +212,20 @@ func writeStartFailure(w http.ResponseWriter, status int, err error) {
 		resp["recovery"] = f.Recovery
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// isBrowserFormRequest returns true for requests that came from a dashboard
+// HTML form submission (so handlers should 303-redirect back to the dashboard
+// instead of returning JSON). Identified by the form-encoded Content-Type —
+// the previous "Accept != application/json" heuristic mis-classified CLI
+// clients that omit Accept entirely, which then chased a 303 to https://local.vibe/
+// over the Unix socket and surfaced as a spurious "daemon not running" error.
+func isBrowserFormRequest(r *http.Request) bool {
+	ct := r.Header.Get("Content-Type")
+	if i := strings.Index(ct, ";"); i != -1 {
+		ct = ct[:i]
+	}
+	return strings.TrimSpace(ct) == "application/x-www-form-urlencoded"
 }
 
 // validateExternalURL rejects any bookmark target that isn't a plain http://
@@ -81,18 +246,19 @@ func validateExternalURL(raw string) error {
 }
 
 type registerRequest struct {
-	Name               string `json:"name"`
-	Port               int    `json:"port"`
-	PID                *int   `json:"pid,omitempty"`
-	TTL                *int   `json:"ttl,omitempty"`
-	Cmd                string `json:"cmd,omitempty"`
-	Dir                string `json:"dir,omitempty"`
-	URL                string `json:"url,omitempty"`
-	IdleTimeout        *int   `json:"idle_timeout,omitempty"` // minutes; 0 = never
-	Icon               string `json:"icon,omitempty"`
-	Proxy              *bool  `json:"proxy,omitempty"`                // bookmark: reverse-proxy instead of 307-redirect
-	InsecureSkipVerify *bool  `json:"insecure_skip_verify,omitempty"` // bookmark+proxy: skip upstream TLS verify
-	OAuthCallbackPort  *int   `json:"oauth_callback_port,omitempty"`
+	Name               string         `json:"name"`
+	Port               int            `json:"port"`
+	PID                *int           `json:"pid,omitempty"`
+	TTL                *int           `json:"ttl,omitempty"`
+	Cmd                string         `json:"cmd,omitempty"`
+	Dir                string         `json:"dir,omitempty"`
+	URL                string         `json:"url,omitempty"`
+	IdleTimeout        *int           `json:"idle_timeout,omitempty"` // minutes; 0 = never
+	Icon               string         `json:"icon,omitempty"`
+	Proxy              *bool          `json:"proxy,omitempty"`                // bookmark: reverse-proxy instead of 307-redirect
+	InsecureSkipVerify *bool          `json:"insecure_skip_verify,omitempty"` // bookmark+proxy: skip upstream TLS verify
+	OAuthCallbackPort  *int           `json:"oauth_callback_port,omitempty"`
+	ReservePorts         map[string]int `json:"reserve_ports,omitempty"` // managed: named auxiliary ports, exposed as PORT_<UPPER_NAME>
 }
 
 type routeResponse struct {
@@ -115,23 +281,25 @@ type routeResponse struct {
 
 // apiHandler routes /_api/* requests to the appropriate handler.
 func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
-	// The daemon API is only meant for the dashboard host (local.vibe) and
-	// localhost/unix-socket CLI callers. On any other .vibe host, /_api/*
-	// belongs to the proxied upstream — e.g. Jekyll Admin fetches
-	// /_api/configuration — so fall through to the normal request router.
+	path := strings.TrimPrefix(r.URL.Path, "/_api")
+
+	// On non-local .vibe hosts, reserve only the daemon's known API routes.
+	// Unknown /_api/* paths should continue through normal proxying so apps
+	// that expose their own /_api namespace (e.g. Jekyll Admin) still work.
 	host := r.Host
 	if idx := strings.Index(host, ":"); idx != -1 {
 		host = host[:idx]
 	}
+	nonLocalVibeHost := false
 	if strings.HasSuffix(host, "."+s.cfg.Daemon.TLD) {
 		name := strings.TrimSuffix(host, "."+s.cfg.Daemon.TLD)
-		if name != "local" {
-			s.routeRequest(w, r)
-			return
-		}
+		nonLocalVibeHost = name != "local"
+	}
+	if nonLocalVibeHost && !isDaemonAPIPath(r.Method, path) {
+		s.routeRequest(w, r)
+		return
 	}
 
-	path := strings.TrimPrefix(r.URL.Path, "/_api")
 	w.Header().Set("Content-Type", "application/json")
 
 	switch {
@@ -167,7 +335,38 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && path == "/preferences":
 		s.handleSetPreferences(w, r)
 	default:
+		if nonLocalVibeHost {
+			s.routeRequest(w, r)
+			return
+		}
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+	}
+}
+
+func isDaemonAPIPath(method, path string) bool {
+	switch {
+	case method == http.MethodGet && path == "/health":
+		return true
+	case method == http.MethodGet && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/ready"):
+		return true
+	case method == http.MethodGet && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/repair"):
+		return true
+	case method == http.MethodGet && path == "/routes":
+		return true
+	case method == http.MethodPost && path == "/routes":
+		return true
+	case method == http.MethodPut && strings.HasPrefix(path, "/routes/"):
+		return true
+	case method == http.MethodDelete && strings.HasPrefix(path, "/routes/"):
+		return true
+	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/stop"):
+		return true
+	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/start"):
+		return true
+	case method == http.MethodPut && path == "/preferences":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -230,6 +429,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	oauthCB := 0
+	if req.OAuthCallbackPort != nil {
+		oauthCB = *req.OAuthCallbackPort
+	}
+	reservePorts, err := validateReservePorts(req.ReservePorts, req.Port, oauthCB)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if conflictPort, conflictRoute := reservePortConflictsWith(s.table, req.Name, reservePorts); conflictPort != 0 {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("reserve_ports value %d conflicts with route %q", conflictPort, conflictRoute))
+		return
+	}
 
 	// Reject if a managed route with this name is already running.
 	if existing, ok := s.table.Get(req.Name); ok && existing.Type == RouteManaged && existing.Running.Load() {
@@ -261,6 +473,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.OAuthCallbackPort != nil {
 		route.OAuthCallbackPort = *req.OAuthCallbackPort
 	}
+	route.ReservePorts = reservePorts
 
 	switch {
 	case req.URL != "":
@@ -294,16 +507,22 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			}
 			route.Port = port
 		}
-		// Clear stale process on the port before launching.
-		if route.Port > 0 && s.isPortReady(route.Port) {
-			s.killPort(route.Port)
-			time.Sleep(500 * time.Millisecond)
-			// Verify the port was actually freed.
-			if s.isPortReady(route.Port) {
+		// Clear stale process on the primary port and each reserve_port before
+		// launching. Reserve ports check first so a multi-port app surfaces
+		// the right collision instead of silently bleeding into a stale
+		// holder of a non-routed port (the screener.vibe / task-tracker bug).
+		// Iterate in sorted-name order so behavior is deterministic.
+		for _, kv := range reservePortValuesSorted(route.ReservePorts) {
+			if rec := s.preflightPort(kv.Port); rec != nil {
 				s.table.Remove(route.Name)
-				writeJSONError(w, http.StatusConflict, fmt.Sprintf("port %d is already in use by another process", route.Port))
+				writePortConflict(w, kv.Port, rec)
 				return
 			}
+		}
+		if rec := s.preflightPort(route.Port); rec != nil {
+			s.table.Remove(route.Name)
+			writePortConflict(w, route.Port, rec)
+			return
 		}
 		pid, err := s.procs.Start(route)
 		if err != nil {
@@ -480,6 +699,14 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
+	// Re-read vibe.json from the route's Dir before launching so edits to
+	// oauth_callback_port, reserve_ports, or cmd take effect without forcing
+	// the user to deregister + re-register. Errors here are config conflicts
+	// that should block the start; missing/malformed files are silent no-ops.
+	if err := s.syncRouteFromVibeJSON(route); err != nil {
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
 	if route.Cmd == "" {
 		writeJSONError(w, http.StatusBadRequest, "route has no launch command")
 		return
@@ -516,16 +743,27 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		}
 		route.Port = port
 	}
-	// If the port is already in use, try to clear the stale process before starting.
-	if route.Port > 0 && s.isPortReady(route.Port) {
-		s.killPort(route.Port)
-		// Give the OS a moment to release the port.
-		time.Sleep(500 * time.Millisecond)
-		// Verify the port was actually freed.
-		if s.isPortReady(route.Port) {
-			writeJSONError(w, http.StatusConflict, fmt.Sprintf("port %d is already in use by another process", route.Port))
+	// Pre-flight every port the cmd will bind: each reserve_port first, then
+	// the primary. Persist the recovery on the route's Failure so a startpage
+	// reload rehydrates the "Kill PID X and retry" button via
+	// startPageRecoveryInitJS instead of showing a bare error.
+	for _, kv := range reservePortValuesSorted(route.ReservePorts) {
+		if rec := s.preflightPort(kv.Port); rec != nil {
+			route.SetFailure(&Failure{
+				Message:  fmt.Sprintf("reserve_ports[%q] = %d is already in use by another process", kv.Name, kv.Port),
+				Recovery: rec,
+			})
+			writePortConflict(w, kv.Port, rec)
 			return
 		}
+	}
+	if rec := s.preflightPort(route.Port); rec != nil {
+		route.SetFailure(&Failure{
+			Message:  fmt.Sprintf("port %d is already in use by another process", route.Port),
+			Recovery: rec,
+		})
+		writePortConflict(w, route.Port, rec)
+		return
 	}
 
 	pid, err := s.procs.Start(route)
@@ -544,7 +782,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 	go s.waitForReady(route)
 
 	// If request came from browser form, redirect back to the app.
-	if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" || r.Header.Get("Accept") != "application/json" {
+	if isBrowserFormRequest(r) {
 		http.Redirect(w, r, fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), name, s.cfg.Daemon.TLD), http.StatusSeeOther)
 		return
 	}
@@ -566,7 +804,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 	route.ClearPID()
 
 	// If request came from browser form, redirect back to dashboard.
-	if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" || r.Header.Get("Accept") != "application/json" {
+	if isBrowserFormRequest(r) {
 		http.Redirect(w, r, fmt.Sprintf("%s://local.%s/", s.vibeScheme(), s.cfg.Daemon.TLD), http.StatusSeeOther)
 		return
 	}

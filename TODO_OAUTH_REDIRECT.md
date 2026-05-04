@@ -35,6 +35,13 @@ This branch adds `oauth_callback_port` and a localhost callback bridge for OAuth
 - [ ] Verify no regressions for routes without `oauth_callback_port`.
 - [ ] Verify bookmark/proxy route behavior remains unchanged.
 
+### 6a) Gaps found during tasks.vibe setup (2026-04-23)
+- [ ] `vibe start` on an already-registered route (`startExisting` path) silently ignores `oauth_callback_port` changes in `vibe.json`. Should re-sync `oauth_callback_port` (and likely `icon`, `idle_timeout`) from disk when re-starting. Currently the field only gets applied on first-time register — if the user adds it after registration, subsequent `vibe start` does nothing with it.
+- [ ] `validateOAuthBridgeConfig` doesn't detect collisions between a callback port and *another route's app port* (e.g. callback 3000 while another managed route has `port: 3000`). Desired behavior:
+    - Other route **not running** → warn (log + dashboard badge), allow.
+    - Other route **running** → error (reject at register/update time; also refuse to start a colliding route later, surfaced on the start page).
+- [x] Callback path was hardcoded to `/auth/google/callback`; NextAuth's `/api/auth/callback/google` 404'd. Fixed by forwarding any path to the route's `.{{TLD}}` host.
+
 ### 7) Cleanup before merge
 - [ ] Remove this TODO file.
 - [ ] Squash/fix commit messages as needed.

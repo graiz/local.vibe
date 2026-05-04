@@ -11,7 +11,7 @@ import (
 // or Port to offer a one-click "kill and retry" button.
 type Recovery struct {
 	Message string `json:"message"`
-	Action  string `json:"action"` // "kill_pid" | "kill_port"
+	Action  string `json:"action"` // "kill_pid" | "kill_port" | "restart"
 	PID     int    `json:"pid,omitempty"`
 	Port    int    `json:"port,omitempty"`
 }

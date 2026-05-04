@@ -17,7 +17,7 @@ func TestServeStartPageRecoveryUI(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.serveStartPage(w, httptest.NewRequest("GET", "/", nil), route)
 	body := w.Body.String()
-	for _, token := range []string{`id="recovery"`, `id="recovery-btn"`, `showRecovery`, `recoverAndRetry`, `kill_pid`} {
+	for _, token := range []string{`id="recovery"`, `id="recovery-btn"`, `showRecovery`, `recoverAndRetry`, `kill_pid`, `cancelLaunch`, `startApp();`, `>Cancel<`} {
 		if !strings.Contains(body, token) {
 			t.Errorf("start page missing %q", token)
 		}

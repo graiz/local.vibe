@@ -88,6 +88,44 @@ func TestOAuthCallbackBridgeListenerRedirectsToVibeHost(t *testing.T) {
 	}
 }
 
+func TestOAuthCallbackBridgeForwardsArbitraryPath(t *testing.T) {
+	s := testServer()
+	defer s.stopOAuthBridgeListeners()
+
+	appPort := pickFreePort(t)
+	callbackPort := pickFreePort(t)
+
+	body, _ := json.Marshal(map[string]any{
+		"name":                "tasks",
+		"port":                appPort,
+		"oauth_callback_port": callbackPort,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/_api/routes", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("register status = %d; body: %s", w.Code, w.Body.String())
+	}
+
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get("http://localhost:" + strconv.Itoa(callbackPort) + "/api/auth/callback/google?code=abc&state=xyz")
+	if err != nil {
+		t.Fatalf("GET localhost callback bridge: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d; want 307", resp.StatusCode)
+	}
+	want := "http://tasks.test/api/auth/callback/google?code=abc&state=xyz"
+	if got := resp.Header.Get("Location"); got != want {
+		t.Errorf("Location = %q; want %q", got, want)
+	}
+}
+
 func TestAPIRejectsOAuthCallbackPortMatchingRoutePort(t *testing.T) {
 	s := testServer()
 

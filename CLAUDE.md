@@ -43,6 +43,7 @@ The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — ch
    - `log_scan.go` — regex patterns for extracting recovery hints (orphan PID, EADDRINUSE) from failed process log tails
    - `port_discover.go` — finds a managed route's real listening port via `lsof` on the process group and log-tail regex
    - `proxy_bookmark.go` — reverse-proxy for bookmark routes with `proxy=true` (landing path redirect, Location/cookie rewrites, X-Forwarded-For suppression)
+   - `oauth_bridge.go` — per-route localhost OAuth callback listeners (see `oauth_callback_port`); 307-forward `?code=...` from `localhost:N` to `https://name.vibe/...` so OAuth providers that require a localhost redirect URI work without leaving the .vibe origin
    - `theme.go` — Shared CSS/HTML head (Geist fonts, Vercel-inspired dark theme)
    - `setup_md.go` — Markdown setup guide served at `/setup.md`
 
@@ -56,7 +57,7 @@ Five route types with different lifecycle semantics:
 - **sticky** — `vibe register`; persists across daemon restarts; reverse-proxied
 - **pid** — API only; auto-removed when tracked PID dies
 - **ttl** — `--ttl` flag on register; auto-expires after N seconds
-- **managed** — `vibe start` (reads `vibe.json` or inline args); daemon manages the child process, dashboard has start/stop buttons. Port can be omitted for auto-assignment.
+- **managed** — `vibe start` (reads `vibe.json` or inline args); daemon manages the child process, dashboard has start/stop buttons. Port can be omitted for auto-assignment. Optional fields: `oauth_callback_port` (binds a localhost listener that 307-forwards to the .vibe URL — for OAuth providers that require a localhost redirect URI), `reserve_ports` (`{"name": port}` map of auxiliary ports the cmd also binds; reserved across the route table to prevent collisions, exposed to the child as `PORT_<UPPER_NAME>` env vars), `idle_timeout` (minutes; 0 = never auto-stop).
 - **bookmark** — External URL (e.g. Tailscale address); persists across restarts; visiting `name.vibe` either 307-redirects to the external URL or reverse-proxies to it (per-route `proxy` flag). Added/edited via dashboard modal.
 
 ## Key patterns
@@ -76,6 +77,7 @@ Five route types with different lifecycle semantics:
 - **Embedded UI:** All HTML/CSS/JS is inline Go strings — no external assets, no build step. Dashboard includes a modal for CRUD operations on routes. Toast notifications surface errors from async actions.
 - **TLS hot-reload:** Daemon holds a `sync.RWMutex`-guarded `*tls.Certificate` served via `GetCertificate`. When routes change (`saveStickyRoutes`), the leaf cert is regenerated with updated SANs and atomically swapped — no restart needed. The CA (10-year, trusted in Keychain) stays fixed; only the leaf (825-day) rotates.
 - **Managed-route self-healing:** When a route's registered port stops answering, `routeRequest` serves the repair page (or the start page when the child is gone). `port_discover.go` tries `lsof` on the process group and a log-tail regex to find the real listening port; `RouteTable.UpdatePort` atomically rewrites the registration so subsequent requests proxy correctly. Start failures attach a tailed log + recovery hint (orphan PID, EADDRINUSE) via `StartError` → `Failure`; the start page surfaces a one-click "Kill PID X and Retry" button, and `safeKillPID` refuses to signal the daemon itself or other managed routes.
+- **Browser-form vs JSON requests:** Some `/_api/routes/*` handlers (`handleStart`, `handleStop`, etc.) 303-redirect back to the dashboard when the request looks like a browser HTML form post — detected via `isBrowserFormRequest` (Content-Type `application/x-www-form-urlencoded`). The CLI client sends `Accept: application/json` and gets the JSON response directly. Don't gate the redirect on the `Accept` header alone: a missing Accept used to be misclassified as a browser request, and the resulting 303 to `https://local.vibe/` killed the CLI when followed over the Unix-socket transport (TLS over unix conn fails, surfaced as a spurious "daemon not running").
 - **Bookmark proxy mode:** When a bookmark has `proxy=true`, `proxyBookmark` reverse-proxies to the upstream instead of 307-redirecting. The upstream `Host` header is forced to the external URL's host (SNI/vhost correctness). Same-origin 3xx `Location` headers are rewritten to the `.vibe` host, `Domain=` is stripped from `Set-Cookie` so browsers actually store cookies, and `X-Forwarded-For` is suppressed (strict upstreams like Home Assistant return 400 when they see it). The bookmark URL's path is treated as a landing destination: requests to `name.vibe/` 302 once to the path, but everything else passes through at the origin so SPA assets loaded from `/` resolve correctly. Optional per-route `insecure_skip_verify` disables upstream TLS verification for self-signed targets (Tailscale MagicDNS, etc.).
 
 ## System setup (macOS)

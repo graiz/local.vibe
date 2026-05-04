@@ -12,10 +12,11 @@ import (
 )
 
 type vibeConfig struct {
-	Name              string `json:"name"`
-	Port              int    `json:"port"`
-	Cmd               string `json:"cmd"`
-	OAuthCallbackPort int    `json:"oauth_callback_port,omitempty"`
+	Name              string         `json:"name"`
+	Port              int            `json:"port"`
+	Cmd               string         `json:"cmd"`
+	OAuthCallbackPort int            `json:"oauth_callback_port,omitempty"`
+	ReservePorts        map[string]int `json:"reserve_ports,omitempty"`
 }
 
 var startCmd = &cobra.Command{
@@ -28,7 +29,22 @@ var startCmd = &cobra.Command{
   vibe start myapp 3000 -- npm dev    Register and start a new app
 
 If port is omitted or set to 0 in vibe.json, a free port is auto-assigned
-and injected as the PORT environment variable.`,
+and injected as the PORT environment variable.
+
+vibe.json fields (used by 'vibe start' with no args):
+  name                  required — subdomain: name.vibe
+  cmd                   required — shell command to start the app
+  port                  optional — primary port; omit for auto-assign
+  reserve_ports         optional — {"name": port} map of auxiliary ports
+                        the cmd also binds; each is reserved across the
+                        route table and injected as $PORT_<UPPER_NAME>.
+                        Example: {"server": 3001} → $PORT_SERVER=3001
+  oauth_callback_port   optional — fixed localhost port that 307-forwards
+                        OAuth callbacks to name.vibe
+  icon                  optional — emoji for the dashboard
+  idle_timeout          optional — auto-stop after N minutes idle (0 = never)
+
+Full guide: curl http://localhost:7999/setup.md`,
 	Example: `  vibe start
   vibe start myapp
   vibe start myapp 3000 -- npm run dev`,
@@ -54,7 +70,7 @@ and injected as the PORT environment variable.`,
 			if _, err := fmt.Sscan(vibeArgs[1], &port); err != nil || port < 1 || port > 65535 {
 				return fmt.Errorf("invalid port: %s", vibeArgs[1])
 			}
-			return startNew(name, port, strings.Join(appCmd, " "), 0)
+			return startNew(name, port, strings.Join(appCmd, " "), 0, nil)
 
 		default:
 			return fmt.Errorf("usage: vibe start [name] [port] [-- command...]")
@@ -83,7 +99,7 @@ func startFromConfig() error {
 		return fmt.Errorf("vibe.json must have name and cmd fields")
 	}
 
-	return startNew(cfg.Name, cfg.Port, cfg.Cmd, cfg.OAuthCallbackPort)
+	return startNew(cfg.Name, cfg.Port, cfg.Cmd, cfg.OAuthCallbackPort, cfg.ReservePorts)
 }
 
 // startExisting starts an already-registered managed route.
@@ -97,7 +113,7 @@ func startExisting(name string) error {
 }
 
 // startNew registers a managed route and starts it.
-func startNew(name string, port int, command string, oauthCallbackPort int) error {
+func startNew(name string, port int, command string, oauthCallbackPort int, reservePorts map[string]int) error {
 	dir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("could not determine working directory: %w", err)
@@ -105,10 +121,11 @@ func startNew(name string, port int, command string, oauthCallbackPort int) erro
 
 	c := client.New()
 	req := client.RegisterRequest{
-		Name: name,
-		Port: port,
-		Cmd:  command,
-		Dir:  dir,
+		Name:       name,
+		Port:       port,
+		Cmd:        command,
+		Dir:        dir,
+		ReservePorts: reservePorts,
 	}
 	if oauthCallbackPort > 0 {
 		req.OAuthCallbackPort = &oauthCallbackPort

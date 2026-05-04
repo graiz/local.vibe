@@ -39,6 +39,18 @@ type Route struct {
 	// localhost redirect URIs while sessions are established on the .vibe host.
 	OAuthCallbackPort int `json:"oauth_callback_port,omitempty"`
 
+	// ReservePorts are named auxiliary ports the command binds beyond Port
+	// (e.g. a backend on 3001 alongside the routed Vite client on Port).
+	// Each name is exposed to the spawned process as PORT_<UPPER_NAME>, so
+	// the cmd can reference $PORT_SERVER instead of hardcoding values that
+	// drift out of sync with this config.
+	//
+	// Vibe doesn't proxy these — they're reserved (findFreePort won't hand
+	// them to other routes) and pre-flight checked on Start so a stale
+	// holder surfaces a recovery hint instead of bleeding traffic into the
+	// wrong app. Names must match [a-zA-Z][a-zA-Z0-9_]*.
+	ReservePorts map[string]int `json:"reserve_ports,omitempty"`
+
 	// Bookmark-only: when true, requests to name.vibe are reverse-proxied to
 	// ExternalURL instead of 307-redirected, so the browser keeps the .vibe
 	// host in the URL bar. InsecureSkipVerify disables upstream TLS

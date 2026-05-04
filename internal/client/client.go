@@ -61,6 +61,11 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Daemon's start/stop handlers 303-redirect to the dashboard when this
+	// header is missing — that redirect points at https://local.vibe/, which
+	// the Unix-socket transport cannot follow (TLS over unix conn fails),
+	// surfacing as a spurious "daemon not running" error.
+	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("daemon not running — start it with: vibe daemon start")
@@ -72,13 +77,14 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 
 // RegisterRequest mirrors the daemon API body.
 type RegisterRequest struct {
-	Name              string `json:"name"`
-	Port              int    `json:"port"`
-	PID               *int   `json:"pid,omitempty"`
-	TTL               *int   `json:"ttl,omitempty"`
-	Cmd               string `json:"cmd,omitempty"`
-	Dir               string `json:"dir,omitempty"`
-	OAuthCallbackPort *int   `json:"oauth_callback_port,omitempty"`
+	Name              string         `json:"name"`
+	Port              int            `json:"port"`
+	PID               *int           `json:"pid,omitempty"`
+	TTL               *int           `json:"ttl,omitempty"`
+	Cmd               string         `json:"cmd,omitempty"`
+	Dir               string         `json:"dir,omitempty"`
+	OAuthCallbackPort *int           `json:"oauth_callback_port,omitempty"`
+	ReservePorts        map[string]int `json:"reserve_ports,omitempty"`
 }
 
 type RegisterResponse struct {
