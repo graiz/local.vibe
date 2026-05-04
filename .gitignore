@@ -15,6 +15,7 @@ vibe
 .idea/
 *.swp
 *~
+.claude/
 
 # Go
 vendor/

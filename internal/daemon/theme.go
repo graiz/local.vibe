@@ -13,7 +13,7 @@ func themeHead(title string) string {
 }
 
 // themeCSS is the shared base stylesheet — retro-futurist command center design.
-// NOTE: Used inside fmt.Fprintf so literal % must be %.
+// Embedded into html/template via template.CSS(themeCSS), so % is literal.
 const themeCSS = `
 :root{
   --bg:#111113;
@@ -95,7 +95,7 @@ a:hover{color:var(--amber)}
 .led-gray{background:#4a4a52}
 
 /* Modal */
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(6,6,10,.55);backdrop-filter:blur(14px) saturate(120%);z-index:200;align-items:center;justify-content:center;padding:24px}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(6,6,10,.15);backdrop-filter:blur(8px);z-index:200;align-items:center;justify-content:center;padding:24px}
 .modal-overlay.active{display:flex}
 .modal{
   position:relative;
