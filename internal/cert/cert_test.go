@@ -1,6 +1,7 @@
 package cert
 
 import (
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -297,7 +298,7 @@ func writeExpiringCert(t *testing.T, dir string, ca *x509.Certificate, caKey int
 	keyBlock, _ := pem.Decode(keyData)
 	leafKey, _ := x509.ParseECPrivateKey(keyBlock.Bytes)
 
-	certDER, err := x509.CreateCertificate(nil, template, ca, &leafKey.PublicKey, caKey)
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca, &leafKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatalf("create expiring cert: %v", err)
 	}
