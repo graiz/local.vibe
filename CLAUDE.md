@@ -10,6 +10,8 @@ local.vibe — a local DNS daemon that gives dev servers friendly `.vibe` names.
 
 - **Never commit unless the user explicitly asks.** Do not auto-commit after completing a task or bundle commits into other actions.
 - **Always run `vibe dev` after changes** to rebuild and restart the daemon.
+- **Tests must pass before declaring a task done or pushing.** Run `go build ./... && go vet ./... && go test ./...` after any change. If a test fails — even one that looks unrelated or flaky — investigate before continuing. Do not push or open PRs over a red test suite. If a failure is genuinely flaky, re-run a few times; if it reproduces, fix it or call it out explicitly to the user before moving on.
+- **Check CI on `main` periodically.** If CI is red on `main`, the next change should fix it before adding new work — don't keep stacking commits on a broken pipeline.
 
 ## Build & test
 

@@ -68,11 +68,18 @@ var daemonStartCmd = &cobra.Command{
 				if isDaemonRunning() {
 					pid, _ := readDaemonPID()
 					fmt.Printf("daemon started (pid %d)\n", pid)
+					if warn := scanDaemonLogForWarnings(); warn != "" {
+						fmt.Fprintln(os.Stderr, warn)
+					}
 					openDashboard()
 					return nil
 				}
 			}
-			return fmt.Errorf("daemon did not start — check %s", filepath.Join(config.Dir(), "daemon.log"))
+			logPath := filepath.Join(config.Dir(), "daemon.log")
+			if tail := tailFile(logPath, 20); tail != "" {
+				return fmt.Errorf("daemon did not start — last lines of %s:\n%s", logPath, tail)
+			}
+			return fmt.Errorf("daemon did not start — check %s", logPath)
 		}
 
 		// Fallback: fork-based start
@@ -171,7 +178,43 @@ func forkDaemon() error {
 			return nil
 		}
 	}
+	if tail := tailFile(logPath, 20); tail != "" {
+		return fmt.Errorf("daemon did not start — last lines of %s:\n%s", logPath, tail)
+	}
 	return fmt.Errorf("daemon did not start — check %s", logPath)
+}
+
+// tailFile returns the last n lines of the file at path, or "" if unreadable.
+func tailFile(path string, n int) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// scanDaemonLogForWarnings returns a single-line summary of any "warning:"
+// lines in the recent tail of the daemon log, or "" if none. Used to surface
+// degraded-mode warnings (e.g. HTTPS bind failure) on a successful start.
+func scanDaemonLogForWarnings() string {
+	tail := tailFile(filepath.Join(config.Dir(), "daemon.log"), 30)
+	if tail == "" {
+		return ""
+	}
+	var warns []string
+	for _, line := range strings.Split(tail, "\n") {
+		if strings.Contains(line, "warning:") {
+			warns = append(warns, strings.TrimSpace(line))
+		}
+	}
+	if len(warns) == 0 {
+		return ""
+	}
+	return strings.Join(warns, "\n")
 }
 
 func readDaemonPID() (int, error) {
