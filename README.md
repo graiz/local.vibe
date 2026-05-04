@@ -70,6 +70,7 @@ vibe start                           # Start from vibe.json in the current dir
 vibe start myapp                     # Start an already-registered route
 vibe start myapp 3000 -- npm run dev # Register + start inline
 vibe stop myapp                      # Stop a managed app
+vibe restart myapp                   # Stop + start (picks up vibe.json edits)
 vibe register myapp 3000             # Static mapping (no process management)
 vibe deregister myapp                # Remove a route
 vibe list                            # List all routes

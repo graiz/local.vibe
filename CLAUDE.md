@@ -43,6 +43,7 @@ The daemon runs a compiled binary at `/opt/homebrew/bin/vibe`, not source — ch
    - `log_scan.go` — regex patterns for extracting recovery hints (orphan PID, EADDRINUSE) from failed process log tails
    - `port_discover.go` — finds a managed route's real listening port via `lsof` on the process group and log-tail regex
    - `proxy_bookmark.go` — reverse-proxy for bookmark routes with `proxy=true` (landing path redirect, Location/cookie rewrites, X-Forwarded-For suppression)
+   - `sync_config.go` — re-reads `vibe.json` from a managed route's `Dir` on each `Start` so edits to `cmd`, `oauth_callback_port`, or `reserve_ports` take effect without re-registering
    - `oauth_bridge.go` — per-route localhost OAuth callback listeners (see `oauth_callback_port`); 307-forward `?code=...` from `localhost:N` to `https://name.vibe/...` so OAuth providers that require a localhost redirect URI work without leaving the .vibe origin
    - `theme.go` — Shared CSS/HTML head (Geist fonts, Vercel-inspired dark theme)
    - `setup_md.go` — Markdown setup guide served at `/setup.md`
