@@ -41,15 +41,21 @@ type Server struct {
 	tlsCert *tls.Certificate
 	caCert  *x509.Certificate
 	caKey   *ecdsa.PrivateKey
+
+	oauthBridgeMu        sync.Mutex
+	oauthBridgeServers   map[int]*http.Server
+	oauthBridgeListeners map[int]net.Listener
 }
 
 // NewServer creates a daemon server with the given configuration.
 func NewServer(cfg *config.Config) *Server {
 	return &Server{
-		cfg:   cfg,
-		table: NewRouteTable(),
-		procs: NewProcessManager(),
-		quit:  make(chan struct{}),
+		cfg:                  cfg,
+		table:                NewRouteTable(),
+		procs:                NewProcessManager(),
+		quit:                 make(chan struct{}),
+		oauthBridgeServers:   make(map[int]*http.Server),
+		oauthBridgeListeners: make(map[int]net.Listener),
 	}
 }
 
@@ -62,6 +68,9 @@ func (s *Server) Start() error {
 
 	if err := loadStickyRoutes(s.table, s.configDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load persisted routes: %v\n", err)
+	}
+	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not start oauth callback bridge listeners: %v\n", err)
 	}
 
 	s.startedAt = time.Now()
@@ -110,6 +119,7 @@ func (s *Server) Stop() {
 	if s.httpsSrv != nil {
 		_ = s.httpsSrv.Shutdown(ctx)
 	}
+	s.stopOAuthBridgeListeners()
 	_ = os.Remove(s.cfg.Daemon.Socket)
 	_ = os.Remove(fmt.Sprintf("%s/daemon.pid", config.Dir()))
 }
@@ -254,20 +264,24 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 				http.Redirect(w, r, route.ExternalURL, http.StatusTemporaryRedirect)
 				return
 			}
-			// If the registered port isn't answering, pick the right failure UI.
-			// A managed route whose child process is gone → the "Stopped" start
-			// page with a Start button (unchanged). Anything else (including a
-			// managed route whose child rebound to a different port) → the
-			// repair page, which will try to auto-discover the new port.
+			// Managed routes must never proxy when the route is marked stopped,
+			// even if another process is now listening on the old port.
+			if route.Type == RouteManaged {
+				pid, hasPID := route.PIDValue()
+				if !route.Running.Load() || !hasPID || !processAlive(pid) {
+					route.Running.Store(false)
+					route.Ready.Store(false)
+					if hasPID && !processAlive(pid) {
+						route.ClearPID()
+					}
+					s.serveStartPage(w, r, route)
+					return
+				}
+			}
+			// If the registered port isn't answering, use the repair page for
+			// running managed routes (and other non-bookmark routes).
 			if !s.isPortReady(route.Port) {
 				route.Ready.Store(false)
-				if route.Type == RouteManaged {
-					pid, hasPID := route.PIDValue()
-					if !hasPID || !processAlive(pid) {
-						s.serveStartPage(w, r, route)
-						return
-					}
-				}
 				s.serveRepairPage(w, r, route)
 				return
 			}
@@ -322,6 +336,83 @@ func (s *Server) killPort(port int) {
 	}
 }
 
+// findPortHolders runs `lsof -ti tcp:PORT` and returns the listening PIDs.
+// Returns nil on lsof error or when no process is bound to the port.
+var findPortHoldersFn = findPortHoldersDefault
+
+func findPortHoldersDefault(port int) []int {
+	out, err := exec.Command("lsof", "-ti", fmt.Sprintf("tcp:%d", port)).Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		var pid int
+		if _, err := fmt.Sscan(line, &pid); err == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// pidCommand returns a short command name for a pid via `ps -p PID -o comm=`.
+// Best-effort: returns "" on error or empty output.
+var pidCommandFn = pidCommandDefault
+
+func pidCommandDefault(pid int) string {
+	out, err := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "comm=").Output()
+	if err != nil {
+		return ""
+	}
+	cmd := strings.TrimSpace(string(out))
+	// `ps -o comm=` returns the full path on macOS; trim to the basename for
+	// readability in the recovery message.
+	if i := strings.LastIndex(cmd, "/"); i >= 0 {
+		cmd = cmd[i+1:]
+	}
+	return cmd
+}
+
+// buildPortConflictRecovery builds a Recovery hint for a "port already in use"
+// situation by inspecting which process is holding the port. Filters out the
+// daemon itself and any PID currently owned by another managed route (those
+// should be stopped via the route's Stop handler, not signaled directly).
+//
+// Returns nil if the port is no longer held by any external process — the
+// caller should treat that as a transient condition and not surface a hint.
+func (s *Server) buildPortConflictRecovery(port int) *Recovery {
+	pids := findPortHoldersFn(port)
+	myPID := os.Getpid()
+	external := make([]int, 0, len(pids))
+	for _, pid := range pids {
+		if pid == myPID {
+			continue
+		}
+		if s.procs.OwnsPID(pid) {
+			continue
+		}
+		external = append(external, pid)
+	}
+	if len(external) == 0 {
+		return nil
+	}
+	if len(external) == 1 {
+		pid := external[0]
+		cmd := pidCommandFn(pid)
+		msg := fmt.Sprintf("Port %d is held by PID %d", port, pid)
+		if cmd != "" {
+			msg += fmt.Sprintf(" (%s)", cmd)
+		}
+		msg += ". Kill it and retry?"
+		return &Recovery{Action: "kill_pid", PID: pid, Message: msg}
+	}
+	return &Recovery{
+		Action:  "kill_port",
+		Port:    port,
+		Message: fmt.Sprintf("Port %d is held by %d processes. Kill them all and retry?", port, len(external)),
+	}
+}
+
 func (s *Server) configDir() string {
 	if s.ConfigDir != "" {
 		return s.ConfigDir
@@ -357,6 +448,14 @@ func findFreePort(table *RouteTable) (int, error) {
 	for _, r := range table.List() {
 		if r.Port > 0 {
 			claimed[r.Port] = true
+		}
+		if r.OAuthCallbackPort > 0 {
+			claimed[r.OAuthCallbackPort] = true
+		}
+		for _, p := range r.ReservePorts {
+			if p > 0 {
+				claimed[p] = true
+			}
 		}
 	}
 	for port := 3000; port < 4000; port++ {

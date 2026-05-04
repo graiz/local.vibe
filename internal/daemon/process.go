@@ -67,8 +67,13 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	cmd := exec.Command(shell, "-lic", route.Cmd)
 	cmd.Dir = route.Dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Inject PORT env var so frameworks can auto-detect the assigned port.
+	// Inject PORT (primary) plus PORT_<UPPER_NAME> for each reserve_ports entry
+	// so the cmd can reference auxiliary ports by semantic name (e.g.
+	// $PORT_SERVER) instead of hardcoding values that drift from vibe.json.
 	cmd.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", route.Port))
+	for name, p := range route.ReservePorts {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("PORT_%s=%d", strings.ToUpper(name), p))
+	}
 
 	logDir := config.Dir()
 	_ = os.MkdirAll(logDir, 0755)

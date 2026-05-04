@@ -70,6 +70,7 @@ vibe start                           # Start from vibe.json in the current dir
 vibe start myapp                     # Start an already-registered route
 vibe start myapp 3000 -- npm run dev # Register + start inline
 vibe stop myapp                      # Stop a managed app
+vibe restart myapp                   # Stop + start (picks up vibe.json edits)
 vibe register myapp 3000             # Static mapping (no process management)
 vibe deregister myapp                # Remove a route
 vibe list                            # List all routes
@@ -87,6 +88,8 @@ vibe dev                             # Rebuild + restart daemon (for contributor
 | `cmd` | yes | Shell command to start the app |
 | `icon` | no | Emoji or image URL for the dashboard |
 | `idle_timeout` | no | Auto-stop after N minutes of no traffic (0 = never) |
+| `oauth_callback_port` | no | Fixed localhost port for OAuth callbacks |
+| `reserve_ports` | no | `{"name": port}` map of auxiliary ports the cmd binds; injected as `$PORT_<UPPER_NAME>` (see [setup.md](internal/daemon/setup.md#apps-that-bind-more-than-one-port)) |
 
 **Tip:** use `python3` (not `python`) on macOS. For Python apps, prefer a venv: `".venv/bin/python app.py"`.
 

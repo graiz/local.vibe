@@ -290,7 +290,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		safeName := html.EscapeString(r.Name)
 		vibeURL := fmt.Sprintf("%s://%s.%s", scheme, safeName, tld)
 
-		isStopped := r.Type == RouteManaged && !s.isPortReady(r.Port) && !r.Running.Load()
+		isStopped := r.Type == RouteManaged && !r.Running.Load()
 
 		// Secondary URL display
 		urlDisplay := fmt.Sprintf("%s.%s", safeName, tld)
@@ -313,7 +313,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		// Action buttons
 		actionHTML := ""
 		editSVG := `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>`
-		if r.Type == RouteManaged && s.isPortReady(r.Port) {
+		if r.Type == RouteManaged && r.Running.Load() {
 			actionHTML = fmt.Sprintf(`<button class="btn" onclick="routeAction(this,'%s','stop')">Stop</button>`, safeName)
 		} else if r.Type == RouteManaged {
 			actionHTML = fmt.Sprintf(`<button class="btn btn-primary" onclick="routeAction(this,'%s','start')">Start</button>`, safeName)
@@ -408,7 +408,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Stopped state — dim icon only, not text
-		isStopped := r.Type == RouteManaged && !s.isPortReady(r.Port) && !r.Running.Load()
+		isStopped := r.Type == RouteManaged && !r.Running.Load()
 		tileClass := "grid-tile"
 		if isStopped {
 			tileClass = "grid-tile tile-stopped"
@@ -444,49 +444,60 @@ Or open in a browser: %[2]s://local.%[1]s/setup.md</textarea>
 <!-- Add/Edit Modal -->
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
 <div class="modal">
-  <h3 id="modal-title">Add Route</h3>
-  <div class="type-toggle" id="type-toggle">
-    <button id="toggle-local" class="active" onclick="setRouteType('local')">Local Port</button>
-    <button id="toggle-bookmark" onclick="setRouteType('bookmark')">External URL</button>
+  <div class="modal-header">
+    <button type="button" class="icon-trigger" id="icon-preview" onclick="toggleIconPopover('route-popover',event)" title="Change icon">?</button>
+    <div class="modal-header-text">
+      <div class="modal-eyebrow" id="modal-title">Add Route</div>
+      <h3 id="modal-heading">New route</h3>
+      <div class="modal-sub" id="modal-sub">Map a friendly .vibe name to a local port or external URL.</div>
+    </div>
   </div>
-  <div style="margin-bottom:16px">
-    <label for="route-name">Name</label>
-    <input id="route-name" type="text" placeholder="myapp" autocomplete="off">
-  </div>
-  <div id="port-field" style="margin-bottom:16px">
-    <label for="route-port">Port</label>
-    <input id="route-port" type="number" placeholder="3000">
-  </div>
-  <div id="url-field" style="display:none;margin-bottom:16px">
-    <label for="route-url">URL</label>
-    <input id="route-url" type="text" placeholder="example.com:8080">
-  </div>
-  <div id="proxy-field" style="display:none;margin-bottom:12px">
-    <label class="checkbox-row">
-      <input id="route-proxy" type="checkbox" onchange="onProxyToggle()">
-      <span>Proxy instead of redirect</span>
-    </label>
-    <p class="hint">Keep <code>.vibe</code> in the browser URL. Useful for mirroring Tailscale / intranet hosts on a friendly name.</p>
-  </div>
-  <div id="insecure-field" style="display:none;margin-bottom:16px">
-    <label class="checkbox-row">
-      <input id="route-insecure" type="checkbox">
-      <span>Allow self-signed TLS cert</span>
-    </label>
-    <p class="hint">Only enable when the upstream uses an untrusted certificate (e.g. Tailscale MagicDNS).</p>
-  </div>
-  <div style="margin-bottom:16px">
-    <label>Icon</label>
+  <div class="icon-popover" id="route-popover">
     <input id="route-icon" type="hidden">
-    <div class="icon-select-row">
-      <div class="icon-preview icon-preview-lg" id="icon-preview">?</div>
-      <input id="route-icon-custom" type="text" class="icon-custom-input" placeholder="Type emoji" oninput="onCustomIcon('route-icon','icon-preview','icon-clear','icon-picker')">
+    <div class="icon-popover-row">
+      <input id="route-icon-custom" type="text" placeholder="Paste any emoji…" oninput="onCustomIcon('route-icon','icon-preview','icon-clear','icon-picker')">
       <button type="button" class="btn btn-sm" id="icon-clear" onclick="clearIcon('route-icon','icon-preview','icon-clear','icon-picker')" style="display:none">Clear</button>
     </div>
     <div class="icon-picker" id="icon-picker"></div>
   </div>
+  <div class="modal-body">
+    <div class="type-toggle" id="type-toggle">
+      <button id="toggle-local" class="active" onclick="setRouteType('local')">Local Port</button>
+      <button id="toggle-bookmark" onclick="setRouteType('bookmark')">External URL</button>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="route-name">Name</label>
+        <input id="route-name" type="text" placeholder="myapp" autocomplete="off" oninput="updateModalHeading()">
+      </div>
+      <div id="port-field" class="field field-port">
+        <label for="route-port">Port</label>
+        <input id="route-port" type="number" placeholder="3000">
+      </div>
+    </div>
+    <div id="url-field" class="field" style="display:none">
+      <label for="route-url">URL</label>
+      <input id="route-url" type="text" placeholder="example.com:8080">
+    </div>
+    <div id="options-card" class="options-card" style="display:none">
+      <div id="proxy-field" class="opt">
+        <label class="checkbox-row">
+          <input id="route-proxy" type="checkbox" onchange="onProxyToggle()">
+          <span>Proxy instead of redirect</span>
+        </label>
+        <p class="hint">Keep <code>.vibe</code> in the browser URL. Useful for mirroring Tailscale or intranet hosts on a friendly name.</p>
+      </div>
+      <div id="insecure-field" class="opt" style="display:none">
+        <label class="checkbox-row">
+          <input id="route-insecure" type="checkbox">
+          <span>Allow self-signed TLS cert</span>
+        </label>
+        <p class="hint">Only enable when the upstream uses an untrusted certificate (e.g. Tailscale MagicDNS).</p>
+      </div>
+    </div>
+  </div>
   <div class="modal-actions">
-    <button class="btn btn-danger" id="modal-delete" style="display:none;margin-right:auto" onclick="deleteRoute()">Delete</button>
+    <button class="btn btn-danger" id="modal-delete" style="display:none;margin-right:auto" onclick="deleteRoute()">Delete route</button>
     <button class="btn" onclick="closeModal()">Cancel</button>
     <button class="btn-add" id="modal-save" onclick="saveRoute()">Add</button>
   </div>
@@ -495,26 +506,35 @@ Or open in a browser: %[2]s://local.%[1]s/setup.md</textarea>
 <!-- Managed Route Settings Modal -->
 <div class="modal-overlay" id="managed-overlay" onclick="if(event.target===this)closeManagedModal()">
 <div class="modal">
-  <h3>Route Settings</h3>
-  <div style="margin-bottom:16px">
-    <label for="managed-name">Name</label>
-    <input id="managed-name" type="text" placeholder="myapp" autocomplete="off">
+  <div class="modal-header">
+    <button type="button" class="icon-trigger" id="managed-icon-preview" onclick="toggleIconPopover('managed-popover',event)" title="Change icon">?</button>
+    <div class="modal-header-text">
+      <div class="modal-eyebrow">Managed Route</div>
+      <h3 id="managed-heading">Settings</h3>
+      <div class="modal-sub">Configure a daemon-managed process.</div>
+    </div>
   </div>
-  <div style="margin-bottom:16px">
-    <label>Icon</label>
+  <div class="icon-popover" id="managed-popover">
     <input id="managed-icon" type="hidden">
-    <div class="icon-select-row">
-      <div class="icon-preview icon-preview-lg" id="managed-icon-preview">?</div>
-      <input id="managed-icon-custom" type="text" class="icon-custom-input" placeholder="Type emoji" oninput="onCustomIcon('managed-icon','managed-icon-preview','managed-icon-clear','managed-icon-picker')">
+    <div class="icon-popover-row">
+      <input id="managed-icon-custom" type="text" placeholder="Paste any emoji…" oninput="onCustomIcon('managed-icon','managed-icon-preview','managed-icon-clear','managed-icon-picker')">
       <button type="button" class="btn btn-sm" id="managed-icon-clear" onclick="clearIcon('managed-icon','managed-icon-preview','managed-icon-clear','managed-icon-picker')" style="display:none">Clear</button>
     </div>
     <div class="icon-picker" id="managed-icon-picker"></div>
   </div>
-  <label for="idle-timeout">Auto-stop after idle (minutes)</label>
-  <input id="idle-timeout" type="number" min="0" placeholder="0 = never">
-  <p class="hint">Stop the process automatically when no traffic is received. Set to 0 to disable.</p>
+  <div class="modal-body">
+    <div class="field">
+      <label for="managed-name">Name</label>
+      <input id="managed-name" type="text" placeholder="myapp" autocomplete="off" oninput="updateManagedHeading()">
+    </div>
+    <div class="field">
+      <label for="idle-timeout">Auto-stop after idle (minutes)</label>
+      <input id="idle-timeout" type="number" min="0" placeholder="0 = never">
+      <p class="hint">Stop the process automatically when no traffic is received. Set to <code>0</code> to disable.</p>
+    </div>
+  </div>
   <div class="modal-actions">
-    <button class="btn btn-danger" style="margin-right:auto" onclick="deleteManagedRoute()">Delete</button>
+    <button class="btn btn-danger" style="margin-right:auto" onclick="deleteManagedRoute()">Delete route</button>
     <button class="btn" onclick="closeManagedModal()">Cancel</button>
     <button class="btn-add" onclick="saveManagedSettings()">Save</button>
   </div>
@@ -533,22 +553,47 @@ function setView(mode,save){
 var modalMode='add';
 var editingName='';
 function setRouteType(t){
+  var modal=document.querySelector('#modal-overlay .modal');
+  var animate=modal&&document.getElementById('modal-overlay').classList.contains('active');
+  var fromH=animate?modal.offsetHeight:0;
   document.getElementById('toggle-local').className=t==='local'?'active':'';
   document.getElementById('toggle-bookmark').className=t==='bookmark'?'active':'';
   document.getElementById('port-field').style.display=t==='local'?'':'none';
   document.getElementById('url-field').style.display=t==='bookmark'?'':'none';
   document.getElementById('proxy-field').style.display=t==='bookmark'?'':'none';
+  document.getElementById('options-card').style.display=t==='bookmark'?'':'none';
   onProxyToggle();
+  if(animate){
+    var toH=modal.offsetHeight;
+    if(toH!==fromH){
+      modal.style.transition='none';
+      modal.style.height=fromH+'px';
+      modal.offsetHeight;
+      modal.style.transition='height .3s cubic-bezier(.4,0,.2,1)';
+      modal.style.height=toH+'px';
+      setTimeout(function(){modal.style.transition='';modal.style.height=''},320);
+    }
+  }
 }
 function onProxyToggle(){
   var proxyOn=document.getElementById('route-proxy').checked;
   var bookmark=document.getElementById('toggle-bookmark').className==='active';
   document.getElementById('insecure-field').style.display=(bookmark&&proxyOn)?'':'none';
 }
+function updateModalHeading(){
+  var n=document.getElementById('route-name').value.trim();
+  document.getElementById('modal-heading').textContent=n?n+'.vibe':(modalMode==='edit'?'Edit route':'New route');
+}
+function updateManagedHeading(){
+  var n=document.getElementById('managed-name').value.trim();
+  document.getElementById('managed-heading').textContent=n?n+'.vibe':'Settings';
+}
 function openAddModal(){
   modalMode='add';editingName='';
   document.getElementById('modal-title').textContent='Add Route';
-  document.getElementById('modal-save').textContent='Add';
+  document.getElementById('modal-heading').textContent='New route';
+  document.getElementById('modal-sub').textContent='Map a friendly .vibe name to a local port or external URL.';
+  document.getElementById('modal-save').textContent='Add Route';
   document.getElementById('modal-delete').style.display='none';
   document.getElementById('type-toggle').style.display='';
   document.getElementById('route-name').value='';
@@ -564,6 +609,8 @@ function openAddModal(){
 function openEditModal(name,port,url,type,icon,autoIcon,proxy,insecure){
   modalMode='edit';editingName=name;
   document.getElementById('modal-title').textContent='Edit Route';
+  document.getElementById('modal-heading').textContent=name+'.vibe';
+  document.getElementById('modal-sub').textContent=type==='bookmark'?'Reverse-proxy or redirect to an external host.':'Forward .vibe traffic to a local port.';
   document.getElementById('modal-save').textContent='Save';
   document.getElementById('modal-delete').style.display='';
   document.getElementById('type-toggle').style.display='';
@@ -584,14 +631,12 @@ function openEditModal(name,port,url,type,icon,autoIcon,proxy,insecure){
   }
   document.getElementById('modal-overlay').classList.add('active');
 }
-function closeModal(){document.getElementById('modal-overlay').classList.remove('active')}
+function closeModal(){document.getElementById('modal-overlay').classList.remove('active');closeAllIconPopovers()}
 function saveRoute(){
   var name=document.getElementById('route-name').value.trim();
   if(!name)return;
   var isBookmark=document.getElementById('toggle-bookmark').className==='active';
-  var body={name:name};
-  var icon=getIconValue('route-icon');
-  if(icon)body.icon=icon;
+  var body={name:name,icon:getIconValue('route-icon')};
   if(isBookmark){
     var u=document.getElementById('route-url').value.trim();
     if(!u)return;
@@ -631,13 +676,14 @@ function copyText(){
 var managedEditName='';
 function openManagedModal(name,idle,icon,autoIcon){
   managedEditName=name;
+  document.getElementById('managed-heading').textContent=name+'.vibe';
   document.getElementById('managed-name').value=name;
   document.getElementById('idle-timeout').value=idle||'';
   document.getElementById('managed-icon').dataset.autoicon=autoIcon||'';
   setIconField('managed-icon','managed-icon-preview','managed-icon-clear','managed-icon-picker',icon||'',autoIcon||'');
   document.getElementById('managed-overlay').classList.add('active');
 }
-function closeManagedModal(){document.getElementById('managed-overlay').classList.remove('active')}
+function closeManagedModal(){document.getElementById('managed-overlay').classList.remove('active');closeAllIconPopovers()}
 function deleteManagedRoute(){
   if(!managedEditName)return;
   fetch('/_api/routes/'+encodeURIComponent(managedEditName),{method:'DELETE',headers:{'Accept':'application/json'}}).then(function(){location.reload()});
@@ -646,9 +692,7 @@ function saveManagedSettings(){
   var name=document.getElementById('managed-name').value.trim();
   if(!name)return;
   var idle=parseInt(document.getElementById('idle-timeout').value)||0;
-  var icon=getIconValue('managed-icon');
-  var body={name:name,idle_timeout:idle};
-  if(icon)body.icon=icon;
+  var body={name:name,idle_timeout:idle,icon:getIconValue('managed-icon')};
   fetch('/_api/routes/'+encodeURIComponent(managedEditName),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(){location.reload()});
 }
 function setIconField(inputId,previewId,clearId,pickerId,val,autoIcon){
@@ -673,7 +717,7 @@ function onCustomIcon(inputId,previewId,clearId,pickerId){
   setIconField(inputId,previewId,clearId,pickerId,val);
 }
 var iconChoices=['🚀','🤖','📦','⚡','🔮','🎯','🛠️','💎','🧪','🌐','📡','🎨','🔒','🗂️','📊','🧩'];
-function buildPicker(containerId,inputId,previewId,clearId){
+function buildPicker(containerId,inputId,previewId,clearId,popoverId){
   var c=document.getElementById(containerId);
   c.innerHTML='';
   iconChoices.forEach(function(em){
@@ -681,16 +725,32 @@ function buildPicker(containerId,inputId,previewId,clearId){
     b.type='button';b.className='icon-pick';b.textContent=em;
     b.onclick=function(){
       setIconField(inputId,previewId,clearId,containerId,em);
+      if(popoverId)closeIconPopover(popoverId);
     };
     c.appendChild(b);
   });
 }
+function toggleIconPopover(id,e){
+  if(e){e.stopPropagation()}
+  var p=document.getElementById(id);
+  var wasOpen=p.classList.contains('active');
+  closeAllIconPopovers();
+  if(!wasOpen)p.classList.add('active');
+}
+function closeIconPopover(id){document.getElementById(id).classList.remove('active')}
+function closeAllIconPopovers(){
+  document.querySelectorAll('.icon-popover.active').forEach(function(p){p.classList.remove('active')});
+}
+document.addEventListener('click',function(e){
+  if(e.target.closest('.icon-popover')||e.target.closest('.icon-trigger'))return;
+  closeAllIconPopovers();
+});
 function highlightPicker(containerId,val){
   var btns=document.getElementById(containerId).querySelectorAll('.icon-pick');
   btns.forEach(function(b){b.classList.toggle('selected',b.textContent===val)});
 }
-buildPicker('icon-picker','route-icon','icon-preview','icon-clear');
-buildPicker('managed-icon-picker','managed-icon','managed-icon-preview','managed-icon-clear');
+buildPicker('icon-picker','route-icon','icon-preview','icon-clear','route-popover');
+buildPicker('managed-icon-picker','managed-icon','managed-icon-preview','managed-icon-clear','managed-popover');
 
 function setIconPreviewEl(el,val){
   if(!val){el.textContent='?';el.style.backgroundImage='';return}

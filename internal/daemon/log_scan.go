@@ -4,16 +4,18 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Recovery is an actionable hint extracted from a failed managed process's
-// log tail. The dashboard surfaces Message to the user and uses Action + PID
-// or Port to offer a one-click "kill and retry" button.
+// log tail. The dashboard surfaces Message to the user and uses Action +
+// (PID|Port|SuggestedCmd) to offer a one-click remediation button.
 type Recovery struct {
-	Message string `json:"message"`
-	Action  string `json:"action"` // "kill_pid" | "kill_port"
-	PID     int    `json:"pid,omitempty"`
-	Port    int    `json:"port,omitempty"`
+	Message      string `json:"message"`
+	Action       string `json:"action"` // "kill_pid" | "kill_port" | "restart" | "edit_cmd" | "info"
+	PID          int    `json:"pid,omitempty"`
+	Port         int    `json:"port,omitempty"`
+	SuggestedCmd string `json:"suggested_cmd,omitempty"`
 }
 
 type recoveryPattern struct {
@@ -58,12 +60,88 @@ var recoveryPatterns = []recoveryPattern{
 	},
 }
 
+// pythonNotFoundRe matches shell errors from invoking a missing `python`
+// interpreter. macOS no longer ships /usr/bin/python — projects that hard-code
+// `python` in their command crash here while `python3` works fine.
+//
+// Examples:
+//
+//	zsh:1: command not found: python
+//	bash: python: command not found
+//	/bin/sh: python: command not found
+var pythonNotFoundRe = regexp.MustCompile(`(?m)(?:command not found:\s*python|python:\s*command not found)\b`)
+
+// moduleNotFoundRe extracts the missing package name from Python's
+// ModuleNotFoundError. Example:
+//
+//	ModuleNotFoundError: No module named 'flask'
+var moduleNotFoundRe = regexp.MustCompile(`ModuleNotFoundError:\s+No module named\s+['"]([a-zA-Z_][a-zA-Z0-9_.]*)['"]`)
+
+// pythonTokenRe finds a standalone `python` token (word-boundary on both sides,
+// not preceded by `python`-suffix chars like `3` or `2`). Used to rewrite
+// `python app.py` → `python3 app.py` without mangling `python3`, `pythonw`,
+// or paths like `/usr/bin/python`.
+var pythonTokenRe = regexp.MustCompile(`(^|[\s;&|"'` + "`" + `])python(\b)`)
+
+// suggestPython3Cmd rewrites the first standalone `python` in cmd to `python3`.
+// Returns (newCmd, true) if a rewrite happened, (cmd, false) otherwise.
+//
+// Skips the rewrite when cmd already contains `python3` — the user has been
+// explicit, and another bare `python` somewhere later (rare) probably means
+// something else.
+func suggestPython3Cmd(cmd string) (string, bool) {
+	if cmd == "" {
+		return cmd, false
+	}
+	if strings.Contains(cmd, "python3") {
+		return cmd, false
+	}
+	if !pythonTokenRe.MatchString(cmd) {
+		return cmd, false
+	}
+	// Rewrite only the first match so we don't accidentally double-rewrite
+	// in pathological inputs.
+	replaced := false
+	out := pythonTokenRe.ReplaceAllStringFunc(cmd, func(m string) string {
+		if replaced {
+			return m
+		}
+		replaced = true
+		return pythonTokenRe.ReplaceAllString(m, "${1}python3${2}")
+	})
+	return out, replaced
+}
+
 // scanLogForRecovery inspects the tail of a failed process's log output and
-// returns a recovery hint if one of the known patterns matches.
-func scanLogForRecovery(tail string) *Recovery {
+// returns a recovery hint if one of the known patterns matches. The route's
+// current cmd is consulted for cmd-rewrite suggestions (e.g. python → python3);
+// pass an empty string when no cmd is available.
+func scanLogForRecovery(tail, cmd string) *Recovery {
 	if tail == "" {
 		return nil
 	}
+
+	// Cmd-aware patterns first — they offer the most direct fix.
+	if pythonNotFoundRe.MatchString(tail) {
+		if newCmd, ok := suggestPython3Cmd(cmd); ok {
+			return &Recovery{
+				Action:       "edit_cmd",
+				Message:      "`python` is not on PATH but `python3` is. Switch the command to use `python3` and retry?",
+				SuggestedCmd: newCmd,
+			}
+		}
+	}
+	if m := moduleNotFoundRe.FindStringSubmatch(tail); len(m) >= 2 {
+		mod := m[1]
+		return &Recovery{
+			Action: "info",
+			Message: fmt.Sprintf(
+				"Missing Python module `%s`. Install it (e.g. `pip3 install %s`, or activate your project's venv) and retry.",
+				mod, mod,
+			),
+		}
+	}
+
 	for _, p := range recoveryPatterns {
 		m := p.re.FindStringSubmatch(tail)
 		if len(m) < 2 {

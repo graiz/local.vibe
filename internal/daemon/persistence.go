@@ -22,8 +22,10 @@ type stickyEntry struct {
 	IdleTimeout        int       `json:"idle_timeout,omitempty"`
 	Icon               string    `json:"icon,omitempty"`
 	AutoIcon           string    `json:"auto_icon,omitempty"`
-	Proxy              bool      `json:"proxy,omitempty"`
-	InsecureSkipVerify bool      `json:"insecure_skip_verify,omitempty"`
+	Proxy              bool           `json:"proxy,omitempty"`
+	InsecureSkipVerify bool           `json:"insecure_skip_verify,omitempty"`
+	ReservePorts       map[string]int `json:"reserve_ports,omitempty"`
+	OAuthCallbackPort  int            `json:"oauth_callback_port,omitempty"`
 }
 
 // loadStickyRoutes restores persisted routes (sticky, managed, bookmark)
@@ -65,6 +67,8 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 			AutoIcon:           entry.AutoIcon,
 			Proxy:              entry.Proxy,
 			InsecureSkipVerify: entry.InsecureSkipVerify,
+			ReservePorts:       entry.ReservePorts,
+			OAuthCallbackPort:  entry.OAuthCallbackPort,
 		}
 		// Managed routes start not running until launched; others are assumed ready.
 		r.Running.Store(rt != RouteManaged)
@@ -92,6 +96,8 @@ func saveStickyRoutes(table *RouteTable, dir string) error {
 				AutoIcon:           r.AutoIcon,
 				Proxy:              r.Proxy,
 				InsecureSkipVerify: r.InsecureSkipVerify,
+				ReservePorts:       r.ReservePorts,
+				OAuthCallbackPort:  r.OAuthCallbackPort,
 			}
 		}
 	}

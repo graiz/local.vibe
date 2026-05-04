@@ -92,9 +92,9 @@ h1{font-family:var(--font-display);font-size:1.1rem;font-weight:400;color:var(--
   <div class="url">%[3]s.%[4]s</div>
   <div class="status"><span class="led led-red"></span>Stopped</div>
   <div class="cmd">%[5]s</div>
-  <button class="start-btn" id="btn" onclick="startApp()">Start</button>
-  <div class="page-spinner" id="spinner"></div>
-  <div class="msg" id="msg"></div>
+  <button class="start-btn" id="btn" onclick="handlePrimaryButton()">Cancel</button>
+  <div class="page-spinner" id="spinner" style="display:block"></div>
+  <div class="msg" id="msg" style="display:block;color:var(--text-muted)">Launching process…</div>
   <div class="recovery" id="recovery">
     <div class="recovery-msg" id="recovery-msg"></div>
     <button class="recovery-btn" id="recovery-btn" onclick="recoverAndRetry()"></button>
@@ -103,6 +103,64 @@ h1{font-family:var(--font-display);font-size:1.1rem;font-weight:400;color:var(--
 </div>
 <script>
 var lastRecovery=null;
+var launchCanceled=false;
+var activeXHR=null;
+var launchMode='cancel'; // cancel | retry
+
+function setLaunchMode(mode){
+  launchMode=mode;
+  var btn=document.getElementById('btn');
+  if(mode==='cancel'){
+    btn.disabled=false;
+    btn.textContent='Cancel';
+    return;
+  }
+  btn.disabled=false;
+  btn.textContent='Retry';
+}
+
+function handlePrimaryButton(){
+  if(launchMode==='cancel'){
+    cancelLaunch();
+    return;
+  }
+  startApp();
+}
+
+// fetchFailureAndRender pulls the most recent Failure off /ready and renders
+// it on the page. Retries up to 3 times at 1s intervals to cover the race
+// where the frontend poll timeout fires a beat before waitForReady writes
+// its failure record.
+function fetchFailureAndRender(tries){
+  var msg=document.getElementById('msg');
+  var spinner=document.getElementById('spinner');
+  var fx=new XMLHttpRequest();
+  fx.open('GET','/_api/routes/%[3]s/ready');
+  fx.timeout=2000;
+  fx.onload=function(){
+    var d=null;try{d=JSON.parse(fx.responseText);}catch(e){}
+    if(d&&d.failure){
+      setLaunchMode('retry');spinner.style.display='none';
+      msg.style.whiteSpace='pre-wrap';msg.style.textAlign='left';msg.style.fontSize='.75rem';
+      msg.textContent=d.failure.message||'Server never became ready';
+      msg.style.color='var(--red)';
+      if(d.failure.recovery){showRecovery(d.failure.recovery, d.failure.log||'');}
+      else if(d.failure.log){showFailureLog(d.failure.log);}
+      return;
+    }
+    if(tries<3){setTimeout(function(){fetchFailureAndRender(tries+1);},1000);return;}
+    setLaunchMode('retry');spinner.style.display='none';
+    msg.textContent='Taking too long \u2014 check logs';
+    msg.style.color='var(--yellow)';
+  };
+  fx.onerror=fx.ontimeout=function(){
+    if(tries<3){setTimeout(function(){fetchFailureAndRender(tries+1);},1000);return;}
+    setLaunchMode('retry');spinner.style.display='none';
+    msg.textContent='Taking too long \u2014 check logs';
+    msg.style.color='var(--yellow)';
+  };
+  fx.send();
+}
 
 function hideRecovery(){
   document.getElementById('recovery').style.display='none';
@@ -112,39 +170,63 @@ function hideRecovery(){
 function showRecovery(rec, logTail){
   lastRecovery=rec;
   var box=document.getElementById('recovery');
+  var btn=document.getElementById('recovery-btn');
   document.getElementById('recovery-msg').textContent=rec.message||'Recoverable error';
-  var label='Kill and Retry';
-  if(rec.action==='kill_pid' && rec.pid) label='Kill PID '+rec.pid+' and Retry';
-  else if(rec.action==='kill_port' && rec.port) label='Free Port '+rec.port+' and Retry';
-  document.getElementById('recovery-btn').textContent=label;
   var logEl=document.getElementById('log-tail');
+  // "info" actions are diagnostic only (e.g., missing pip module) — render
+  // the message + log tail with no button, since the fix requires user input.
+  if(rec.action==='info'){
+    btn.style.display='none';
+  }else{
+    btn.style.display='inline-flex';
+    btn.disabled=false;
+    var label='Kill and Retry';
+    if(rec.action==='kill_pid' && rec.pid) label='Kill PID '+rec.pid+' and Retry';
+    else if(rec.action==='kill_port' && rec.port) label='Free Port '+rec.port+' and Retry';
+    else if(rec.action==='restart') label=(rec.pid?'Restart Process (PID '+rec.pid+')':'Restart Process');
+    else if(rec.action==='edit_cmd' && rec.suggested_cmd) label='Use \u0060'+rec.suggested_cmd+'\u0060 and Retry';
+    btn.textContent=label;
+  }
+  if(logTail){logEl.textContent=logTail;logEl.style.display='block';}else{logEl.style.display='none';}
+  box.style.display='block';
+}
+
+function showFailureLog(logTail){
+  lastRecovery=null;
+  var box=document.getElementById('recovery');
+  var btn=document.getElementById('recovery-btn');
+  var logEl=document.getElementById('log-tail');
+  document.getElementById('recovery-msg').textContent='No automatic recovery available. See log tail:';
+  btn.style.display='none';
   if(logTail){logEl.textContent=logTail;logEl.style.display='block';}else{logEl.style.display='none';}
   box.style.display='block';
 }
 
 function startApp(body){
+  launchCanceled=false;
   hideRecovery();
-  var btn=document.getElementById('btn');
   var spinner=document.getElementById('spinner');
   var msg=document.getElementById('msg');
-  btn.disabled=true;
-  btn.textContent='Starting\u2026';
+  setLaunchMode('cancel');
   spinner.style.display='block';
   msg.style.display='block';
   msg.style.color='var(--text-muted)';
+  msg.style.whiteSpace='normal';msg.style.textAlign='center';msg.style.fontSize='.8rem';
   msg.textContent='Launching process\u2026';
 
   var xhr=new XMLHttpRequest();
+  activeXHR=xhr;
   xhr.open('POST','/_api/routes/%[3]s/start');
   xhr.setRequestHeader('Accept','application/json');
   if(body){xhr.setRequestHeader('Content-Type','application/json');}
   xhr.onload=function(){
+    activeXHR=null;
+    if(launchCanceled){return;}
     if(xhr.status===200){
       msg.textContent='Waiting for server\u2026';
       pollUntilReady(0);
     }else{
-      btn.disabled=false;
-      btn.textContent='Retry';
+      setLaunchMode('retry');
       spinner.style.display='none';
       var errMsg='Failed to start';
       var d=null;
@@ -153,11 +235,13 @@ function startApp(body){
       msg.textContent=errMsg;
       msg.style.color='var(--red)';
       if(d&&d.recovery){showRecovery(d.recovery, d.log||'');}
+      else if(d&&d.log){showFailureLog(d.log);}
     }
   };
   xhr.onerror=function(){
-    btn.disabled=false;
-    btn.textContent='Start';
+    activeXHR=null;
+    if(launchCanceled){return;}
+    setLaunchMode('retry');
     spinner.style.display='none';
     msg.textContent='Could not reach daemon';
     msg.style.color='var(--red)';
@@ -165,23 +249,97 @@ function startApp(body){
   xhr.send(body?JSON.stringify(body):null);
 }
 
+function cancelLaunch(){
+  launchCanceled=true;
+  if(activeXHR){
+    try{activeXHR.abort();}catch(e){}
+    activeXHR=null;
+  }
+  var btn=document.getElementById('btn');
+  var spinner=document.getElementById('spinner');
+  var msg=document.getElementById('msg');
+  btn.disabled=true;
+  var stop=new XMLHttpRequest();
+  stop.open('DELETE','/_api/routes/%[3]s/stop');
+  stop.onload=function(){
+    spinner.style.display='none';
+    msg.style.display='block';
+    msg.style.whiteSpace='normal';msg.style.textAlign='center';msg.style.fontSize='.8rem';
+    msg.textContent='Start canceled';
+    msg.style.color='var(--yellow)';
+    setLaunchMode('retry');
+  };
+  stop.onerror=function(){
+    spinner.style.display='none';
+    msg.style.display='block';
+    msg.textContent='Could not cancel cleanly — safe to retry';
+    msg.style.color='var(--yellow)';
+    setLaunchMode('retry');
+  };
+  stop.send();
+}
+
 function recoverAndRetry(){
   if(!lastRecovery)return;
+  var rbtn=document.getElementById('recovery-btn');
+  rbtn.disabled=true;
+  // "restart" means: stop the stuck child, then start fresh. Used when the
+  // process is alive but never bound its port — safeKillPID refuses to
+  // signal managed-owned PIDs, so a plain kill_pid won't work here.
+  if(lastRecovery.action==='restart'){
+    var stop=new XMLHttpRequest();
+    stop.open('DELETE','/_api/routes/%[3]s/stop');
+    stop.onload=function(){setTimeout(function(){startApp();},300);};
+    stop.onerror=function(){startApp();};
+    stop.send();
+    return;
+  }
+  // "edit_cmd" rewrites the route's cmd (e.g. python → python3) via PUT,
+  // updates the visible cmd preview, then retries. The cmd field on this
+  // page is server-rendered, so we patch its textContent in-place too.
+  if(lastRecovery.action==='edit_cmd' && lastRecovery.suggested_cmd){
+    var put=new XMLHttpRequest();
+    put.open('PUT','/_api/routes/%[3]s');
+    put.setRequestHeader('Content-Type','application/json');
+    put.onload=function(){
+      if(put.status>=200&&put.status<300){
+        var cmdEl=document.querySelector('.cmd');
+        if(cmdEl)cmdEl.textContent=lastRecovery.suggested_cmd;
+        startApp();
+      }else{
+        rbtn.disabled=false;
+        var em=document.getElementById('msg');
+        em.style.display='block';em.textContent='Failed to update command';em.style.color='var(--red)';
+      }
+    };
+    put.onerror=function(){
+      rbtn.disabled=false;
+      var em=document.getElementById('msg');
+      em.style.display='block';em.textContent='Could not reach daemon';em.style.color='var(--red)';
+    };
+    put.send(JSON.stringify({cmd:lastRecovery.suggested_cmd}));
+    return;
+  }
   var body={};
   if(lastRecovery.action==='kill_pid'&&lastRecovery.pid)body.kill_pid=lastRecovery.pid;
   else if(lastRecovery.action==='kill_port'&&lastRecovery.port)body.kill_port=lastRecovery.port;
   else return;
-  document.getElementById('recovery-btn').disabled=true;
   startApp(body);
 }
 
+// Poll ~35s — slightly longer than waitForReady's 30s deadline so the
+// backend's Failure record is reliably in place when we ask for it.
 function pollUntilReady(attempts){
-  if(attempts>60){
-    document.getElementById('msg').textContent='Taking too long \u2014 check logs';
-    document.getElementById('msg').style.color='var(--yellow)';
-    document.getElementById('btn').disabled=false;
-    document.getElementById('btn').textContent='Retry';
-    document.getElementById('spinner').style.display='none';
+  if(launchCanceled){return;}
+  if(attempts>70){
+    // Poll stopped making progress. Ask /ready once more: the backend's
+    // waitForReady writes a Failure (log tail + recovery hint or a
+    // "restart" fallback) when its own deadline expires, so we can show
+    // the tail and a one-click recovery button instead of just "check logs".
+    var msg=document.getElementById('msg');
+    var btn=document.getElementById('btn');
+    var spinner=document.getElementById('spinner');
+    fetchFailureAndRender(0);
     return;
   }
   var xhr=new XMLHttpRequest();
@@ -201,10 +359,10 @@ function pollUntilReady(attempts){
         msgEl.style.whiteSpace='pre-wrap';msgEl.style.textAlign='left';msgEl.style.fontSize='.75rem';
         msgEl.textContent=(d.failure&&d.failure.message)?d.failure.message:'Process crashed \u2014 check logs at ~/.vibe/%[3]s.log';
         msgEl.style.color='var(--red)';
-        document.getElementById('btn').disabled=false;
-        document.getElementById('btn').textContent='Retry';
+        setLaunchMode('retry');
         document.getElementById('spinner').style.display='none';
         if(d.failure&&d.failure.recovery){showRecovery(d.failure.recovery, d.failure.log||'');}
+        else if(d.failure&&d.failure.log){showFailureLog(d.failure.log);}
         return;
       }
     }catch(e){}
@@ -215,6 +373,7 @@ function pollUntilReady(attempts){
   xhr.send();
 }
 %[6]s
+startApp();
 </script>
 </body>
 </html>
@@ -235,7 +394,7 @@ func (s *Server) startPageRecoveryInitJS(route *Route) string {
 		if tail == "" {
 			return ""
 		}
-		rec := scanLogForRecovery(tail)
+		rec := scanLogForRecovery(tail, route.Cmd)
 		if rec == nil {
 			return ""
 		}
