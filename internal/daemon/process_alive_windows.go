@@ -2,14 +2,27 @@
 
 package daemon
 
-// processAlive on Windows is a Phase 1 stub. The unix Signal(0) trick has no
-// Windows equivalent inside stdlib, and we don't want to pull in
-// golang.org/x/sys/windows just for liveness checks during Phase 1.
-//
-// Returning true for any positive PID means stale managed routes won't be
-// auto-cleaned on Windows yet — but the daemon won't crash, and macOS
-// behavior is unaffected. Phase 2 will replace this with OpenProcess +
-// GetExitCodeProcess via golang.org/x/sys/windows.
+import "golang.org/x/sys/windows"
+
+// processAlive on Windows opens a query handle on the target process and
+// asks for its exit code. STILL_ACTIVE (259) means the process hasn't
+// exited yet. Failure to open the handle (access denied, invalid PID,
+// etc.) is treated as "not alive" — same conservative bias as the unix
+// signal-0 trick.
 func processAlive(pid int) bool {
-	return pid > 0
+	if pid <= 0 {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(h, &exitCode); err != nil {
+		return false
+	}
+	const stillActive = 259 // STILL_ACTIVE
+	return exitCode == stillActive
 }

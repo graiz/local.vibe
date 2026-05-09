@@ -40,7 +40,14 @@ cd local.vibe
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-Installs Go via winget (if missing), builds the binary, and copies it to `%LOCALAPPDATA%\Programs\vibe\vibe.exe`. The system-config step (DNS, port forwarding, cert trust, autostart) is currently a documented stub on Windows — the cross-platform refactor that paves the way is on the `feature/windows-implementation` branch; the actual implementation lands in a follow-up.
+Run from an **elevated** PowerShell. The script installs Go via winget if missing, builds the binary, copies it to `%LOCALAPPDATA%\Programs\vibe\vibe.exe`, then runs `vibe setup` which:
+
+- generates the local TLS CA + leaf cert and trusts it via `certutil -addstore Root`
+- adds netsh portproxy rules so 80→7999 and 443→7443
+- repoints every connected adapter's primary DNS to 127.0.0.1 (the daemon embeds a tiny resolver that answers *.vibe locally and forwards everything else to 8.8.8.8)
+- registers a Scheduled Task `vibe` triggered on logon with `/rl HIGHEST` so the daemon autostarts elevated
+
+`vibe uninstall` reverses every step and resets adapter DNS to DHCP. Firefox uses NSS independently and won't pick up the system-store CA — manual import required for now.
 
 ### Linux
 

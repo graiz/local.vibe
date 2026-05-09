@@ -1,6 +1,15 @@
-# Future: Windows & Linux Support
+# Future: Linux Support
 
-local.vibe is currently macOS-only. This document captures what would need to change to support Windows and Linux, and the design constraints that came out of reviewing PR #4 (first Linux attempt).
+> Status (Windows): both the cross-platform refactor (Phase 1) and the
+> Windows implementation (Phase 2) have landed on
+> `feature/windows-implementation`. Process supervision uses Job Objects;
+> DNS uses an embedded stub on 127.0.0.1:53 plus `netsh interface ipv4 set
+> dnsservers static`; port forwarding uses `netsh interface portproxy`;
+> autostart uses a Scheduled Task on logon at /rl HIGHEST; cert trust uses
+> `certutil -addstore Root`. `vibe uninstall` reverses every step.
+> Linux remains unimplemented — sections below describe its design.
+
+local.vibe is currently macOS- and Windows-supported. This document captures what would need to change to support Linux, and the design constraints that came out of reviewing PR #4 (first Linux attempt).
 
 ---
 

@@ -19,6 +19,7 @@ import (
 
 	"github.com/graiz/local.vibe/internal/cert"
 	"github.com/graiz/local.vibe/internal/config"
+	vdns "github.com/graiz/local.vibe/internal/dns"
 )
 
 // Server is the vibe daemon. It listens on a TCP port and a Unix socket,
@@ -43,6 +44,8 @@ type Server struct {
 	oauthBridgeMu        sync.Mutex
 	oauthBridgeServers   map[int]*http.Server
 	oauthBridgeListeners map[int]net.Listener
+
+	dnsServer *vdns.Server // nil unless cfg.Daemon.DNS.Enabled
 }
 
 // NewServer creates a daemon server with the given configuration.
@@ -100,6 +103,20 @@ func (s *Server) Start() error {
 		go s.startTLS(mux)
 	}
 
+	if s.cfg.Daemon.DNS.Enabled {
+		s.dnsServer = vdns.New(vdns.Config{
+			TLD:      s.cfg.Daemon.TLD,
+			Listen:   s.cfg.Daemon.DNS.Listen,
+			Upstream: s.cfg.Daemon.DNS.Upstream,
+		})
+		if err := s.dnsServer.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: DNS resolver failed to start (%v) — *.vibe lookups won't work until this is fixed\n", err)
+			s.dnsServer = nil
+		} else {
+			fmt.Printf("vibe daemon DNS on %s\n", s.dnsServer.Listen())
+		}
+	}
+
 	fmt.Printf("vibe daemon listening on 127.0.0.1:%d\n", s.cfg.Daemon.Port)
 
 	if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -118,6 +135,9 @@ func (s *Server) Stop() {
 		_ = s.httpsSrv.Shutdown(ctx)
 	}
 	s.stopOAuthBridgeListeners()
+	if s.dnsServer != nil {
+		s.dnsServer.Stop()
+	}
 	_ = os.Remove(s.cfg.Daemon.Socket)
 	_ = os.Remove(fmt.Sprintf("%s/daemon.pid", config.Dir()))
 }
