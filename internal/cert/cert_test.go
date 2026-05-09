@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -35,8 +36,13 @@ func TestEnsureCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ca-key.pem not found: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("ca-key.pem permissions: got %o, want 0600", perm)
+	// Windows (NTFS) doesn't store unix mode bits — Go's os layer reports
+	// 0666 regardless of what we passed to WriteFile. Skip on Windows; the
+	// real ACL story there is a Phase 2 concern.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("ca-key.pem permissions: got %o, want 0600", perm)
+		}
 	}
 
 	// Calling again should return the same CA (idempotent)
@@ -101,8 +107,10 @@ func TestEnsureLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vibe-key.pem not found: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("vibe-key.pem permissions: got %o, want 0600", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("vibe-key.pem permissions: got %o, want 0600", perm)
+		}
 	}
 
 	// Validity should be ~825 days

@@ -38,8 +38,11 @@ func TestPIDWriteOnlyOnSuccessfulBind(t *testing.T) {
 			PIDCheckInterval: 1,
 		},
 	}
-	// Override config dir so the PID file lands in our temp dir.
+	// Override config dir so the PID file lands in our temp dir. os.UserHomeDir
+	// reads HOME on unix and USERPROFILE on Windows — set both so this test
+	// works on every platform without per-OS branching.
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	// Start the first (winning) server.
 	srv1 := NewServer(cfg)

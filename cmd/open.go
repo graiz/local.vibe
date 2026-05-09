@@ -3,8 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"runtime"
 
 	"github.com/graiz/local.vibe/internal/client"
 	"github.com/spf13/cobra"
@@ -34,18 +32,6 @@ var openCmd = &cobra.Command{
 		}
 
 		fmt.Println(url)
-
-		var openExec *exec.Cmd
-		switch runtime.GOOS {
-		case "darwin":
-			openExec = exec.Command("open", url)
-		case "linux":
-			openExec = exec.Command("xdg-open", url)
-		case "windows":
-			openExec = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-		default:
-			return nil
-		}
-		return openExec.Run()
+		return openURL(url)
 	},
 }

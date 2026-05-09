@@ -22,6 +22,8 @@ macOS only. Single Go binary. No external services.
 
 ## Install
 
+### macOS
+
 ```bash
 git clone https://github.com/graiz/local.vibe.git
 cd local.vibe
@@ -29,6 +31,20 @@ cd local.vibe
 ```
 
 Installs Homebrew (if missing), Go, dnsmasq, `/etc/resolver/vibe`, pf rules for port forwarding, and a local TLS CA trusted in your Keychain — then opens the dashboard.
+
+### Windows (preview)
+
+```powershell
+git clone https://github.com/graiz/local.vibe.git
+cd local.vibe
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+Installs Go via winget (if missing), builds the binary, and copies it to `%LOCALAPPDATA%\Programs\vibe\vibe.exe`. The system-config step (DNS, port forwarding, cert trust, autostart) is currently a documented stub on Windows — the cross-platform refactor that paves the way is on the `feature/windows-implementation` branch; the actual implementation lands in a follow-up.
+
+### Linux
+
+Linux support is documented but not yet automated. Run `./setup.sh` for now and follow the printed instructions, or wait for the dedicated Linux branch.
 
 ## Your first app
 

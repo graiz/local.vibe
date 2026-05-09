@@ -1,3 +1,10 @@
+//go:build !windows
+
+// Phase 1 of Windows support: these tests assume processAlive returns false
+// for dead PIDs and use unix shell commands ("sleep 60"). The Windows stub
+// in process_alive_windows.go returns true unconditionally, so the sweep
+// tests can't distinguish dead routes. Phase 2 will rework these.
+
 package daemon
 
 import (

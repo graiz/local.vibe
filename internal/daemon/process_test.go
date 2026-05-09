@@ -1,3 +1,9 @@
+//go:build !windows
+
+// Phase 1 of Windows support: these tests use unix shell commands ("sleep 60",
+// "exit 1") that aren't available under cmd.exe. Phase 2 will add Windows
+// equivalents.
+
 package daemon
 
 import (

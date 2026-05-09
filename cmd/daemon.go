@@ -2,13 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/config"
@@ -20,29 +18,20 @@ var daemonCmd = &cobra.Command{
 	Short: "Manage the vibe daemon",
 }
 
-// openDashboard opens local.vibe or falls back to localhost direct.
+// openDashboard opens local.vibe in the browser, falling back to localhost
+// when DNS for *.vibe isn't wired up yet (e.g. before `vibe setup` has run).
+// The browser-launch command is per-OS — see open_<goos>.go.
 func openDashboard() {
 	cfg, _ := config.Load()
 	url := "http://local.vibe"
 	if cfg != nil && cfg.Daemon.TLS.Enabled {
 		url = "https://local.vibe"
 	}
-	if _, err := os.Stat("/etc/resolver/vibe"); err != nil {
+	if _, err := net.LookupHost("local.vibe"); err != nil {
 		url = "http://localhost:7999"
 	}
 	fmt.Printf("opening %s\n", url)
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "linux":
-		cmd = exec.Command("xdg-open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		return
-	}
-	_ = cmd.Start()
+	_ = openURL(url)
 }
 
 var daemonStartCmd = &cobra.Command{
@@ -56,13 +45,14 @@ var daemonStartCmd = &cobra.Command{
 			return nil
 		}
 
-		// Prefer LaunchAgent (installed by `vibe setup`, no sudo needed)
-		agentPlist := launchAgentPlist()
-		if _, err := os.Stat(agentPlist); err == nil {
-			out, err := exec.Command("launchctl", "load", "-w", agentPlist).CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("launchctl load: %w\n%s", err, strings.TrimSpace(string(out)))
-			}
+		// Try the platform-native autostart hook first (LaunchAgent on
+		// macOS, scheduled task on Windows in Phase 2). If it's not
+		// installed, fall through to a fork-based start.
+		handled, err := tryPlatformDaemonStart()
+		if err != nil {
+			return err
+		}
+		if handled {
 			for i := 0; i < 15; i++ {
 				time.Sleep(200 * time.Millisecond)
 				if isDaemonRunning() {
@@ -83,7 +73,7 @@ var daemonStartCmd = &cobra.Command{
 		}
 
 		// Fallback: fork-based start
-		fmt.Println("tip: run 'sudo vibe setup' to install autostart at login")
+		fmt.Println("tip: run `sudo vibe setup` (or the platform equivalent) to install autostart at login")
 		return forkDaemon()
 	},
 }
@@ -92,12 +82,11 @@ var daemonStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		agentPlist := launchAgentPlist()
-		if _, err := os.Stat(agentPlist); err == nil {
-			out, err := exec.Command("launchctl", "unload", agentPlist).CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("launchctl unload: %w\n%s", err, strings.TrimSpace(string(out)))
-			}
+		handled, err := tryPlatformDaemonStop()
+		if err != nil {
+			return err
+		}
+		if handled {
 			fmt.Println("daemon stopped")
 			return nil
 		}
@@ -107,11 +96,7 @@ var daemonStopCmd = &cobra.Command{
 			fmt.Println("daemon is not running")
 			return nil
 		}
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return err
-		}
-		if err := proc.Signal(syscall.SIGTERM); err != nil {
+		if err := signalDaemonStop(pid); err != nil {
 			return fmt.Errorf("could not stop daemon: %w", err)
 		}
 		fmt.Printf("daemon stopped (pid %d)\n", pid)
@@ -123,9 +108,11 @@ var daemonRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart the daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		agentPlist := launchAgentPlist()
-		if _, err := os.Stat(agentPlist); err == nil {
-			_ = exec.Command("launchctl", "unload", agentPlist).Run()
+		handled, err := tryPlatformDaemonStop()
+		if err != nil {
+			return err
+		}
+		if handled {
 			time.Sleep(300 * time.Millisecond)
 			return daemonStartCmd.RunE(cmd, args)
 		}
@@ -147,41 +134,6 @@ var daemonStatusCmd = &cobra.Command{
 		}
 		return nil
 	},
-}
-
-func forkDaemon() error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	_ = os.MkdirAll(config.Dir(), 0755)
-	logPath := filepath.Join(config.Dir(), "daemon.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("open log file: %w", err)
-	}
-	proc := exec.Command(self, "serve")
-	proc.Stdout = logFile
-	proc.Stderr = logFile
-	proc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := proc.Start(); err != nil {
-		logFile.Close()
-		return fmt.Errorf("failed to start daemon: %w", err)
-	}
-	logFile.Close()
-	for i := 0; i < 10; i++ {
-		time.Sleep(200 * time.Millisecond)
-		if isDaemonRunning() {
-			fmt.Printf("daemon started (pid %d)\n", proc.Process.Pid)
-			fmt.Printf("log: %s\n", logPath)
-			openDashboard()
-			return nil
-		}
-	}
-	if tail := tailFile(logPath, 20); tail != "" {
-		return fmt.Errorf("daemon did not start — last lines of %s:\n%s", logPath, tail)
-	}
-	return fmt.Errorf("daemon did not start — check %s", logPath)
 }
 
 // tailFile returns the last n lines of the file at path, or "" if unreadable.
@@ -230,11 +182,7 @@ func isDaemonRunning() bool {
 	if err != nil || pid == 0 {
 		return false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	return cliProcessAlive(pid)
 }
 
 func init() {

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/config"
@@ -46,7 +45,7 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	pm.mu.Lock()
 
 	if cmd, ok := pm.procs[route.Name]; ok && cmd.Process != nil {
-		if cmd.Process.Signal(syscall.Signal(0)) == nil {
+		if processAlive(cmd.Process.Pid) {
 			pid := cmd.Process.Pid
 			pm.mu.Unlock()
 			return pid, nil // already running
@@ -58,15 +57,9 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		return 0, fmt.Errorf("no command configured for %s", route.Name)
 	}
 
-	// Use interactive login shell so the user's full PATH is available,
-	// including tools initialized in .zshrc/.bashrc (rbenv, nvm, pyenv, etc.)
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/zsh"
-	}
-	cmd := exec.Command(shell, "-lic", route.Cmd)
+	cmd := buildShellCommand(route.Cmd)
 	cmd.Dir = route.Dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	applySpawnAttrs(cmd)
 	// Inject PORT (primary) plus PORT_<UPPER_NAME> for each reserve_ports entry
 	// so the cmd can reference auxiliary ports by semantic name (e.g.
 	// $PORT_SERVER) instead of hardcoding values that drift from vibe.json.
@@ -91,6 +84,7 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		pm.mu.Unlock()
 		return 0, fmt.Errorf("start %q: %w", route.Cmd, err)
 	}
+	afterSpawn(route.Name, cmd)
 
 	pm.procs[route.Name] = cmd
 	pid := cmd.Process.Pid
@@ -110,6 +104,7 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		pm.mu.Lock()
 		delete(pm.procs, route.Name)
 		pm.mu.Unlock()
+		afterExit(route.Name)
 		tail := tailLogFile(logPath, 12)
 		var inner error
 		if err != nil {
@@ -152,7 +147,9 @@ func tailLogFile(path string, n int) string {
 	return strings.Join(meaningful[start:], "\n")
 }
 
-// Stop sends SIGTERM to the managed process for the given route name.
+// Stop terminates the managed process tree for the given route name.
+// On unix this sends SIGTERM to the process group; on Windows (Phase 2) it
+// terminates the Job Object containing the child and its descendants.
 func (pm *ProcessManager) Stop(name string) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
@@ -162,15 +159,9 @@ func (pm *ProcessManager) Stop(name string) error {
 		return fmt.Errorf("%s is not running", name)
 	}
 
-	// Kill the process group so child processes also get the signal.
-	pgid, err := syscall.Getpgid(cmd.Process.Pid)
-	if err == nil {
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-	} else {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-	}
-
+	_ = killProcessTree(name, cmd)
 	delete(pm.procs, name)
+	afterExit(name)
 	return nil
 }
 
@@ -183,7 +174,7 @@ func (pm *ProcessManager) IsRunning(name string) bool {
 	if !ok || cmd.Process == nil {
 		return false
 	}
-	return cmd.Process.Signal(syscall.Signal(0)) == nil
+	return processAlive(cmd.Process.Pid)
 }
 
 // OwnsPID reports whether pid belongs to one of the daemon's managed children.
