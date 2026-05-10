@@ -134,3 +134,17 @@ Add build matrix: `macos-latest`, `ubuntu-latest`, `windows-latest`. PR A should
 | Linux CA trust (system + NSS) | Medium |
 | Path abstraction | Low |
 | Windows support (full) | High |
+
+---
+
+## Known limitations (Windows)
+
+### Graceful child shutdown
+
+Managed processes are stopped by `TerminateJobObject`, which is the moral equivalent of `kill(-pgid, SIGKILL)` — immediate, no clean-up window. Windows has no cross-process SIGTERM analogue we can deliver to an arbitrary console child from outside its console group. This is fine for dev servers (the use case `vibe` targets) but worth knowing if a managed route really needs to flush state on shutdown. A future implementation could attach to the child's console and send `CTRL_BREAK_EVENT` via `GenerateConsoleCtrlEvent`, but that's non-trivial and out of scope for the current Windows port.
+
+### Firefox cert trust
+
+In practice, recent Firefox on Windows (and macOS) honors `security.enterprise_roots.enabled`, which makes Firefox read the platform root store — so it picks up our locally-trusted CA without per-profile work. That preference is on by default for most users in modern Firefox builds. If a user hits a cert warning on `https://*.vibe`, the fix is `about:config` → `security.enterprise_roots.enabled` → `true`. Document this in the README rather than automating per-profile NSS imports.
+
+The same mechanism applies on macOS (Firefox reads Keychain via the same pref) — no per-platform code needed. If we ever do need per-profile automation as a fallback, the right home for it is `internal/cert/firefox.go` (no build tag) with thin per-OS path-resolution helpers, since the certutil invocation and profile-iteration logic are platform-agnostic.

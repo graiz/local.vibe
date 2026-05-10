@@ -142,6 +142,11 @@ func (s *Server) Stop() {
 	_ = os.Remove(fmt.Sprintf("%s/daemon.pid", config.Dir()))
 }
 
+// startUnixSocket runs the same HTTP handler over a Unix domain socket so
+// the CLI can talk to the daemon without going through TCP. On Windows
+// net.Listen("unix", ...) fails (UDS support exists on recent Windows but
+// Go's stdlib doesn't expose it on this code path), and we fall through to
+// TCP-only — the warning is logged but the daemon still starts.
 func (s *Server) startUnixSocket(handler http.Handler) {
 	if err := os.Remove(s.cfg.Daemon.Socket); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "warning: could not remove stale socket: %v\n", err)

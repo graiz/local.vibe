@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/graiz/local.vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/winutil"
 	"golang.org/x/sys/windows"
 )
 
@@ -22,11 +23,23 @@ const scheduledTaskName = "vibe"
 // /rl HIGHEST), which is needed to bind UDP :53 reliably and to keep
 // HTTPS hot-reloading clean. If the task doesn't exist (setup was skipped),
 // returns handled=false so the caller falls through to a plain forkDaemon.
+//
+// When falling through with no Scheduled Task AND running unelevated, we
+// warn that the daemon will be unable to bind :53 — that's a common
+// confusing failure (DNS doesn't work, but the dashboard does) so flag it
+// loudly before the fork.
 func tryPlatformDaemonStart() (bool, error) {
 	if !scheduledTaskExists(scheduledTaskName) {
+		if !isElevated() {
+			fmt.Fprintln(os.Stderr,
+				"warning: no Scheduled Task is registered and this terminal is not elevated.\n"+
+					"         The daemon will start unelevated; binding UDP :53 will fail and\n"+
+					"         *.vibe DNS resolution won't work. Re-run from an admin terminal\n"+
+					"         and run `vibe setup` to register the autostart task.")
+		}
 		return false, nil
 	}
-	out, err := exec.Command("schtasks", "/run", "/tn", scheduledTaskName).CombinedOutput()
+	out, err := exec.Command(winutil.Sys32("schtasks"), "/run", "/tn", scheduledTaskName).CombinedOutput()
 	if err != nil {
 		return true, fmt.Errorf("schtasks /run %s: %w — %s", scheduledTaskName, err, strings.TrimSpace(string(out)))
 	}
@@ -43,7 +56,7 @@ func tryPlatformDaemonStop() (bool, error) {
 	if !scheduledTaskExists(scheduledTaskName) {
 		return false, nil
 	}
-	out, err := exec.Command("schtasks", "/end", "/tn", scheduledTaskName).CombinedOutput()
+	out, err := exec.Command(winutil.Sys32("schtasks"), "/end", "/tn", scheduledTaskName).CombinedOutput()
 	if err != nil {
 		// "task is not running" returns a non-zero exit but we still want to
 		// report success to the caller — the daemon ended up in the right
@@ -63,7 +76,7 @@ func tryPlatformDaemonStop() (bool, error) {
 // exit code; non-zero means "not found" (or some deeper error, in which
 // case we fall through to forkDaemon and surface the real failure there).
 func scheduledTaskExists(name string) bool {
-	cmd := exec.Command("schtasks", "/query", "/tn", name)
+	cmd := exec.Command(winutil.Sys32("schtasks"), "/query", "/tn", name)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil
@@ -86,23 +99,26 @@ func forkDaemon() error {
 	proc := exec.Command(self, "serve")
 	proc.Stdout = logFile
 	proc.Stderr = logFile
-	const (
-		detachedProcess        = 0x00000008
-		createNewProcessGroup  = 0x00000200
-		createNoWindow         = 0x08000000
-	)
 	proc.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: detachedProcess | createNewProcessGroup | createNoWindow,
+		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
 	}
 	if err := proc.Start(); err != nil {
 		logFile.Close()
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 	logFile.Close()
-	for i := 0; i < 10; i++ {
+	// Wait up to 5s for the daemon to actually accept HTTP. Pidfile presence
+	// alone is misleading: the daemon may write its pidfile, then crash when
+	// it tries to bind :53. A successful HTTP request to /_api/health is the
+	// real "this thing is up" signal.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
-		if isDaemonRunning() {
+		if !isDaemonRunning() {
+			continue
+		}
+		if daemonHTTPResponding() {
 			fmt.Printf("daemon started (pid %d)\n", proc.Process.Pid)
 			fmt.Printf("log: %s\n", logPath)
 			openDashboard()
@@ -114,6 +130,7 @@ func forkDaemon() error {
 	}
 	return fmt.Errorf("daemon did not start — check %s", logPath)
 }
+
 
 // cliProcessAlive on Windows opens a query handle and reads the exit code.
 // STILL_ACTIVE means the process hasn't exited yet — same trick the daemon

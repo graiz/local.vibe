@@ -4,13 +4,8 @@ package daemon
 
 import "testing"
 
-// TestNetstatListenPortPicksMatchingPID exercises the netstat output
-// parser with the canonical `netstat -ano -p TCP` header + a few
-// representative rows. We don't actually shell out — we feed the parser
-// directly via a unit-test entry point.
-func TestNetstatListenPortParse(t *testing.T) {
-	// Real netstat output excerpt (re-formatted to keep the test self-contained).
-	out := `
+// englishNetstatOutput is the canonical English `netstat -ano` shape.
+const englishNetstatOutput = `
 Active Connections
 
   Proto  Local Address          Foreign Address        State           PID
@@ -21,9 +16,21 @@ Active Connections
   TCP    [::]:135               [::]:0                 LISTENING       1024
 `
 
-	// Parser is exposed as a free function in the package (alongside
-	// portFromProcessGroup) so we can unit-test without netstat itself.
-	port, ok := parseNetstatListenPort(out, map[int]bool{9876: true})
+// germanNetstatOutput is the same shape from a German Windows install.
+// The state column is translated ("ABHÖREN" = LISTENING, "HERGESTELLT" =
+// ESTABLISHED). The parser MUST NOT depend on the literal word; it keys
+// off the foreign address being the unspecified-address form.
+const germanNetstatOutput = `
+Aktive Verbindungen
+
+  Proto  Lokale Adresse         Remoteadresse          Status          PID
+  TCP    0.0.0.0:135            0.0.0.0:0              ABHÖREN         1024
+  TCP    127.0.0.1:7999         0.0.0.0:0              ABHÖREN         9876
+  TCP    127.0.0.1:50123        127.0.0.1:7999         HERGESTELLT     12345
+`
+
+func TestNetstatListenPortParse(t *testing.T) {
+	port, ok := parseNetstatListenPort(englishNetstatOutput, map[int]bool{9876: true})
 	if !ok {
 		t.Fatal("expected a match for PID 9876")
 	}
@@ -31,8 +38,71 @@ Active Connections
 		t.Errorf("port = %d; want 7999", port)
 	}
 
-	// PID set that doesn't match any LISTENING row.
-	if _, ok := parseNetstatListenPort(out, map[int]bool{99999: true}); ok {
+	if _, ok := parseNetstatListenPort(englishNetstatOutput, map[int]bool{99999: true}); ok {
 		t.Error("expected no match for PID 99999")
+	}
+}
+
+// TestNetstatListenersGerman ensures locale-translated netstat output
+// (German here) still parses, since the state column word changes by
+// locale but the foreign-address shape doesn't.
+func TestNetstatListenersGerman(t *testing.T) {
+	listeners := parseNetstatListeners(germanNetstatOutput)
+	got := map[int]int{}
+	for _, l := range listeners {
+		got[l.PID] = l.Port
+	}
+	if got[9876] != 7999 {
+		t.Errorf("PID 9876 → port %d; want 7999", got[9876])
+	}
+	if _, ok := got[12345]; ok {
+		t.Errorf("ESTABLISHED row (PID 12345) should not be reported as a listener")
+	}
+}
+
+// TestFindPortHoldersFromListeners verifies the parser exposes every PID
+// listening on a port (the input parseNetstatListeners gives findPortHoldersDefault).
+func TestFindPortHoldersFromListeners(t *testing.T) {
+	multi := `
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       1111
+  TCP    [::]:3000              [::]:0                 LISTENING       1111
+  TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       2222
+  TCP    127.0.0.1:50500        127.0.0.1:3000         ESTABLISHED     3333
+`
+	pidsOnPort := map[int]bool{}
+	for _, l := range parseNetstatListeners(multi) {
+		if l.Port == 3000 {
+			pidsOnPort[l.PID] = true
+		}
+	}
+	if !pidsOnPort[1111] || !pidsOnPort[2222] {
+		t.Errorf("expected PIDs 1111 and 2222; got %v", pidsOnPort)
+	}
+	if pidsOnPort[3333] {
+		t.Errorf("ESTABLISHED PID 3333 should not be in the listener set")
+	}
+}
+
+func TestParseTasklistCSV(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"chrome", `"chrome.exe","12345","Console","1","123,456 K"`, "chrome.exe"},
+		{"node",   `"node.exe","9876","Console","1","45,678 K"`, "node.exe"},
+		{"empty",  ``, ""},
+		{"info-no-tasks", `INFO: No tasks are running which match the specified criteria.`, ""},
+		// Image names with spaces are quoted; csv reader handles it.
+		{"spaces", `"My App.exe","555","Console","1","8,000 K"`, "My App.exe"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseTasklistCSV(tc.in)
+			if got != tc.want {
+				t.Errorf("parseTasklistCSV(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

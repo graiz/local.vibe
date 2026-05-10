@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/graiz/local.vibe/internal/winutil"
 )
 
 // portFromProcessGroup on Windows enumerates the route's Job Object members
@@ -37,11 +39,11 @@ func portFromProcessGroup(route *Route) (int, bool) {
 // split out into parseNetstatListenPort so it can be unit-tested without
 // shelling out.
 func netstatListenPort(pids map[int]bool) (int, bool) {
-	out, err := exec.Command("netstat", "-ano", "-p", "TCP").Output()
+	out, err := exec.Command(winutil.Sys32("netstat"), "-ano", "-p", "TCP").Output()
 	if err != nil {
 		// Fall back without -p in case the locale-translated netstat doesn't
 		// understand it; some Windows builds expect a different protocol name.
-		out, err = exec.Command("netstat", "-ano").Output()
+		out, err = exec.Command(winutil.Sys32("netstat"), "-ano").Output()
 		if err != nil {
 			return 0, false
 		}
@@ -49,18 +51,31 @@ func netstatListenPort(pids map[int]bool) (int, bool) {
 	return parseNetstatListenPort(string(out), pids)
 }
 
-// parseNetstatListenPort scans netstat -ano output looking for the first
-// TCP LISTENING row whose PID is in the supplied set. Sample output:
+// netstatListener is a single (port, pid) pair extracted from a TCP
+// LISTENING row of netstat output.
+type netstatListener struct {
+	Port int
+	PID  int
+}
+
+// parseNetstatListeners scans netstat -ano output and returns every TCP
+// listener row's (port, pid) pair. Sample output:
 //
 //	  Proto  Local Address          Foreign Address        State           PID
 //	  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1024
 //	  TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       9876
 //	  TCP    [::]:135               [::]:0                 LISTENING       1024
 //
-// We only care about TCP rows that say LISTENING and whose PID is ours.
-// IPv6 lines are accepted too — netstat shows them as "TCPv6" or with [::]
-// addresses.
-func parseNetstatListenPort(out string, pids map[int]bool) (int, bool) {
+// We accept both TCP and TCPv6 rows. The state column is locale-translated
+// on non-English Windows installs ("ABHÖREN" on German, "ÉCOUTE" on French,
+// etc.), so we don't match the literal word "LISTENING". Instead we infer
+// "listening" from the foreign address being the unspecified-address form
+// (0.0.0.0:0 or [::]:0). That shape is what netstat renders for any row
+// where the connection is open but unconnected — which on TCP rows means
+// LISTEN. ESTABLISHED / TIME_WAIT / etc. rows have a real foreign address,
+// so they're filtered out.
+func parseNetstatListeners(out string) []netstatListener {
+	var listeners []netstatListener
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -70,14 +85,11 @@ func parseNetstatListenPort(out string, pids map[int]bool) (int, bool) {
 		if !strings.HasPrefix(fields[0], "TCP") {
 			continue
 		}
-		if strings.ToUpper(fields[3]) != "LISTENING" {
+		if !isUnspecifiedNetstatAddr(fields[2]) {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[4])
-		if err != nil {
-			continue
-		}
-		if !pids[pid] {
+		if err != nil || pid <= 0 {
 			continue
 		}
 		// Local Address is "ip:port" or "[::]:port" — split on the LAST colon.
@@ -90,7 +102,26 @@ func parseNetstatListenPort(out string, pids map[int]bool) (int, bool) {
 		if err != nil || port <= 0 || port > 65535 {
 			continue
 		}
-		return port, true
+		listeners = append(listeners, netstatListener{Port: port, PID: pid})
+	}
+	return listeners
+}
+
+// isUnspecifiedNetstatAddr reports whether a netstat foreign-address column
+// is the "no peer" form that signals a listening socket: "0.0.0.0:0" for
+// IPv4 or "[::]:0" for IPv6.
+func isUnspecifiedNetstatAddr(addr string) bool {
+	return addr == "0.0.0.0:0" || addr == "[::]:0"
+}
+
+// parseNetstatListenPort returns the first listener row whose PID is in
+// the supplied set. Layered on top of parseNetstatListeners so the two
+// callers (route-port discovery, port-conflict recovery) share parsing.
+func parseNetstatListenPort(out string, pids map[int]bool) (int, bool) {
+	for _, l := range parseNetstatListeners(out) {
+		if pids[l.PID] {
+			return l.Port, true
+		}
 	}
 	return 0, false
 }

@@ -15,8 +15,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -24,12 +24,9 @@ import (
 
 const (
 	// DNS message format constants (RFC 1035).
-	flagResponse        = 0x8000
-	flagRecursionDesir  = 0x0100
-	flagRecursionAvail  = 0x0080
-	flagQRMask          = 0x8000
-	rcodeNoError        = 0
-	rcodeServFail       = 2
+	flagResponse       = 0x8000
+	flagRecursionAvail = 0x0080
+	rcodeServFail      = 2
 
 	typeA    uint16 = 1
 	typeAAAA uint16 = 28
@@ -128,7 +125,7 @@ func (s *Server) serve() {
 			// to stderr and ends the loop. We don't have access to the
 			// daemon's logger here so stderr is the lowest-friction sink.
 			if !errors.Is(err, net.ErrClosed) {
-				fmt.Fprintf(io.Discard, "dns: read error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "dns: read error: %v\n", err)
 			}
 			return
 		}
@@ -269,20 +266,72 @@ func buildLocalResponse(query []byte, qtype uint16) []byte {
 
 // servfail returns a server-failure response for query (RCODE=2) so the
 // client gets a real error rather than a silent drop on upstream failure.
+//
+// Echoes the question section so the response is well-formed (QDCOUNT in
+// the header agrees with the body). If the query is malformed past the
+// header we still return a 12-byte header-only response, but with QDCOUNT
+// cleared so strict clients don't try to parse a question that isn't there.
 func servfail(query []byte) []byte {
 	if len(query) < 12 {
+		// Truly malformed input — can't even echo a header. Return as-is
+		// so the client at least gets something back rather than timing out.
 		return query
 	}
-	resp := make([]byte, 12)
-	copy(resp, query[:12])
+	end := questionEnd(query)
+	includeQuestion := end > 0 && end <= len(query)
+	size := 12
+	if includeQuestion {
+		size = end
+	}
+	resp := make([]byte, size)
+	copy(resp, query[:size])
 	flags := binary.BigEndian.Uint16(resp[2:4])
 	flags |= flagResponse | flagRecursionAvail
 	flags &^= 0x000F
 	flags |= rcodeServFail
 	binary.BigEndian.PutUint16(resp[2:4], flags)
-	// Wipe counts.
+	if !includeQuestion {
+		// No question echoed; QDCOUNT must be zero so the response parses.
+		binary.BigEndian.PutUint16(resp[4:6], 0)
+	}
 	binary.BigEndian.PutUint16(resp[6:8], 0)
 	binary.BigEndian.PutUint16(resp[8:10], 0)
 	binary.BigEndian.PutUint16(resp[10:12], 0)
 	return resp
+}
+
+// questionEnd returns the byte offset right after the question section,
+// or -1 if the message is malformed before that point. Mirrors the
+// label-walk in parseQuestion but skips string assembly — useful for
+// callers (servfail) that only need to know where the question ends.
+func questionEnd(msg []byte) int {
+	if len(msg) < 12 {
+		return -1
+	}
+	qdcount := binary.BigEndian.Uint16(msg[4:6])
+	if qdcount == 0 {
+		return 12
+	}
+	pos := 12
+	for {
+		if pos >= len(msg) {
+			return -1
+		}
+		l := int(msg[pos])
+		pos++
+		if l == 0 {
+			break
+		}
+		if l&0xC0 != 0 {
+			return -1
+		}
+		if pos+l > len(msg) {
+			return -1
+		}
+		pos += l
+	}
+	if pos+4 > len(msg) {
+		return -1
+	}
+	return pos + 4
 }

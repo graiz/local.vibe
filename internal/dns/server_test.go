@@ -209,3 +209,65 @@ func TestServerServfailWhenUpstreamUnreachable(t *testing.T) {
 		t.Errorf("rcode = %d; want %d (SERVFAIL)", rcode, rcodeServFail)
 	}
 }
+
+// TestServfailIsWellFormed locks down the response shape — the header's
+// QDCOUNT must agree with the body. Either the question section is echoed
+// (length matches header offset + question bytes), or QDCOUNT is zero.
+// Strict resolvers reject responses where QDCOUNT claims a question but
+// the body is too short to contain it.
+func TestServfailIsWellFormed(t *testing.T) {
+	query := buildQuery("example.com", typeA)
+	resp := servfail(query)
+
+	if len(resp) < 12 {
+		t.Fatalf("response too short: %d bytes", len(resp))
+	}
+	qdcount := binary.BigEndian.Uint16(resp[4:6])
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags&flagResponse == 0 {
+		t.Errorf("QR bit not set")
+	}
+	if rcode := flags & 0x000F; rcode != rcodeServFail {
+		t.Errorf("rcode = %d; want %d (SERVFAIL)", rcode, rcodeServFail)
+	}
+	if binary.BigEndian.Uint16(resp[6:8]) != 0 {
+		t.Errorf("ANCOUNT must be zero on SERVFAIL")
+	}
+	switch qdcount {
+	case 0:
+		// Header-only response — body must be exactly 12 bytes.
+		if len(resp) != 12 {
+			t.Errorf("QDCOUNT=0 but response is %d bytes; want 12", len(resp))
+		}
+	case 1:
+		// Question echoed — must equal the byte offset right after the question.
+		end := questionEnd(query)
+		if end < 0 {
+			t.Fatalf("test bug: questionEnd of valid query returned -1")
+		}
+		if len(resp) != end {
+			t.Errorf("QDCOUNT=1 but response is %d bytes; want %d (12 + question)", len(resp), end)
+		}
+		if string(resp[12:end]) != string(query[12:end]) {
+			t.Errorf("question section mismatch: got %x want %x", resp[12:end], query[12:end])
+		}
+	default:
+		t.Errorf("unexpected QDCOUNT=%d", qdcount)
+	}
+}
+
+// TestServfailMalformedQuery checks the failure-mode path: a query whose
+// question section can't be parsed should still produce a 12-byte response
+// with QDCOUNT=0, not a malformed body that lies about its contents.
+func TestServfailMalformedQuery(t *testing.T) {
+	// Header claims 1 question but body is just the header.
+	q := make([]byte, 12)
+	binary.BigEndian.PutUint16(q[4:6], 1) // QDCOUNT=1, but no question follows
+	resp := servfail(q)
+	if len(resp) != 12 {
+		t.Fatalf("response = %d bytes; want 12 for header-only fallback", len(resp))
+	}
+	if binary.BigEndian.Uint16(resp[4:6]) != 0 {
+		t.Errorf("QDCOUNT must be zeroed when question is unavailable")
+	}
+}

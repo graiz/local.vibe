@@ -7,19 +7,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/graiz/local.vibe/internal/winutil"
 )
 
 // TrustCA installs the CA into the Windows root store via certutil. Requires
 // Administrator. Chrome and Edge read this store directly; Firefox uses NSS
-// independently and is not handled here — first-time Firefox users will see
-// a cert warning unless they import the CA manually.
+// independently and is handled separately by trustCAInFirefoxProfiles.
 //
 // Idempotent: certutil -addstore replaces an existing entry with the same
 // subject. The "duplicate" exit code is mapped to success.
 func TrustCA(certsDir string) error {
 	certPath := filepath.Join(certsDir, "ca.pem")
 
-	out, err := exec.Command("certutil", "-addstore", "-f", "Root", certPath).CombinedOutput()
+	out, err := exec.Command(winutil.Sys32("certutil"), "-addstore", "-f", "Root", certPath).CombinedOutput()
 	if err == nil {
 		return nil
 	}

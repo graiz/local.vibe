@@ -8,14 +8,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/graiz/local.vibe/internal/winutil"
 )
 
 // uninstallPlatform reverses every artifact `vibe setup` installs on
 // Windows. Each step is best-effort — a missing piece (setup partially
 // failed, or was never run) should not block the rest of the cleanup.
 //
-// Reset DNS to DHCP rather than restoring whatever was set before. Users
-// with static DNS configs are rare and can manually re-set after uninstall.
+// DNS is restored from the snapshot taken at setup time
+// (~/.vibe/dns-backup.json) so users with static DNS configs end up back
+// where they started. Adapters with no snapshot entry, or installs where
+// the backup was lost, fall through to a DHCP reset.
 func uninstallPlatform() error {
 	if !isElevated() {
 		return fmt.Errorf("uninstall requires Administrator — right-click PowerShell, choose \"Run as administrator\", then re-run: vibe uninstall")
@@ -26,32 +30,50 @@ func uninstallPlatform() error {
 
 	// Stop and remove the Scheduled Task.
 	if scheduledTaskExists(scheduledTaskName) {
-		_ = exec.Command("schtasks", "/end", "/tn", scheduledTaskName).Run()
-		_ = exec.Command("schtasks", "/delete", "/tn", scheduledTaskName, "/f").Run()
+		_ = exec.Command(winutil.Sys32("schtasks"), "/end", "/tn", scheduledTaskName).Run()
+		_ = exec.Command(winutil.Sys32("schtasks"), "/delete", "/tn", scheduledTaskName, "/f").Run()
 		fmt.Println("  Scheduled Task `vibe` removed")
 	}
 
 	// Remove portproxy rules.
 	for _, listen := range []string{"80", "443"} {
-		_ = exec.Command("netsh", "interface", "portproxy", "delete", "v4tov4",
+		_ = exec.Command(winutil.Sys32("netsh"), "interface", "portproxy", "delete", "v4tov4",
 			"listenport="+listen, "listenaddress=127.0.0.1").Run()
 	}
 	fmt.Println("  netsh portproxy rules removed")
 
-	// Reset DNS on every connected adapter back to DHCP.
-	adapters, _ := connectedIPv4Adapters()
-	for _, name := range adapters {
-		out, err := exec.Command("netsh", "interface", "ipv4", "set", "dnsservers",
-			"name="+name, "dhcp",
-		).CombinedOutput()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  warning: could not reset DNS on %q: %v — %s\n", name, err, strings.TrimSpace(string(out)))
-		}
+	// Restore each connected adapter's DNS from the snapshot saved at setup
+	// time. Missing/unreadable backup → fall back to DHCP-reset for safety.
+	snap, err := loadDNSBackup()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: could not read %s: %v — falling back to DHCP\n", dnsBackupFile(), err)
+		snap = nil
 	}
-	fmt.Println("  Adapter DNS reset to DHCP")
+	restoreAdapterDNS(snap)
+	if snap != nil {
+		fmt.Println("  Adapter DNS restored from backup")
+	} else {
+		fmt.Println("  Adapter DNS reset to DHCP (no backup found)")
+	}
+
+	// Final safety check: re-read the live DNS state and force DHCP on any
+	// adapter still pointing at 127.0.0.1. Belt-and-suspenders against any
+	// path through the restore that left a loopback pointer behind — without
+	// this, a user could end up with a dead DNS config after uninstall.
+	if fixed := verifyAndFixLoopbackDNS(); len(fixed) > 0 {
+		fmt.Fprintf(os.Stderr, "  forced DHCP on adapter(s) still pointing at 127.0.0.1: %v\n", fixed)
+	}
+
+	// Only remove the backup file once we've confirmed the restore + verify
+	// step both ran. If the user re-runs uninstall later (or runs setup
+	// again), they want the original snapshot back, not a freshly-captured
+	// one that might already include our listener.
+	if snap != nil {
+		_ = os.Remove(dnsBackupFile())
+	}
 
 	// Remove the trusted CA from the system root store.
-	out, err := exec.Command("certutil", "-delstore", "Root", "local.vibe CA").CombinedOutput()
+	out, err := exec.Command(winutil.Sys32("certutil"), "-delstore", "Root", "local.vibe CA").CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  warning: certutil delstore: %v — %s\n", err, strings.TrimSpace(string(out)))
 	} else {
@@ -67,7 +89,7 @@ func uninstallPlatform() error {
 	}
 
 	// Flush DNS cache so the change takes effect immediately.
-	_ = exec.Command("ipconfig", "/flushdns").Run()
+	_ = exec.Command(winutil.Sys32("ipconfig"), "/flushdns").Run()
 
 	fmt.Println()
 	fmt.Println("Uninstall complete.")

@@ -14,12 +14,21 @@ import (
 	"time"
 
 	"github.com/graiz/local.vibe/internal/cert"
+	"github.com/graiz/local.vibe/internal/winutil"
 	"golang.org/x/sys/windows"
 )
 
 func setupPlatform() error {
 	if !isElevated() {
 		return fmt.Errorf("setup requires Administrator — right-click PowerShell, choose \"Run as administrator\", then re-run: vibe setup")
+	}
+
+	// Detect port collisions BEFORE any state-changing step. If the user
+	// declines to continue, we exit without having modified DNS, certs,
+	// portproxy rules, or the Scheduled Task — they're exactly where they
+	// started.
+	if err := precheckPortCollisions(); err != nil {
+		return err
 	}
 
 	fmt.Println("Setting up local.vibe on Windows...")
@@ -29,6 +38,7 @@ func setupPlatform() error {
 		{"Generating TLS certificates (*.vibe)", generateCertsWindows},
 		{"Trusting CA in Windows root store", trustCAWindows},
 		{"Installing netsh portproxy rules (80→7999, 443→7443)", installPortProxy},
+		{"Snapshotting current adapter DNS (for clean uninstall)", backupAdapterDNS},
 		{"Repointing active adapters' DNS to 127.0.0.1", configureDNS},
 		{"Enabling TLS and DNS in daemon config", enableTLSAndDNSWindows},
 		{"Registering Scheduled Task for autostart", installScheduledTask},
@@ -45,7 +55,7 @@ func setupPlatform() error {
 	fmt.Println("Daemon starts automatically at login (Scheduled Task: vibe).")
 	fmt.Println()
 	if promptYN("Start the daemon now and open https://local.vibe?") {
-		out, err := exec.Command("schtasks", "/run", "/tn", "vibe").CombinedOutput()
+		out, err := exec.Command(winutil.Sys32("schtasks"), "/run", "/tn", "vibe").CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("schtasks /run: %w — %s", err, strings.TrimSpace(string(out)))
 		}
@@ -117,10 +127,10 @@ func installPortProxy() error {
 	for _, pair := range pairs {
 		listen, connect := pair[0], pair[1]
 		// best-effort delete first; ignore failure (rule may not exist)
-		_ = exec.Command("netsh", "interface", "portproxy", "delete", "v4tov4",
+		_ = exec.Command(winutil.Sys32("netsh"), "interface", "portproxy", "delete", "v4tov4",
 			"listenport="+listen, "listenaddress=127.0.0.1").Run()
 
-		out, err := exec.Command("netsh", "interface", "portproxy", "add", "v4tov4",
+		out, err := exec.Command(winutil.Sys32("netsh"), "interface", "portproxy", "add", "v4tov4",
 			"listenport="+listen,
 			"listenaddress=127.0.0.1",
 			"connectport="+connect,
@@ -133,14 +143,41 @@ func installPortProxy() error {
 	return nil
 }
 
+// backupAdapterDNS snapshots each adapter's pre-vibe DNS configuration to
+// ~/.vibe/dns-backup.json so `vibe uninstall` can restore exactly what was
+// there. Best-effort: if the snapshot fails, we surface a warning but let
+// setup continue — uninstall will fall back to DHCP-reset for any adapter
+// missing from the backup.
+//
+// Preserves any existing backup file rather than overwriting. Re-running
+// setup AFTER a prior setup already repointed adapters would otherwise
+// capture our own listener as the "previous" DNS and lose the original
+// configuration. The snapshot's loopback filter helps too, but skipping
+// the write when a backup already exists is the load-bearing safety here:
+// uninstall must always be able to restore the very first pre-vibe state.
+func backupAdapterDNS() error {
+	if existing, err := loadDNSBackup(); err == nil && len(existing) > 0 {
+		fmt.Fprintf(os.Stderr, "  preserving existing DNS backup (%d adapter(s)) at %s\n",
+			len(existing), dnsBackupFile())
+		return nil
+	}
+	snap, err := snapshotAdapterDNS()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: could not snapshot DNS settings (%v) — uninstall will reset to DHCP\n", err)
+		return nil
+	}
+	if err := saveDNSBackup(snap); err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: could not write %s (%v) — uninstall will reset to DHCP\n", dnsBackupFile(), err)
+		return nil
+	}
+	return nil
+}
+
 // configureDNS sets every "Connected" IPv4 interface's primary DNS to
 // 127.0.0.1 so .vibe queries hit our embedded resolver. Non-.vibe queries
-// are forwarded by the resolver to the upstream configured in config.json
-// (default 8.8.8.8). On uninstall we reset each adapter to DHCP.
-//
-// We don't snapshot previous DNS settings — restoring to DHCP is the
-// common case and avoids the parsing complexity of `netsh ... show dns`.
-// Users with static DNS will need to re-set after uninstall.
+// are forwarded by the resolver to the upstream chosen in
+// enableTLSAndDNSWindows (probed from the current adapter DNS, with public
+// fallbacks). On uninstall we restore each adapter from dns-backup.json.
 func configureDNS() error {
 	adapters, err := connectedIPv4Adapters()
 	if err != nil {
@@ -152,7 +189,7 @@ func configureDNS() error {
 	var firstErr error
 	configured := 0
 	for _, name := range adapters {
-		out, err := exec.Command("netsh", "interface", "ipv4", "set", "dnsservers",
+		out, err := exec.Command(winutil.Sys32("netsh"), "interface", "ipv4", "set", "dnsservers",
 			"name="+name, "static", "127.0.0.1", "primary",
 		).CombinedOutput()
 		if err != nil {
@@ -181,7 +218,7 @@ func configureDNS() error {
 // We skip the loopback (matches the literal name) since adding 127.0.0.1
 // as DNS on the loopback adapter would be a no-op + raise eyebrows.
 func connectedIPv4Adapters() ([]string, error) {
-	out, err := exec.Command("netsh", "interface", "ipv4", "show", "interfaces").Output()
+	out, err := exec.Command(winutil.Sys32("netsh"), "interface", "ipv4", "show", "interfaces").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -266,10 +303,17 @@ func enableTLSAndDNSWindows() error {
 		"port":      7443,
 		"certs_dir": filepath.Join(home, ".vibe", "certs"),
 	}
+	// Pick the upstream the resolver should forward non-.vibe queries to.
+	// Prefer whatever the user already had configured (probed for liveness)
+	// so corporate / split-horizon networks keep working; fall back to the
+	// public list if nothing answers. We do this *after* snapshotAdapterDNS,
+	// which runs as its own setup step before adapters are repointed.
+	snap, _ := loadDNSBackup()
+	upstream := pickUpstreamResolver(snap)
 	daemon["dns"] = map[string]interface{}{
 		"enabled":  true,
 		"listen":   "127.0.0.1:53",
-		"upstream": "8.8.8.8:53",
+		"upstream": upstream,
 	}
 	cfgMap["daemon"] = daemon
 
@@ -290,7 +334,7 @@ func installScheduledTask() error {
 	}
 	binary, _ = filepath.EvalSymlinks(binary)
 
-	out, err := exec.Command("schtasks",
+	out, err := exec.Command(winutil.Sys32("schtasks"),
 		"/create",
 		"/tn", "vibe",
 		"/tr", fmt.Sprintf(`"%s" serve`, binary),
@@ -308,7 +352,7 @@ func flushDNS() error {
 	// ipconfig /flushdns is best-effort: clear the resolver cache so the
 	// adapter's new DNS server takes effect immediately. Failure is not a
 	// hard stop — the cache will expire on its own within a minute or two.
-	_ = exec.Command("ipconfig", "/flushdns").Run()
+	_ = exec.Command(winutil.Sys32("ipconfig"), "/flushdns").Run()
 	return nil
 }
 

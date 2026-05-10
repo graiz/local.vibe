@@ -2,7 +2,16 @@
 
 package daemon
 
-import "os"
+import (
+	"encoding/csv"
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+
+	"github.com/graiz/local.vibe/internal/winutil"
+)
 
 // terminateProcess on Windows uses TerminateProcess via os.Process.Kill —
 // there is no graceful equivalent of SIGTERM for arbitrary PIDs we don't
@@ -16,22 +25,80 @@ func terminateProcess(pid int) error {
 	return proc.Kill()
 }
 
-// findPortHoldersDefault on Windows is a Phase 1 stub. Phase 2 will parse
-// `netstat -ano -p TCP` (or call iphlpapi.GetExtendedTcpTable) and return
-// the PIDs of LISTENING entries on the given port.
-//
-// Returning nil means killPort is a no-op on Windows in Phase 1 — the
-// recovery flow can't auto-clear EADDRINUSE yet.
+// findPortHoldersDefault returns every PID listening on the given TCP port.
+// Implemented by parsing `netstat -ano` (NOT `-p TCP`, which is locale-
+// translated on non-English Windows). The parser keys on the foreign-
+// address-is-unspecified shape rather than the localized state word, so
+// this works on any Windows locale.
 func findPortHoldersDefault(port int) []int {
-	_ = port
-	return nil
+	out, err := exec.Command(winutil.Sys32("netstat"), "-ano").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	seen := map[int]bool{}
+	for _, l := range parseNetstatListeners(string(out)) {
+		if l.Port != port {
+			continue
+		}
+		if seen[l.PID] {
+			continue
+		}
+		seen[l.PID] = true
+		pids = append(pids, l.PID)
+	}
+	return pids
 }
 
-// pidCommandDefault on Windows is a Phase 1 stub. Phase 2 will use
-// `tasklist /FI "PID eq <pid>"` (or the toolhelp32 snapshot APIs) to fetch
-// the executable name. For now returning "" means recovery messages just
-// say "PID N" without the friendly process name.
+// pidCommandDefault returns a short executable name for a PID via
+// `tasklist /FI "PID eq N" /FO CSV /NH`. Best-effort: empty string on any
+// failure. We avoid WMIC (deprecated on Win11 24H2+) and PowerShell
+// (slow startup, not always available).
 func pidCommandDefault(pid int) string {
-	_ = pid
-	return ""
+	if pid <= 0 {
+		return ""
+	}
+	out, err := exec.Command(
+		winutil.Sys32("tasklist"),
+		"/FI", fmt.Sprintf("PID eq %d", pid),
+		"/FO", "CSV",
+		"/NH",
+	).Output()
+	if err != nil {
+		return ""
+	}
+	return parseTasklistCSV(string(out))
+}
+
+// parseTasklistCSV extracts the image name from the first row of a
+// `tasklist /FO CSV /NH` output. Sample row:
+//
+//	"chrome.exe","12345","Console","1","123,456 K"
+//
+// When tasklist finds no matching PID it prints either an empty result or
+// a localized "INFO: No tasks are running…" line; both produce "" here.
+func parseTasklistCSV(out string) string {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return ""
+	}
+	// tasklist's "no match" line starts with "INFO:" and is not valid CSV.
+	if strings.HasPrefix(out, "INFO:") {
+		return ""
+	}
+	r := csv.NewReader(strings.NewReader(out))
+	// tasklist quotes commas inside the memory column ("123,456 K"), so the
+	// default reader settings (FieldsPerRecord = -1, comma separator) are
+	// fine — we just need the first field of the first row.
+	r.FieldsPerRecord = -1
+	rec, err := r.Read()
+	if err != nil || len(rec) == 0 {
+		return ""
+	}
+	name := strings.TrimSpace(rec[0])
+	// Reject "PID" header just in case someone passed output without /NH.
+	if _, err := strconv.Atoi(name); err == nil {
+		return ""
+	}
+	return name
 }

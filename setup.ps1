@@ -1,18 +1,18 @@
-# local.vibe setup (Windows) — checks Go, builds, installs the binary, and
-# wires up DNS / port forwarding when Phase 2 of Windows support lands.
+# local.vibe setup (Windows) -- checks Go, builds, installs the binary, and
+# wires up DNS / port forwarding via 'vibe setup'.
 #
-# Run from an elevated PowerShell:
-#     powershell.exe -ExecutionPolicy Bypass -File .\setup.ps1
+# Run from an elevated PowerShell session:
+#   .\setup.ps1
 #
-# This is the Windows analog of setup.sh. It mirrors the same flow:
+# Or:  pwsh -ExecutionPolicy Bypass -File .\setup.ps1
+#
+# This script is the Windows analog of setup.sh. It mirrors the same flow:
 #   1. Ensure Go is installed (winget install GoLang.Go if missing)
 #   2. go build -o vibe.exe .
 #   3. Copy vibe.exe to %LOCALAPPDATA%\Programs\vibe\
-#   4. Hand off to `vibe setup` for the platform-specific system config
-#      (currently a stub on Windows — Phase 2 of the cross-platform port
-#      will wire up the embedded DNS stub, netsh portproxy, certutil cert
-#      trust, and a Scheduled Task on logon).
-#   5. Start the daemon.
+#   4. Hand off to 'vibe setup' for the system config (DNS, netsh portproxy,
+#      certutil CA trust, Scheduled Task on logon)
+#   5. Start the daemon
 
 $ErrorActionPreference = 'Stop'
 
@@ -21,13 +21,44 @@ function OK($msg)    { Write-Host "  $msg" -ForegroundColor Green }
 function Info($msg)  { Write-Host "  $msg" -ForegroundColor DarkGray }
 function Fail($msg)  { Write-Host "  $msg" -ForegroundColor Red; exit 1 }
 
-Write-Host "local.vibe — friendly names for local dev servers" -ForegroundColor White
+Write-Host "local.vibe -- friendly names for local dev servers" -ForegroundColor White
+
+# --- Pre-flight: are we elevated? -----------------------------------------
+# vibe setup needs Administrator to touch DNS, the certutil cert store,
+# netsh portproxy, and Task Scheduler. If we're not elevated, fail loudly
+# now rather than 30 lines into the script with a cryptic certutil error.
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host ""
+    Write-Host "This script requires Administrator privileges." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Re-launch an elevated terminal (right-click PowerShell -> 'Run as administrator')" -ForegroundColor Yellow
+    Write-Host "or use sudo on Windows 11 24H2+." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Then run again:    .\setup.bat" -ForegroundColor Yellow
+    Write-Host "(setup.bat side-steps PowerShell's execution policy automatically.)" -ForegroundColor DarkGray
+    exit 1
+}
+
+# --- Pre-flight: heads-up about execution policy --------------------------
+# If we got this far the policy let us run, but it might be restrictive
+# enough that running setup.ps1 directly (without setup.bat) next time
+# will fail. Surface that so the user isn't surprised on a re-run.
+$policy = Get-ExecutionPolicy
+if ($policy -in @('Restricted', 'AllSigned')) {
+    Info "PowerShell execution policy is '$policy' (restrictive)."
+    Info "If you re-run setup.ps1 directly, prefer .\setup.bat instead -- it sets the"
+    Info "bypass automatically. Or set the policy for this session with:"
+    Info "  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force"
+}
 
 # --- Go --------------------------------------------------------------------
 Step "Checking Go..."
 $go = Get-Command go.exe -ErrorAction SilentlyContinue
 if ($go) {
-    OK ("Go {0} installed" -f ((& go version) -replace '^go version go([\d.]+).*$', '$1'))
+    $goVersion = (& go version) 2>&1
+    OK "Go installed: $goVersion"
 } else {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if (-not $winget) {
@@ -35,8 +66,8 @@ if ($go) {
     }
     Info "Installing Go via winget..."
     winget install --id GoLang.Go --accept-source-agreements --accept-package-agreements --silent
-    # winget puts go on PATH but PATH refresh requires a new shell — pull
-    # the canonical install location into this session so the build below works.
+    # winget puts go on PATH but PATH refresh requires a new shell, so pull
+    # the canonical install location into this session for the build below.
     $goBin = Join-Path $env:ProgramFiles 'Go\bin'
     if (Test-Path (Join-Path $goBin 'go.exe')) {
         $env:Path = "$goBin;$env:Path"
@@ -66,8 +97,8 @@ Copy-Item -Path (Join-Path $scriptDir 'vibe.exe') -Destination $installPath -For
 OK "Installed to $installPath"
 
 # Add the install dir to the user's PATH if it's not already there. Done at
-# the User scope so it persists across sessions; the current shell still
-# needs $env:Path updated for the daemon-start step below to find vibe.
+# User scope so it persists across sessions; we also update $env:Path so the
+# daemon-start step below works in the current shell.
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike "*$installDir*") {
     [Environment]::SetEnvironmentVariable('Path', "$userPath;$installDir", 'User')
@@ -76,20 +107,23 @@ if ($userPath -notlike "*$installDir*") {
 $env:Path = "$installDir;$env:Path"
 
 # --- System setup ----------------------------------------------------------
-Step "Configuring system (DNS, port forwarding, autostart)..."
-Info "Note: Windows system setup is currently a stub — Phase 2 of the cross-platform port will wire this up."
-Info "For now this prints what manual steps to run."
+Step "Configuring system (DNS, port forwarding, cert trust, autostart)..."
+Info "Requires Administrator. Will fail with a clear message if you didn't elevate."
 & $installPath setup
-# Don't fail the script if setup is a stub; it returns non-zero on purpose.
+if ($LASTEXITCODE -ne 0) { Fail "vibe setup failed (exit $LASTEXITCODE)" }
 
 # --- Start daemon ----------------------------------------------------------
 Step "Starting daemon..."
 & $installPath daemon start
+if ($LASTEXITCODE -ne 0) { Fail "vibe daemon start failed (exit $LASTEXITCODE)" }
 OK "Daemon started"
 
 Write-Host ""
 Write-Host "Setup complete!" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Dashboard:  http://localhost:7999  (until DNS is wired up)"
-Write-Host "  Once Phase 2 lands: https://local.vibe"
+Write-Host "  Dashboard:  https://local.vibe"
+Write-Host "  Register a route:   vibe register myapp 3000"
+Write-Host "  Open a route:       vibe open myapp"
+Write-Host "  Stop the daemon:    vibe daemon stop"
+Write-Host "  Roll everything back: vibe uninstall  (elevated)"
 Write-Host ""

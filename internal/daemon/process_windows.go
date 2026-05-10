@@ -50,12 +50,8 @@ func applySpawnAttrs(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	const (
-		createNewProcessGroup = 0x00000200
-		createNoWindow        = 0x08000000
-	)
 	cmd.SysProcAttr.HideWindow = true
-	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createNoWindow
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW
 }
 
 // jobObjectExtendedLimitInformation matches the Windows JOBOBJECT_EXTENDED_LIMIT_INFORMATION

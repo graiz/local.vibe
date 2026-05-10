@@ -34,20 +34,38 @@ Installs Homebrew (if missing), Go, dnsmasq, `/etc/resolver/vibe`, pf rules for 
 
 ### Windows (preview)
 
+Run from an **elevated** terminal (right-click → "Run as administrator", or `sudo` on Win11 24H2+):
+
 ```powershell
 git clone https://github.com/graiz/local.vibe.git
 cd local.vibe
-powershell -ExecutionPolicy Bypass -File .\setup.ps1
+.\setup.bat
 ```
 
-Run from an **elevated** PowerShell. The script installs Go via winget if missing, builds the binary, copies it to `%LOCALAPPDATA%\Programs\vibe\vibe.exe`, then runs `vibe setup` which:
+`setup.bat` is a thin wrapper that invokes `setup.ps1` with the right ExecutionPolicy override, so you don't need to touch `Set-ExecutionPolicy` first. If you'd rather run the .ps1 directly, set the policy for the session and call it explicitly:
 
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+.\setup.ps1
+```
+
+The script installs Go via winget if missing, builds the binary, copies it to `%LOCALAPPDATA%\Programs\vibe\vibe.exe`, then runs `vibe setup` which:
+
+- before any state change, checks UDP :53 is bindable; if it's held (Acrylic DNS, Internet Connection Sharing, NextDNS, Pi-hole are common), names the offender and offers a clean abort with no system modifications
 - generates the local TLS CA + leaf cert and trusts it via `certutil -addstore Root`
 - adds netsh portproxy rules so 80→7999 and 443→7443
-- repoints every connected adapter's primary DNS to 127.0.0.1 (the daemon embeds a tiny resolver that answers *.vibe locally and forwards everything else to 8.8.8.8)
+- snapshots each adapter's pre-vibe DNS to `~/.vibe/dns-backup.json`, then repoints every connected adapter's primary DNS to 127.0.0.1 (the daemon embeds a tiny resolver that answers *.vibe locally and forwards everything else to whichever upstream answered first — your previous DNS server, falling back to 1.1.1.1 / 8.8.8.8 / 9.9.9.9)
 - registers a Scheduled Task `vibe` triggered on logon with `/rl HIGHEST` so the daemon autostarts elevated
+- when a managed route's port is held by another process, the dashboard shows the offender's PID + image name (via `tasklist`) and offers a one-click "Kill PID and Retry"
 
-`vibe uninstall` reverses every step and resets adapter DNS to DHCP. Firefox uses NSS independently and won't pick up the system-store CA — manual import required for now.
+`vibe uninstall` reverses every step and restores each adapter's DNS from the snapshot. Three safety layers ensure you never end up with a dead resolver: loopback (127.x.x.x) entries are stripped at snapshot time, again at restore time, and a final pass after restore force-resets to DHCP on any adapter still pointing at vibe's removed listener. Re-running `vibe setup` preserves the original backup rather than overwriting it with the post-setup state, so the very first pre-vibe configuration is what gets restored at uninstall.
+
+If something does go wrong, manual recovery is one command per adapter:
+```powershell
+netsh interface ipv4 set dnsservers name="Wi-Fi" dhcp
+```
+
+**Firefox:** modern Firefox honors `security.enterprise_roots.enabled` and reads the Windows root store, so it picks up the local CA automatically. If you still see a cert warning on `https://*.vibe`, open `about:config`, search for `security.enterprise_roots.enabled`, and set it to `true`. Same setting applies on macOS (it reads Keychain).
 
 ### Linux
 

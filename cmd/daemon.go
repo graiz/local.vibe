@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -53,17 +54,16 @@ var daemonStartCmd = &cobra.Command{
 			return err
 		}
 		if handled {
-			for i := 0; i < 15; i++ {
-				time.Sleep(200 * time.Millisecond)
-				if isDaemonRunning() {
-					pid, _ := readDaemonPID()
-					fmt.Printf("daemon started (pid %d)\n", pid)
-					if warn := scanDaemonLogForWarnings(); warn != "" {
-						fmt.Fprintln(os.Stderr, warn)
-					}
-					openDashboard()
-					return nil
+			// schtasks /run on Windows can take several seconds to launch
+			// the elevated process — wait for HTTP-ready, not just pidfile.
+			if waitForDaemonReady(8 * time.Second) {
+				pid, _ := readDaemonPID()
+				fmt.Printf("daemon started (pid %d)\n", pid)
+				if warn := scanDaemonLogForWarnings(); warn != "" {
+					fmt.Fprintln(os.Stderr, warn)
 				}
+				openDashboard()
+				return nil
 			}
 			logPath := filepath.Join(config.Dir(), "daemon.log")
 			if tail := tailFile(logPath, 20); tail != "" {
@@ -183,6 +183,50 @@ func isDaemonRunning() bool {
 		return false
 	}
 	return cliProcessAlive(pid)
+}
+
+// daemonHTTPResponding probes the daemon's TCP port and health endpoint.
+// Stronger than isDaemonRunning (which only checks pidfile + process alive)
+// because it confirms the HTTP listener is actually serving — pidfile may
+// be stale for a few hundred ms during a restart race.
+//
+// TCP-dial first (cheap, fails fast), HTTP only if the port is listening —
+// avoids stacking up failed HTTP requests during the startup window.
+func daemonHTTPResponding() bool {
+	cfg, err := config.Load()
+	if err != nil || cfg.Daemon.Port == 0 {
+		return false
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Daemon.Port)
+	c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+
+	client := http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get("http://" + addr + "/_api/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// waitForDaemonReady polls daemonHTTPResponding for up to maxWait. Returns
+// true if the daemon answered within the deadline. Used by `vibe dev` and
+// the daemon-start command to know when it's safe to claim the daemon
+// is up — schtasks /run can take a few seconds to launch elevated, and
+// pidfile presence alone isn't enough.
+func waitForDaemonReady(maxWait time.Duration) bool {
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		if isDaemonRunning() && daemonHTTPResponding() {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
 }
 
 func init() {
