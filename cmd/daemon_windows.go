@@ -18,25 +18,22 @@ import (
 
 const scheduledTaskName = "vibe"
 
-// tryPlatformDaemonStart prefers the Scheduled Task installed by setup. It
-// runs the daemon with elevated rights (the task is registered with
-// /rl HIGHEST), which is needed to bind UDP :53 reliably and to keep
-// HTTPS hot-reloading clean. If the task doesn't exist (setup was skipped),
-// returns handled=false so the caller falls through to a plain forkDaemon.
+// tryPlatformDaemonStart prefers the Scheduled Task installed by setup,
+// which runs the daemon at logon at the user's normal integrity level
+// (see installScheduledTask for the rationale on dropping /rl HIGHEST).
+// If the task doesn't exist (setup was skipped), returns handled=false
+// so the caller falls through to a plain forkDaemon.
 //
-// When falling through with no Scheduled Task AND running unelevated, we
-// warn that the daemon will be unable to bind :53 — that's a common
-// confusing failure (DNS doesn't work, but the dashboard does) so flag it
-// loudly before the fork.
+// When the task is missing we warn the user to run `vibe setup` so the
+// daemon comes up automatically at next logon — but the fork still works
+// fine without admin, since none of the daemon's runtime operations need
+// elevation on Windows.
 func tryPlatformDaemonStart() (bool, error) {
 	if !scheduledTaskExists(scheduledTaskName) {
-		if !isElevated() {
-			fmt.Fprintln(os.Stderr,
-				"warning: no Scheduled Task is registered and this terminal is not elevated.\n"+
-					"         The daemon will start unelevated; binding UDP :53 will fail and\n"+
-					"         *.vibe DNS resolution won't work. Re-run from an admin terminal\n"+
-					"         and run `vibe setup` to register the autostart task.")
-		}
+		fmt.Fprintln(os.Stderr,
+			"note: no Scheduled Task registered. The daemon will start in this\n"+
+				"      session, but won't auto-start at logon. Run `vibe setup`\n"+
+				"      from an elevated terminal to register the autostart task.")
 		return false, nil
 	}
 	out, err := exec.Command(winutil.Sys32("schtasks"), "/run", "/tn", scheduledTaskName).CombinedOutput()

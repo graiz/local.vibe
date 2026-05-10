@@ -8,27 +8,15 @@ import (
 	"testing"
 )
 
-func TestParseShowDnsservers(t *testing.T) {
-	out := `
-Configuration for interface "Loopback Pseudo-Interface 1"
-    DNS servers configured through DHCP:  None
-    Register with which suffix:           None
-
-Configuration for interface "Wi-Fi"
-    DNS servers configured through DHCP:  192.168.1.1
-    Register with which suffix:           Primary only
-
-Configuration for interface "Ethernet"
-    Statically Configured DNS Servers:    1.1.1.1
-                                          1.0.0.1
-    Register with which suffix:           Primary only
-
-Configuration for interface "vEthernet (WSL)"
-    DNS servers configured through DHCP:  None
-    Register with which suffix:           Primary only
-`
-	got := parseShowDnsservers(out)
-
+func TestParsePowerShellDNSJSON_Array(t *testing.T) {
+	// Canonical shape: ConvertTo-Json -InputObject @(...) emits an array.
+	in := []byte(`[
+		{"Name":"Loopback Pseudo-Interface 1","DHCP":true,"Servers":[]},
+		{"Name":"Wi-Fi","DHCP":true,"Servers":["192.168.1.1"]},
+		{"Name":"Ethernet","DHCP":false,"Servers":["1.1.1.1","1.0.0.1"]},
+		{"Name":"vEthernet (WSL)","DHCP":true,"Servers":[]}
+	]`)
+	got := parsePowerShellDNSJSON(in)
 	want := map[string]adapterDNS{
 		"Loopback Pseudo-Interface 1": {DHCP: true},
 		"Wi-Fi":                       {DHCP: true, Servers: []string{"192.168.1.1"}},
@@ -36,7 +24,66 @@ Configuration for interface "vEthernet (WSL)"
 		"vEthernet (WSL)":             {DHCP: true},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseShowDnsservers got %#v\nwant %#v", got, want)
+		t.Errorf("parsePowerShellDNSJSON got %#v\nwant %#v", got, want)
+	}
+}
+
+// TestParsePowerShellDNSJSON_GermanLocale locks down the load-bearing
+// promise of switching to PowerShell: the adapter name "WLAN" (the
+// German rendering of Wi-Fi on a German Windows install) round-trips
+// unchanged. The previous netsh parser keyed on English column headers
+// and would silently return zero adapters here.
+func TestParsePowerShellDNSJSON_GermanLocale(t *testing.T) {
+	in := []byte(`[
+		{"Name":"WLAN","DHCP":true,"Servers":["192.168.178.1"]},
+		{"Name":"Ethernet 2","DHCP":false,"Servers":["10.0.0.1"]}
+	]`)
+	got := parsePowerShellDNSJSON(in)
+	want := map[string]adapterDNS{
+		"WLAN":       {DHCP: true, Servers: []string{"192.168.178.1"}},
+		"Ethernet 2": {DHCP: false, Servers: []string{"10.0.0.1"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("German-locale parse got %#v\nwant %#v", got, want)
+	}
+}
+
+// TestParsePowerShellDNSJSON_SingleObject covers the defensive fallback
+// for "ConvertTo-Json unwrapped a one-element array to a plain object"
+// — we wrap with @() in the script to prevent this, but the parser
+// stays robust against it in case an older PowerShell or an edited
+// script omits the wrap.
+func TestParsePowerShellDNSJSON_SingleObject(t *testing.T) {
+	in := []byte(`{"Name":"Wi-Fi","DHCP":true,"Servers":["192.168.1.1"]}`)
+	got := parsePowerShellDNSJSON(in)
+	want := map[string]adapterDNS{
+		"Wi-Fi": {DHCP: true, Servers: []string{"192.168.1.1"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("single-object parse got %#v\nwant %#v", got, want)
+	}
+}
+
+func TestParsePowerShellDNSJSON_EmptyAndMalformed(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want map[string]adapterDNS
+	}{
+		{"empty bytes", []byte(``), nil},
+		{"empty array", []byte(`[]`), map[string]adapterDNS{}},
+		{"malformed", []byte(`not json at all`), map[string]adapterDNS{}},
+		{"empty name skipped", []byte(`[{"Name":"","DHCP":true,"Servers":[]}]`), map[string]adapterDNS{}},
+		{"whitespace-only servers stripped", []byte(`[{"Name":"Wi-Fi","DHCP":false,"Servers":["  ","8.8.8.8"]}]`),
+			map[string]adapterDNS{"Wi-Fi": {DHCP: false, Servers: []string{"8.8.8.8"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parsePowerShellDNSJSON(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %#v\nwant %#v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -178,13 +225,69 @@ func TestIsLoopbackServer(t *testing.T) {
 		"8.8.8.8":   false,
 		"192.168.1.1": false,
 		"":            false,
-		// Whitespace tolerance: parseShowDnsservers may leave trimmed
-		// values, but defense in depth.
+		// Whitespace tolerance — defense in depth.
 		"  127.0.0.1  ": true,
 	}
 	for input, want := range cases {
 		if got := isLoopbackServer(input); got != want {
 			t.Errorf("isLoopbackServer(%q) = %v; want %v", input, got, want)
 		}
+	}
+}
+
+func TestParseConnectedAdaptersJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want []string
+	}{
+		{
+			"happy path",
+			[]byte(`["Wi-Fi","Ethernet"]`),
+			[]string{"Wi-Fi", "Ethernet"},
+		},
+		{
+			"loopback filtered",
+			[]byte(`["Wi-Fi","Loopback Pseudo-Interface 1","Ethernet"]`),
+			[]string{"Wi-Fi", "Ethernet"},
+		},
+		{
+			"German locale interface name",
+			[]byte(`["WLAN","Ethernet 2"]`),
+			[]string{"WLAN", "Ethernet 2"},
+		},
+		{
+			"single bare string fallback",
+			[]byte(`"Wi-Fi"`),
+			[]string{"Wi-Fi"},
+		},
+		{
+			"null returns nil",
+			[]byte(`null`),
+			nil,
+		},
+		{
+			"empty array returns empty",
+			[]byte(`[]`),
+			nil,
+		},
+		{
+			"malformed returns nil",
+			[]byte(`{"not":"a string array"}`),
+			nil,
+		},
+		{
+			"whitespace-only entries skipped",
+			[]byte(`["","Wi-Fi","   "]`),
+			[]string{"Wi-Fi"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseConnectedAdaptersJSON(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %#v\nwant %#v", got, tc.want)
+			}
+		})
 	}
 }

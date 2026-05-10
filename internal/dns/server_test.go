@@ -271,3 +271,44 @@ func TestServfailMalformedQuery(t *testing.T) {
 		t.Errorf("QDCOUNT must be zeroed when question is unavailable")
 	}
 }
+
+// FuzzParseQuestion exercises the question-section parser against arbitrary
+// byte inputs. The parser MUST never panic — malformed inputs return
+// ok=false. Since the daemon's resolver listens on loopback only, attacker
+// reach is limited, but a panic in the read loop would still kill DNS for
+// the whole machine. Bounds-check regressions are exactly what fuzzing is
+// good at catching.
+//
+// Runs as a deterministic seed-corpus replay during `go test ./...` (no
+// random mutation). Run with `go test -fuzz=FuzzParseQuestion` for actual
+// fuzzing during development.
+func FuzzParseQuestion(f *testing.F) {
+	// Seed with a few well-formed and pathological inputs.
+	f.Add(buildQuery("foo.vibe", typeA))
+	f.Add(buildQuery("a.b.c.d.e.f.g.vibe", typeAAAA))
+	f.Add([]byte{}) // empty
+	f.Add(make([]byte, 12)) // header only, all zero
+	// Header claims 1 question but body is the header alone.
+	hdrOnly := make([]byte, 12)
+	binary.BigEndian.PutUint16(hdrOnly[4:6], 1)
+	f.Add(hdrOnly)
+	// Compression-pointer label inside QNAME — parser must reject.
+	withPointer := []byte{
+		0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, // header, QDCOUNT=1
+		0xC0, 0x0C, // pointer where a label length should be
+		0, 1, 0, 1, // QTYPE=A, QCLASS=IN
+	}
+	f.Add(withPointer)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Must not panic on any input. Don't assert a specific outcome —
+		// either ok=true with valid fields, or ok=false. Anything that
+		// avoids panic is correct behavior at this layer.
+		_, _, _, _ = parseQuestion(data)
+		// questionEnd uses the same label-walk; cover it too.
+		_ = questionEnd(data)
+		// servfail must also tolerate arbitrary input (used as a
+		// last-ditch error response).
+		_ = servfail(data)
+	})
+}

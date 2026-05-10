@@ -3,7 +3,7 @@
 package cmd
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,20 +31,46 @@ type adapterDNS struct {
 	Servers []string `json:"servers,omitempty"`
 }
 
-// snapshotAdapterDNS runs `netsh interface ipv4 show dnsservers` and returns
-// each adapter's current DNS configuration. Used at setup time so uninstall
-// can restore exactly what the user had.
+// dnsSnapshotPowerShellScript is the PowerShell pipeline that emits each
+// adapter's IPv4 DNS configuration as JSON. We use the structured cmdlets
+// (Get-DnsClientServerAddress + Get-NetIPInterface) instead of parsing
+// `netsh ... show dnsservers` because netsh's output is locale-translated
+// — on a German Windows the section header reads "Konfiguration für
+// Schnittstelle", not "Configuration for interface". The cmdlets return
+// the same data on every locale.
+//
+// `-InputObject @(...)` is the canonical idiom to force the result into a
+// JSON array even when there's only one adapter — without it, ConvertTo-Json
+// unwraps single-element arrays to plain objects and our parser would have
+// to handle both shapes.
+const dnsSnapshotPowerShellScript = `
+$rows = Get-DnsClientServerAddress -AddressFamily IPv4 | ForEach-Object {
+  $alias = $_.InterfaceAlias
+  $ipif = Get-NetIPInterface -AddressFamily IPv4 -InterfaceAlias $alias -ErrorAction SilentlyContinue
+  $dhcp = $false
+  if ($ipif -and $ipif.Dhcp) { $dhcp = ($ipif.Dhcp.ToString() -eq 'Enabled') }
+  [PSCustomObject]@{
+    Name    = $alias
+    DHCP    = $dhcp
+    Servers = @($_.ServerAddresses)
+  }
+}
+ConvertTo-Json -InputObject @($rows) -Compress -Depth 3
+`
+
+// snapshotAdapterDNS returns each adapter's current IPv4 DNS configuration.
+// Used at setup time so uninstall can restore exactly what the user had.
 //
 // Loopback servers (127.x.x.x) are stripped before the snapshot is returned —
 // re-running setup would otherwise capture our own resolver listener as the
 // "previous" DNS and uninstall would loop the adapter back to a service that
 // has just been removed. See stripLoopbackServers for the policy.
 func snapshotAdapterDNS() (map[string]adapterDNS, error) {
-	out, err := exec.Command(winutil.Sys32("netsh"), "interface", "ipv4", "show", "dnsservers").Output()
+	out, err := winutil.PowerShellJSON(dnsSnapshotPowerShellScript)
 	if err != nil {
-		return nil, fmt.Errorf("netsh show dnsservers: %w", err)
+		return nil, fmt.Errorf("powershell get-dnsclientserveraddress: %w", err)
 	}
-	return stripLoopbackServers(parseShowDnsservers(string(out))), nil
+	return stripLoopbackServers(parsePowerShellDNSJSON(out)), nil
 }
 
 // stripLoopbackServers removes 127.x.x.x entries from each adapter's Servers
@@ -83,20 +109,20 @@ func isLoopbackServer(s string) bool {
 	return strings.HasPrefix(s, "127.") || s == "::1"
 }
 
-// verifyAndFixLoopbackDNS re-reads adapter DNS state from netsh and forces
-// any adapter still pointing at a 127.x.x.x server back to DHCP. Final
-// safety net for the uninstall path: even if restoreAdapterDNS misses a
-// case (new adapter appeared mid-restore, hand-edited backup with mixed
-// loopback + real servers, etc.), this leaves the user with a working
-// resolver instead of a stale pointer to our removed listener.
+// verifyAndFixLoopbackDNS re-reads adapter DNS state and forces any adapter
+// still pointing at a 127.x.x.x server back to DHCP. Final safety net for
+// the uninstall path: even if restoreAdapterDNS misses a case (new adapter
+// appeared mid-restore, hand-edited backup with mixed loopback + real
+// servers, etc.), this leaves the user with a working resolver instead of
+// a stale pointer to our removed listener.
 //
 // Returns the names of adapters that were forced to DHCP.
 func verifyAndFixLoopbackDNS() []string {
-	raw, err := exec.Command(winutil.Sys32("netsh"), "interface", "ipv4", "show", "dnsservers").Output()
+	out, err := winutil.PowerShellJSON(dnsSnapshotPowerShellScript)
 	if err != nil {
 		return nil
 	}
-	candidates := adaptersNeedingDHCPReset(parseShowDnsservers(string(raw)))
+	candidates := adaptersNeedingDHCPReset(parsePowerShellDNSJSON(out))
 	var fixed []string
 	for _, name := range candidates {
 		out, err := exec.Command(winutil.Sys32("netsh"), "interface", "ipv4", "set", "dnsservers",
@@ -134,126 +160,62 @@ func adaptersNeedingDHCPReset(live map[string]adapterDNS) []string {
 	return out
 }
 
-// parseShowDnsservers parses the multi-block output of
-// `netsh interface ipv4 show dnsservers`. Sample:
+// psAdapterDNSRow is the JSON shape produced by dnsSnapshotPowerShellScript
+// for a single adapter. Field names match the PSCustomObject keys exactly
+// (case-sensitive in encoding/json).
+type psAdapterDNSRow struct {
+	Name    string   `json:"Name"`
+	DHCP    bool     `json:"DHCP"`
+	Servers []string `json:"Servers"`
+}
+
+// parsePowerShellDNSJSON parses the JSON output of dnsSnapshotPowerShellScript
+// into the same map shape the rest of the code consumes. PowerShell's
+// ConvertTo-Json unwraps single-element arrays to plain objects unless we
+// force-array them with `@(...)`; we still defensively handle both shapes
+// in case an older PowerShell or a future script tweak produces a bare
+// object.
 //
-//	Configuration for interface "Wi-Fi"
-//	    DNS servers configured through DHCP:  192.168.1.1
-//	    Register with which suffix:           Primary only
-//
-//	Configuration for interface "Ethernet"
-//	    Statically Configured DNS Servers:    1.1.1.1
-//	                                          1.0.0.1
-//	    Register with which suffix:           Primary only
-//
-//	Configuration for interface "vEthernet (WSL)"
-//	    DNS servers configured through DHCP:  None
-//	    Register with which suffix:           Primary only
-//
-// We extract the adapter name from the "Configuration for interface" line
-// and decide DHCP vs static by which marker appears next. Multi-line static
-// lists are detected by indented continuation lines that look like
-// dotted-quad IPv4 addresses.
-func parseShowDnsservers(out string) map[string]adapterDNS {
-	result := map[string]adapterDNS{}
-	var (
-		currentName string
-		current     adapterDNS
-		inStatic    bool
-	)
-	flush := func() {
-		if currentName == "" {
-			return
-		}
-		result[currentName] = current
-		currentName = ""
-		current = adapterDNS{}
-		inStatic = false
+// Returns nil for empty input. Malformed input returns an empty map (not
+// nil) so callers can treat "parsed zero adapters" the same as "PowerShell
+// returned an empty array".
+func parsePowerShellDNSJSON(data []byte) map[string]adapterDNS {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return nil
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(out))
-	for scanner.Scan() {
-		raw := scanner.Text()
-		line := strings.TrimSpace(raw)
-
-		if strings.HasPrefix(line, "Configuration for interface") {
-			flush()
-			// Extract the adapter name between the surrounding quotes.
-			if l, r := strings.Index(line, `"`), strings.LastIndex(line, `"`); l >= 0 && r > l {
-				currentName = line[l+1 : r]
-			}
-			continue
+	var rows []psAdapterDNSRow
+	switch trimmed[0] {
+	case '[':
+		if err := json.Unmarshal(trimmed, &rows); err != nil {
+			return map[string]adapterDNS{}
 		}
-
-		if currentName == "" {
-			continue
+	case '{':
+		var single psAdapterDNSRow
+		if err := json.Unmarshal(trimmed, &single); err != nil {
+			return map[string]adapterDNS{}
 		}
-
-		switch {
-		case strings.Contains(line, "configured through DHCP"):
-			current.DHCP = true
-			inStatic = false
-			// "DHCP: None" still counts as DHCP — Servers stays empty.
-			if val := afterColon(line); val != "" && !strings.EqualFold(val, "None") {
-				if isDottedIPv4(val) {
-					current.Servers = append(current.Servers, val)
-				}
-			}
-		case strings.Contains(line, "Statically Configured DNS Servers"):
-			current.DHCP = false
-			inStatic = true
-			if val := afterColon(line); val != "" && !strings.EqualFold(val, "None") {
-				if isDottedIPv4(val) {
-					current.Servers = append(current.Servers, val)
-				}
-			}
-		case inStatic && isDottedIPv4(line):
-			// Continuation row: indented IP under a static block.
-			current.Servers = append(current.Servers, line)
-		default:
-			// Anything else (Register-with-suffix, blank lines, comments) ends
-			// a static continuation but doesn't drop the adapter.
-			if line == "" {
-				continue
-			}
-			if !isDottedIPv4(line) {
-				inStatic = false
-			}
-		}
+		rows = []psAdapterDNSRow{single}
+	default:
+		return map[string]adapterDNS{}
 	}
-	flush()
+
+	result := make(map[string]adapterDNS, len(rows))
+	for _, r := range rows {
+		if strings.TrimSpace(r.Name) == "" {
+			continue
+		}
+		var servers []string
+		for _, s := range r.Servers {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				servers = append(servers, s)
+			}
+		}
+		result[r.Name] = adapterDNS{DHCP: r.DHCP, Servers: servers}
+	}
 	return result
-}
-
-// afterColon returns the substring after the LAST colon, trimmed.
-// "DNS servers configured through DHCP:  192.168.1.1" → "192.168.1.1".
-func afterColon(line string) string {
-	i := strings.LastIndex(line, ":")
-	if i < 0 {
-		return ""
-	}
-	return strings.TrimSpace(line[i+1:])
-}
-
-// isDottedIPv4 is a cheap "looks like an IPv4 address" check. We don't need
-// strict validation — false positives just mean we'd try to restore an
-// invalid value, which netsh will reject and we'll catch in uninstall.
-func isDottedIPv4(s string) bool {
-	parts := strings.Split(s, ".")
-	if len(parts) != 4 {
-		return false
-	}
-	for _, p := range parts {
-		if p == "" || len(p) > 3 {
-			return false
-		}
-		for _, r := range p {
-			if r < '0' || r > '9' {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // saveDNSBackup persists the snapshot to ~/.vibe/dns-backup.json so uninstall

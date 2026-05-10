@@ -2,12 +2,15 @@ package cert
 
 import (
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -263,6 +266,48 @@ func TestGenerateLeaf(t *testing.T) {
 	if leaf1.SerialNumber.Cmp(leaf2.SerialNumber) == 0 {
 		t.Error("GenerateLeaf should always create a new cert")
 	}
+}
+
+func TestCAThumbprint(t *testing.T) {
+	dir := t.TempDir()
+	ca, _, err := EnsureCA(dir)
+	if err != nil {
+		t.Fatalf("EnsureCA: %v", err)
+	}
+
+	thumb, err := CAThumbprint(dir)
+	if err != nil {
+		t.Fatalf("CAThumbprint: %v", err)
+	}
+
+	// Compute expected: SHA1 of cert.Raw, uppercase hex.
+	want := strings.ToUpper(hex.EncodeToString(sha1Sum(ca.Raw)))
+	if thumb != want {
+		t.Errorf("thumbprint = %q; want %q", thumb, want)
+	}
+
+	// Format invariants — certutil expects 40 hex chars, no separators.
+	if len(thumb) != 40 {
+		t.Errorf("thumbprint length = %d; want 40", len(thumb))
+	}
+	if thumb != strings.ToUpper(thumb) {
+		t.Errorf("thumbprint should be uppercase, got %q", thumb)
+	}
+	if strings.ContainsAny(thumb, " :-") {
+		t.Errorf("thumbprint should not contain separators, got %q", thumb)
+	}
+}
+
+func TestCAThumbprintMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := CAThumbprint(dir); err == nil {
+		t.Error("expected error when ca.pem doesn't exist")
+	}
+}
+
+func sha1Sum(data []byte) []byte {
+	sum := sha1.Sum(data)
+	return sum[:]
 }
 
 func TestCoversAll(t *testing.T) {

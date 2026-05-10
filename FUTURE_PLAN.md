@@ -5,8 +5,14 @@
 > `feature/windows-implementation`. Process supervision uses Job Objects;
 > DNS uses an embedded stub on 127.0.0.1:53 plus `netsh interface ipv4 set
 > dnsservers static`; port forwarding uses `netsh interface portproxy`;
-> autostart uses a Scheduled Task on logon at /rl HIGHEST; cert trust uses
-> `certutil -addstore Root`. `vibe uninstall` reverses every step.
+> autostart uses a Scheduled Task on logon at the user's normal integrity
+> level (the daemon's runtime needs are all unprivileged on Windows; only
+> `vibe setup` itself requires admin); cert trust uses `certutil -addstore
+> Root`, with uninstall matching by SHA1 thumbprint to avoid clobbering
+> third-party certs that share the Subject CN. Adapter DNS introspection
+> uses `Get-DnsClientServerAddress` / `Get-NetAdapter` / `Get-NetIPInterface`
+> via PowerShell JSON, not netsh screen-scraping, so it works on
+> non-English Windows locales. `vibe uninstall` reverses every step.
 > Linux remains unimplemented — sections below describe its design.
 
 local.vibe is currently macOS- and Windows-supported. This document captures what would need to change to support Linux, and the design constraints that came out of reviewing PR #4 (first Linux attempt).

@@ -36,7 +36,7 @@ func precheckPortCollisions() error {
 	if len(holders) > 0 {
 		var parts []string
 		for _, pid := range holders {
-			if name := tasklistImageName(pid); name != "" {
+			if name := winutil.TaskImageName(pid); name != "" {
 				parts = append(parts, fmt.Sprintf("%s (PID %d)", name, pid))
 			} else {
 				parts = append(parts, fmt.Sprintf("PID %d", pid))
@@ -109,33 +109,3 @@ func findUDPPortHolders(port int) []int {
 	return pids
 }
 
-// tasklistImageName returns the image name (e.g. "acrylic.exe") for a PID
-// via `tasklist /FI "PID eq N" /FO CSV /NH`, or "" if the PID isn't found
-// or tasklist errors out. Mirrors the parser in internal/daemon but is
-// duplicated here so the cmd package doesn't reach into daemon internals
-// for a single helper.
-func tasklistImageName(pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	out, err := exec.Command(winutil.Sys32("tasklist"),
-		"/FI", fmt.Sprintf("PID eq %d", pid),
-		"/FO", "CSV", "/NH").Output()
-	if err != nil {
-		return ""
-	}
-	s := strings.TrimSpace(string(out))
-	if s == "" || strings.HasPrefix(s, "INFO:") {
-		return ""
-	}
-	// First field of the CSV row is "image.exe" — extract between the
-	// leading quote and the next ".
-	if !strings.HasPrefix(s, `"`) {
-		return ""
-	}
-	rest := s[1:]
-	if idx := strings.Index(rest, `"`); idx >= 0 {
-		return rest[:idx]
-	}
-	return ""
-}

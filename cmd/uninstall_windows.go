@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/graiz/local.vibe/internal/cert"
 	"github.com/graiz/local.vibe/internal/winutil"
 )
 
@@ -72,18 +73,44 @@ func uninstallPlatform() error {
 		_ = os.Remove(dnsBackupFile())
 	}
 
-	// Remove the trusted CA from the system root store.
-	out, err := exec.Command(winutil.Sys32("certutil"), "-delstore", "Root", "local.vibe CA").CombinedOutput()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: certutil delstore: %v — %s\n", err, strings.TrimSpace(string(out)))
-	} else {
-		fmt.Println("  Trusted CA removed from system root store")
+	// Remove the trusted CA from the system root store. Prefer matching by
+	// the cert's SHA1 thumbprint over matching by Subject CN — the CN
+	// "local.vibe CA" is shared by every install we've ever made, so a CN
+	// match will quietly remove a cert that belongs to e.g. a different
+	// user's install or another tool that happens to use the same name.
+	// The thumbprint is unique to the actual bytes on disk.
+	//
+	// Capture certsDir up front so we can read the thumbprint BEFORE wiping
+	// the cert files.
+	home, _ := os.UserHomeDir()
+	var certsDir string
+	if home != "" {
+		certsDir = filepath.Join(home, ".vibe", "certs")
+	}
+
+	if certsDir != "" {
+		if thumb, err := cert.CAThumbprint(certsDir); err == nil {
+			out, err := exec.Command(winutil.Sys32("certutil"), "-delstore", "Root", thumb).CombinedOutput()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  warning: certutil delstore by thumbprint: %v — %s\n", err, strings.TrimSpace(string(out)))
+			} else {
+				fmt.Println("  Trusted CA removed from system root store")
+			}
+		} else {
+			// Cert file gone (manual cleanup before uninstall, or never installed).
+			// Fall back to CN match with a clear warning that this is imprecise.
+			fmt.Fprintf(os.Stderr, "  note: ~/.vibe/certs/ca.pem unreadable (%v); attempting CN-based delete (may match other certs sharing the same Subject)\n", err)
+			out, err := exec.Command(winutil.Sys32("certutil"), "-delstore", "Root", "local.vibe CA").CombinedOutput()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  warning: certutil delstore by CN: %v — %s\n", err, strings.TrimSpace(string(out)))
+			} else {
+				fmt.Println("  Trusted CA removed from system root store (CN match)")
+			}
+		}
 	}
 
 	// Remove cert files.
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		certsDir := filepath.Join(home, ".vibe", "certs")
+	if certsDir != "" {
 		_ = os.RemoveAll(certsDir)
 		fmt.Println("  ~/.vibe/certs removed")
 	}

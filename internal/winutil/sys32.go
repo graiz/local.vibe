@@ -13,19 +13,17 @@ import (
 // for certutil/netsh/ipconfig/schtasks/netstat/tasklist — anything that's
 // part of Windows itself and lives at %SystemRoot%\System32\<name>.exe.
 //
-// Some environments (sanitized PowerShell profiles, processes spawned with
-// stripped env, tools launched from bash-style shells with a POSIX PATH)
-// don't have System32 on PATH. Resolving by absolute path makes setup
-// robust regardless. Fall back to the bare name so exec.LookPath still has
-// a chance if the file isn't where we expected.
+// Always returns an absolute path; never falls back to a bare name. The
+// callers run as Administrator during setup, so a PATH search would be a
+// privilege-escalation surface — a working directory or environment that
+// shadows `netsh.exe` with a malicious binary would silently get exec'd
+// otherwise. If the System32 binary genuinely doesn't exist (extremely
+// unusual; would mean a broken Windows install), exec.Command surfaces a
+// clean "no such file" error instead.
 func Sys32(name string) string {
 	root := os.Getenv("SystemRoot")
 	if root == "" {
 		root = `C:\Windows`
 	}
-	abs := filepath.Join(root, "System32", name+".exe")
-	if _, err := os.Stat(abs); err == nil {
-		return abs
-	}
-	return name
+	return filepath.Join(root, "System32", name+".exe")
 }

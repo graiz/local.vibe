@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -55,7 +54,7 @@ func setupPlatform() error {
 	fmt.Println("Daemon starts automatically at login (Scheduled Task: vibe).")
 	fmt.Println()
 	if promptYN("Start the daemon now and open https://local.vibe?") {
-		out, err := exec.Command(winutil.Sys32("schtasks"), "/run", "/tn", "vibe").CombinedOutput()
+		out, err := exec.Command(winutil.Sys32("schtasks"), "/run", "/tn", scheduledTaskName).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("schtasks /run: %w — %s", err, strings.TrimSpace(string(out)))
 		}
@@ -206,68 +205,70 @@ func configureDNS() error {
 	return nil
 }
 
-// connectedIPv4Adapters returns the friendly names of every IPv4 adapter
-// currently in the "connected" state. We parse `netsh interface ipv4 show
-// interfaces`, which outputs a fixed-width table:
+// connectedAdaptersPowerShellScript emits the names of every adapter
+// currently in the "Up" state as a JSON array. We use Get-NetAdapter
+// (a Windows-shipped cmdlet, not a netsh shim) because its Status
+// property is an enum value that's the same on every locale — the
+// previous netsh approach matched the literal English word "connected"
+// and would silently return zero adapters on a German or French Windows.
 //
-//	Idx     Met         MTU          State                Name
-//	---  ----------  ----------  ------------  ---------------------------
-//	  1          75  4294967295  connected     Loopback Pseudo-Interface 1
-//	 12          25        1500  connected     Wi-Fi
-//
-// We skip the loopback (matches the literal name) since adding 127.0.0.1
-// as DNS on the loopback adapter would be a no-op + raise eyebrows.
+// `-InputObject @(...)` forces a JSON array even with one element, so the
+// Go side never has to handle "single bare string" output.
+const connectedAdaptersPowerShellScript = `
+$names = @(Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -ExpandProperty Name)
+ConvertTo-Json -InputObject $names -Compress
+`
+
+// connectedIPv4Adapters returns the friendly names of every adapter
+// currently in the "Up" state, excluding loopback (DNS on the loopback
+// pseudo-interface would be a no-op).
 func connectedIPv4Adapters() ([]string, error) {
-	out, err := exec.Command(winutil.Sys32("netsh"), "interface", "ipv4", "show", "interfaces").Output()
+	out, err := winutil.PowerShellJSON(connectedAdaptersPowerShellScript)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("powershell get-netadapter: %w", err)
 	}
-	var names []string
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		// The state column reads "connected" (lowercase) on every Windows
-		// version we've seen — but match case-insensitively to be safe.
-		lower := strings.ToLower(line)
-		if !strings.Contains(lower, "connected") {
-			continue
-		}
-		// Skip the divider and headers.
-		if strings.Contains(lower, "state") || strings.HasPrefix(strings.TrimSpace(line), "---") {
-			continue
-		}
-		// First 4 fields are Idx, Met, MTU, State; everything after is the
-		// adapter name (which may itself contain spaces).
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
-		}
-		// Re-find the name: split twice keeping the rest.
-		// Strategy: trim the four numeric/state columns from the front by
-		// finding the 4th run of whitespace.
-		name := joinFromField(line, 4)
-		if name == "" || strings.HasPrefix(strings.ToLower(name), "loopback") {
-			continue
-		}
-		names = append(names, name)
-	}
-	return names, nil
+	return parseConnectedAdaptersJSON(out), nil
 }
 
-// joinFromField returns the substring of line that begins at the n'th
-// whitespace-separated field (0-based). Used because adapter names can
-// contain spaces, so a strings.Fields split would over-tokenize them.
-func joinFromField(line string, n int) string {
-	in := line
-	for i := 0; i < n; i++ {
-		in = strings.TrimLeft(in, " \t")
-		idx := strings.IndexAny(in, " \t")
-		if idx < 0 {
-			return ""
-		}
-		in = in[idx:]
+// parseConnectedAdaptersJSON parses the JSON array (or single-element
+// fallback) emitted by connectedAdaptersPowerShellScript and filters out
+// loopback adapters. Pure function for testability.
+func parseConnectedAdaptersJSON(data []byte) []string {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return nil
 	}
-	return strings.TrimSpace(in)
+
+	var names []string
+	switch trimmed[0] {
+	case '[':
+		if err := json.Unmarshal([]byte(trimmed), &names); err != nil {
+			return nil
+		}
+	case '"':
+		// PowerShell occasionally unwraps a one-element array to a bare
+		// string despite the @() wrap; handle it defensively.
+		var single string
+		if err := json.Unmarshal([]byte(trimmed), &single); err != nil {
+			return nil
+		}
+		names = []string{single}
+	default:
+		return nil
+	}
+
+	var out []string
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(n), "loopback") {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // enableTLSAndDNSWindows updates ~/.vibe/config.json to enable both the
@@ -325,8 +326,26 @@ func enableTLSAndDNSWindows() error {
 }
 
 // installScheduledTask creates a logon-triggered task that runs the daemon
-// with /rl HIGHEST. /f overwrites any existing task with the same name so
-// re-running setup updates the binary path.
+// at the user's normal (medium) integrity level. /f overwrites any existing
+// task with the same name so re-running setup updates the binary path.
+//
+// Why no /rl HIGHEST: the daemon's runtime needs are all unprivileged on
+// Windows — binding low ports (UDP :53, TCP :7443) doesn't require admin
+// (unlike POSIX, which gates ports < 1024 on uid=0), TLS hot-reload is a
+// pure user-space cert swap, and child-process spawning works at any IL.
+// All the privileged operations (netsh portproxy, certutil -addstore,
+// adapter DNS repointing) happen during `vibe setup` itself; they persist
+// in registry/system state and never need to be re-applied at runtime.
+//
+// Running the daemon elevated would mean every reverse-proxied dev server,
+// every dashboard HTTP handler, and every managed child process inherits
+// Administrator — turning any future bug in that surface into a privilege
+// escalation. Keeping the task at medium IL is the strict-better default.
+//
+// /tr quoting note: the binary path comes from os.Executable() and is
+// quote-wrapped so paths with spaces (e.g. "C:\Program Files\…") work.
+// Windows file paths cannot contain `"` characters, so no escaping of
+// `binary` is needed — but never substitute user-supplied data here.
 func installScheduledTask() error {
 	binary, err := os.Executable()
 	if err != nil {
@@ -336,10 +355,9 @@ func installScheduledTask() error {
 
 	out, err := exec.Command(winutil.Sys32("schtasks"),
 		"/create",
-		"/tn", "vibe",
+		"/tn", scheduledTaskName,
 		"/tr", fmt.Sprintf(`"%s" serve`, binary),
 		"/sc", "onlogon",
-		"/rl", "HIGHEST",
 		"/f",
 	).CombinedOutput()
 	if err != nil {

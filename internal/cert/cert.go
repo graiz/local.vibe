@@ -4,14 +4,17 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -170,6 +173,25 @@ func coversAll(cert *x509.Certificate, hostnames []string) bool {
 		}
 	}
 	return true
+}
+
+// CAThumbprint returns the SHA1 thumbprint of the CA cert at certsDir/ca.pem
+// formatted as uppercase hex with no separators — the form `certutil -delstore`
+// accepts as a unique identifier on Windows. Used at uninstall time to delete
+// the exact cert we installed, instead of matching by Subject CN (which can
+// collide with unrelated certs sharing "local.vibe CA" as their name).
+//
+// Cross-platform helper — the SHA1 calculation is the same everywhere; only
+// the consumer (Windows certutil) is OS-specific. SHA1 is the established
+// thumbprint algorithm in every cert store API; collision resistance isn't
+// the property being relied on here, identity-as-a-key is.
+func CAThumbprint(certsDir string) (string, error) {
+	cert, err := loadCert(filepath.Join(certsDir, "ca.pem"))
+	if err != nil {
+		return "", err
+	}
+	sum := sha1.Sum(cert.Raw)
+	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
 }
 
 // LoadTLSConfig returns a tls.Config loaded from the given cert and key files.
