@@ -207,9 +207,8 @@ func LoadTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 
 // TrustCA installs the CA certificate into the OS-level trust store.
 // Implementation lives in cert_<goos>.go. Requires elevated privileges.
-//
-// Note: Linux and Windows implementations are stubs in Phase 1 of Windows
-// support; only macOS is fully wired. See FUTURE_PLAN.md for status.
+// macOS uses Keychain (`security add-trusted-cert`); Windows uses certutil
+// (`certutil -addstore Root`). Linux is a stub — see FUTURE_PLAN.md.
 
 // --- helpers ---
 

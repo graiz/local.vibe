@@ -77,6 +77,15 @@ type jobObjectBasicProcessIdList struct {
 
 // afterSpawn assigns the just-started child to a fresh Job Object so
 // TerminateJobObject can later kill the whole tree.
+//
+// Race note: cmd.Start() returns once the child is running, and we assign
+// to the job a few syscalls later. Anything the child spawns in that
+// (sub-millisecond) window escapes the job and won't be cleaned up by
+// TerminateJobObject. The clean fix is CREATE_SUSPENDED + AssignProcessToJobObject
+// + ResumeThread, but Go's os/exec doesn't expose ResumeThread without
+// reaching past the public API. For dev servers the tradeoff is fine —
+// they spawn at most a couple of compile/watcher children, and those almost
+// never spawn further descendants in the first millisecond.
 func afterSpawn(name string, cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return

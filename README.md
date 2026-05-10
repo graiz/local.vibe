@@ -1,6 +1,6 @@
 # local.vibe
 
-> `myapp.vibe` instead of `localhost:3000` — for every project on your Mac.
+> `myapp.vibe` instead of `localhost:3000` — for every project on your Mac or Windows box.
 
 <p align="center">
   <img src="docs/dashboard-grid.jpg" alt="local.vibe dashboard" width="820">
@@ -8,7 +8,7 @@
 
 Dev work drifts into a mess of `localhost:3000`, `localhost:5173`, `localhost:8080` tabs. Which port was the blog on again? **local.vibe** gives every local project a friendly `.vibe` hostname and puts start/stop controls in one dashboard at [https://local.vibe](https://local.vibe).
 
-macOS only. Single Go binary. No external services.
+macOS and Windows. Single Go binary. No external services.
 
 ## What you get
 
@@ -55,7 +55,7 @@ The script installs Go via winget if missing, builds the binary, copies it to `%
 - generates the local TLS CA + leaf cert and trusts it via `certutil -addstore Root`
 - adds netsh portproxy rules so 80→7999 and 443→7443
 - snapshots each adapter's pre-vibe DNS to `~/.vibe/dns-backup.json`, then repoints every connected adapter's primary DNS to 127.0.0.1 (the daemon embeds a tiny resolver that answers *.vibe locally and forwards everything else to whichever upstream answered first — your previous DNS server, falling back to 1.1.1.1 / 8.8.8.8 / 9.9.9.9)
-- registers a Scheduled Task `vibe` triggered on logon with `/rl HIGHEST` so the daemon autostarts elevated
+- registers a Scheduled Task `vibe` triggered on logon, running at your normal (medium) integrity level — the daemon's runtime needs are all unprivileged on Windows (binding low ports doesn't require admin, unlike POSIX), so dev servers and dashboard handlers don't inherit Administrator
 - when a managed route's port is held by another process, the dashboard shows the offender's PID + image name (via `tasklist`) and offers a one-click "Kill PID and Retry"
 
 `vibe uninstall` reverses every step and restores each adapter's DNS from the snapshot. Three safety layers ensure you never end up with a dead resolver: loopback (127.x.x.x) entries are stripped at snapshot time, again at restore time, and a final pass after restore force-resets to DHCP on any adapter still pointing at vibe's removed listener. Re-running `vibe setup` preserves the original backup rather than overwriting it with the post-setup state, so the very first pre-vibe configuration is what gets restored at uninstall.
@@ -97,7 +97,7 @@ vibe picks a free port starting at 3000 and passes it to your app via `$PORT`. T
 
 Switch between grid and list views (preference persists across restarts). Each row shows route type, port, uptime, and start/stop/edit controls. The modal editor supports custom emoji or auto-detected favicons; bookmark routes either redirect or reverse-proxy to any external URL — handy for Tailscale hosts or Home Assistant dashboards. Proxy mode keeps the `.vibe` name in the browser's URL bar, with an optional opt-in for self-signed upstream certs.
 
-When a managed route's process rebinds to a different port or exits, the daemon serves a "Reconnecting…" or "Not running" page instead of a dead proxy. It auto-discovers the new port via `lsof` and log-tail regex, and surfaces recovery hints (orphan PID, port-in-use) as one-click "Kill PID X and Retry" buttons.
+When a managed route's process rebinds to a different port or exits, the daemon serves a "Reconnecting…" or "Not running" page instead of a dead proxy. It auto-discovers the new port via `lsof` (macOS) or `netstat -ano` filtered by Job Object membership (Windows) plus log-tail regex, and surfaces recovery hints (orphan PID, port-in-use) as one-click "Kill PID X and Retry" buttons.
 
 ---
 
@@ -192,11 +192,12 @@ Port conflicts return `409` with the occupied port. Immediate process crashes in
 |------|---------|
 | `~/.vibe/routes.json` | Persisted routes (sticky, managed, bookmark) |
 | `~/.vibe/config.json` | Daemon config (port, TLD, dashboard view) |
-| `~/.vibe/certs/` | Local CA + leaf cert (trusted in Keychain) |
+| `~/.vibe/certs/` | Local CA + leaf cert (trusted in Keychain on macOS, Windows Root store via certutil on Windows) |
+| `~/.vibe/dns-backup.json` | Windows-only: pre-setup adapter DNS snapshot for clean uninstall |
 | `~/.vibe/daemon.log` | Daemon log |
 | `~/.vibe/{name}.log` | Per-route process logs (tailed on crash) |
 | `~/.vibe/daemon.pid` | Daemon PID |
-| `~/.vibe/vibe.sock` | Unix socket for CLI ↔ daemon |
+| `~/.vibe/vibe.sock` | Unix socket for CLI ↔ daemon (macOS; Windows falls back to TCP) |
 
 ### Agents & automation
 

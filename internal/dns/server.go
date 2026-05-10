@@ -121,13 +121,17 @@ func (s *Server) serve() {
 	for {
 		n, src, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
-			// net.ErrClosed happens on graceful Stop; anything else is logged
-			// to stderr and ends the loop. We don't have access to the
-			// daemon's logger here so stderr is the lowest-friction sink.
-			if !errors.Is(err, net.ErrClosed) {
-				fmt.Fprintf(os.Stderr, "dns: read error: %v\n", err)
+			// net.ErrClosed is the graceful-Stop signal — exit the loop.
+			// Anything else is logged and we keep serving: a single transient
+			// read error (ICMP-port-unreachable feedback, Windows WSAECONNRESET
+			// from a vanished client) shouldn't kill DNS for the whole
+			// machine. We don't have the daemon's logger here so stderr is
+			// the lowest-friction sink.
+			if errors.Is(err, net.ErrClosed) {
+				return
 			}
-			return
+			fmt.Fprintf(os.Stderr, "dns: read error: %v\n", err)
+			continue
 		}
 		go s.handle(append([]byte(nil), buf[:n]...), src)
 	}
@@ -232,14 +236,27 @@ func parseQuestion(msg []byte) (name string, qtype, qclass uint16, ok bool) {
 // buildLocalResponse synthesizes an A response with 127.0.0.1 (or an empty
 // NOERROR for AAAA) reusing the query's header and question section. We
 // flip QR, set RA, and append a single answer for typeA queries.
+//
+// Only the header + question section is echoed back — any additional records
+// in the original query (notably EDNS0 OPT pseudo-RRs that Windows DnsClient,
+// Chrome, and dig add by default) are dropped. Keeping them would leave the
+// response with ARCOUNT=0 in the header but OPT bytes still in the body,
+// which strict parsers consume as the "answer" record and miss our A record
+// at the end.
 func buildLocalResponse(query []byte, qtype uint16) []byte {
-	resp := make([]byte, len(query))
-	copy(resp, query)
+	end := questionEnd(query)
+	if end < 0 {
+		// Malformed query — handle() already gates on parseQuestion, so this
+		// path is unreachable in practice. Return SERVFAIL defensively.
+		return servfail(query)
+	}
+	resp := make([]byte, end)
+	copy(resp, query[:end])
 	flags := binary.BigEndian.Uint16(resp[2:4])
 	flags |= flagResponse | flagRecursionAvail
 	flags &^= 0x000F // clear RCODE
 	binary.BigEndian.PutUint16(resp[2:4], flags)
-	// QDCOUNT stays as-is; ANCOUNT/NSCOUNT/ARCOUNT get cleared first.
+	// QDCOUNT stays as-is; ANCOUNT/NSCOUNT/ARCOUNT cleared.
 	binary.BigEndian.PutUint16(resp[6:8], 0)
 	binary.BigEndian.PutUint16(resp[8:10], 0)
 	binary.BigEndian.PutUint16(resp[10:12], 0)

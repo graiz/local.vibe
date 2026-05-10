@@ -125,6 +125,80 @@ func TestServerAnswersVibeAQuery(t *testing.T) {
 	}
 }
 
+// TestServerAnswersVibeAQueryWithEDNS locks down the EDNS-handling fix in
+// buildLocalResponse: a query that includes an OPT pseudo-RR in its
+// additional section (which Windows DnsClient, Chrome, and dig all do by
+// default) must still produce a clean response where the A record is
+// reachable as the first and only answer.
+//
+// The original implementation copied the full query, cleared ARCOUNT, and
+// appended the A record at the end. That left the OPT bytes in the body,
+// so a strict parser walking ANCOUNT=1 would consume the OPT record as the
+// "answer" and miss our A record entirely.
+func TestServerAnswersVibeAQueryWithEDNS(t *testing.T) {
+	srv := startTestServer(t, Config{TLD: "vibe", Upstream: "127.0.0.1:1"})
+	resp := askUDP(t, srv.Listen(), buildQueryWithEDNS("foo.vibe", typeA))
+	if len(resp) < 12 {
+		t.Fatalf("response too short: %d bytes", len(resp))
+	}
+	flags := binary.BigEndian.Uint16(resp[2:4])
+	if flags&flagResponse == 0 {
+		t.Errorf("QR bit not set")
+	}
+	if rcode := flags & 0x000F; rcode != 0 {
+		t.Errorf("rcode = %d; want 0 (NOERROR)", rcode)
+	}
+	ancount := binary.BigEndian.Uint16(resp[6:8])
+	if ancount != 1 {
+		t.Fatalf("ANCOUNT = %d; want 1", ancount)
+	}
+	arcount := binary.BigEndian.Uint16(resp[10:12])
+	if arcount != 0 {
+		t.Errorf("ARCOUNT = %d; want 0 (no OPT echoed)", arcount)
+	}
+	// Walk the message: skip header + question, then verify the next bytes
+	// are our A answer (compression pointer 0xC00C + TYPE=A) — not an OPT
+	// record leaked from the query's additional section.
+	end := questionEnd(buildQueryWithEDNS("foo.vibe", typeA))
+	if end < 0 {
+		t.Fatalf("test bug: questionEnd returned -1")
+	}
+	if len(resp) < end+12 {
+		t.Fatalf("response missing answer section: len=%d, expected at least %d", len(resp), end+12)
+	}
+	// Answer should start with 0xC0 0x0C (pointer to QNAME at offset 12).
+	if resp[end] != 0xC0 || resp[end+1] != 0x0C {
+		t.Errorf("answer NAME = %x %x; want C0 0C (compression pointer)", resp[end], resp[end+1])
+	}
+	// TYPE=A.
+	if rtype := binary.BigEndian.Uint16(resp[end+2 : end+4]); rtype != typeA {
+		t.Errorf("answer TYPE = %d; want %d (A)", rtype, typeA)
+	}
+	// Last 4 bytes are RDATA: 127.0.0.1.
+	if got := resp[len(resp)-4:]; got[0] != 127 || got[1] != 0 || got[2] != 0 || got[3] != 1 {
+		t.Errorf("RDATA = %v; want 127.0.0.1", got)
+	}
+}
+
+// buildQueryWithEDNS builds a DNS query with an EDNS0 OPT pseudo-RR in the
+// additional section, mimicking what real-world resolvers send.
+func buildQueryWithEDNS(name string, qtype uint16) []byte {
+	q := buildQuery(name, qtype)
+	// Bump ARCOUNT in the header to claim one additional record.
+	binary.BigEndian.PutUint16(q[10:12], 1)
+	// Append an OPT pseudo-RR: NAME=. (root, 1 byte), TYPE=41 (OPT),
+	// CLASS=4096 (UDP payload size), TTL=0 (extended RCODE+version+flags),
+	// RDLENGTH=0 (no options).
+	opt := []byte{
+		0,          // root NAME
+		0x00, 0x29, // TYPE=41 (OPT)
+		0x10, 0x00, // CLASS = 4096 (UDP payload size)
+		0x00, 0x00, 0x00, 0x00, // TTL = extended-RCODE/version/flags
+		0x00, 0x00, // RDLENGTH = 0
+	}
+	return append(q, opt...)
+}
+
 func TestServerAAAAQueryReturnsEmpty(t *testing.T) {
 	srv := startTestServer(t, Config{TLD: "vibe", Upstream: "127.0.0.1:1"})
 	resp := askUDP(t, srv.Listen(), buildQuery("foo.vibe", typeAAAA))
