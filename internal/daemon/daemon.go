@@ -12,15 +12,14 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/cert"
 	"github.com/graiz/local.vibe/internal/config"
+	vdns "github.com/graiz/local.vibe/internal/dns"
 )
 
 // Server is the vibe daemon. It listens on a TCP port and a Unix socket,
@@ -45,6 +44,8 @@ type Server struct {
 	oauthBridgeMu        sync.Mutex
 	oauthBridgeServers   map[int]*http.Server
 	oauthBridgeListeners map[int]net.Listener
+
+	dnsServer *vdns.Server // nil unless cfg.Daemon.DNS.Enabled
 }
 
 // NewServer creates a daemon server with the given configuration.
@@ -102,6 +103,20 @@ func (s *Server) Start() error {
 		go s.startTLS(mux)
 	}
 
+	if s.cfg.Daemon.DNS.Enabled {
+		s.dnsServer = vdns.New(vdns.Config{
+			TLD:      s.cfg.Daemon.TLD,
+			Listen:   s.cfg.Daemon.DNS.Listen,
+			Upstream: s.cfg.Daemon.DNS.Upstream,
+		})
+		if err := s.dnsServer.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: DNS resolver failed to start (%v) — *.vibe lookups won't work until this is fixed\n", err)
+			s.dnsServer = nil
+		} else {
+			fmt.Printf("vibe daemon DNS on %s\n", s.dnsServer.Listen())
+		}
+	}
+
 	fmt.Printf("vibe daemon listening on 127.0.0.1:%d\n", s.cfg.Daemon.Port)
 
 	if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -120,10 +135,18 @@ func (s *Server) Stop() {
 		_ = s.httpsSrv.Shutdown(ctx)
 	}
 	s.stopOAuthBridgeListeners()
+	if s.dnsServer != nil {
+		s.dnsServer.Stop()
+	}
 	_ = os.Remove(s.cfg.Daemon.Socket)
 	_ = os.Remove(fmt.Sprintf("%s/daemon.pid", config.Dir()))
 }
 
+// startUnixSocket runs the same HTTP handler over a Unix domain socket so
+// the CLI can talk to the daemon without going through TCP. On Windows
+// net.Listen("unix", ...) fails (UDS support exists on recent Windows but
+// Go's stdlib doesn't expose it on this code path), and we fall through to
+// TCP-only — the warning is logged but the daemon still starts.
 func (s *Server) startUnixSocket(handler http.Handler) {
 	if err := os.Remove(s.cfg.Daemon.Socket); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "warning: could not remove stale socket: %v\n", err)
@@ -296,10 +319,12 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 	s.serveDashboard(w, r)
 }
 
-// safeKillPID sends SIGTERM to an arbitrary PID on behalf of a user-confirmed
-// recovery action. Refuses to signal pid ≤ 1, the daemon itself, or any PID
-// the daemon already manages — those should be stopped via the route's Stop
-// handler instead so ProcessManager state stays consistent.
+// safeKillPID sends a termination signal to an arbitrary PID on behalf of
+// a user-confirmed recovery action. Refuses to signal pid ≤ 1, the daemon
+// itself, or any PID the daemon already manages — those should be stopped
+// via the route's Stop handler instead so ProcessManager state stays
+// consistent. The actual signalling lives in daemon_<goos>.go: SIGTERM on
+// unix, TerminateProcess on Windows (no graceful equivalent exists).
 func (s *Server) safeKillPID(pid int) error {
 	if pid <= 1 {
 		return fmt.Errorf("invalid pid")
@@ -310,68 +335,29 @@ func (s *Server) safeKillPID(pid int) error {
 	if s.procs.OwnsPID(pid) {
 		return fmt.Errorf("pid is a managed vibe route; stop the route instead")
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	if !processAlive(pid) {
 		return fmt.Errorf("process not found")
 	}
-	return proc.Signal(syscall.SIGTERM)
+	return terminateProcess(pid)
 }
 
+// killPort terminates every process listening on the given TCP port. Used
+// by the recovery flow to clear an EADDRINUSE before retrying a managed
+// route's start. The PID-discovery and signal calls live in per-OS files.
 func (s *Server) killPort(port int) {
-	// Use lsof to find the PID holding the port, then SIGTERM it.
-	out, err := exec.Command("lsof", "-ti", fmt.Sprintf("tcp:%d", port)).Output()
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		var pid int
-		if _, err := fmt.Sscan(line, &pid); err == nil && pid > 0 {
-			if p, err := os.FindProcess(pid); err == nil {
-				_ = p.Signal(syscall.SIGTERM)
-			}
-		}
+	for _, pid := range findPortHoldersFn(port) {
+		_ = terminateProcess(pid)
 	}
 }
 
-// findPortHolders runs `lsof -ti tcp:PORT` and returns the listening PIDs.
-// Returns nil on lsof error or when no process is bound to the port.
+// findPortHoldersFn returns the listening PIDs on a TCP port. The default
+// implementation is per-OS (lsof on unix, netstat on Windows). Tests swap
+// this var to inject deterministic results.
 var findPortHoldersFn = findPortHoldersDefault
 
-func findPortHoldersDefault(port int) []int {
-	out, err := exec.Command("lsof", "-ti", fmt.Sprintf("tcp:%d", port)).Output()
-	if err != nil {
-		return nil
-	}
-	var pids []int
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		var pid int
-		if _, err := fmt.Sscan(line, &pid); err == nil && pid > 0 {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
-// pidCommand returns a short command name for a pid via `ps -p PID -o comm=`.
-// Best-effort: returns "" on error or empty output.
+// pidCommandFn returns a short command name for a pid. Per-OS default
+// implementations live in daemon_<goos>.go.
 var pidCommandFn = pidCommandDefault
-
-func pidCommandDefault(pid int) string {
-	out, err := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "comm=").Output()
-	if err != nil {
-		return ""
-	}
-	cmd := strings.TrimSpace(string(out))
-	// `ps -o comm=` returns the full path on macOS; trim to the basename for
-	// readability in the recovery message.
-	if i := strings.LastIndex(cmd, "/"); i >= 0 {
-		cmd = cmd[i+1:]
-	}
-	return cmd
-}
 
 // buildPortConflictRecovery builds a Recovery hint for a "port already in use"
 // situation by inspecting which process is holding the port. Filters out the

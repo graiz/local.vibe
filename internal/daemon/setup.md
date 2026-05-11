@@ -160,6 +160,15 @@ Or via CLI (with auto-assigned port):
 
 ## Command Tips
 
+### macOS
+
 - Use `python3` not `python` (macOS has no `python` by default)
 - For virtualenvs: `".venv/bin/python app.py"` or `"source .venv/bin/activate && python app.py"`
-- Node.js with nvm/fnm just works — vibe sources your .zshrc
+- Node.js with nvm/fnm just works — vibe spawns `$SHELL -lic` so your `.zshrc` is sourced
+
+### Windows
+
+- Vibe spawns commands via `cmd.exe /C`, not your interactive shell — your PATH must include the tools you reference (PowerShell `$PROFILE` and shell aliases are not loaded)
+- For virtualenvs: `".venv\\Scripts\\python.exe app.py"` (note the `Scripts` directory, not `bin`)
+- nvm-windows: the active Node version's directory must be on system PATH (it usually is after `nvm use`); `cmd /C` won't run your PowerShell init
+- Use forward slashes or escaped backslashes in JSON paths — `"cmd": "C:\\path\\to\\app.exe"` or `"cmd": "C:/path/to/app.exe"`

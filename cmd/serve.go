@@ -16,6 +16,14 @@ var serveCmd = &cobra.Command{
 	Short:  "Run the daemon in the foreground",
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// On Windows, hide any inherited console window. Scheduled Tasks
+		// (and `vibe daemon start` fork-fallback) launch vibe.exe as a
+		// console app, which by default pops a black cmd-style window. The
+		// daemon writes to a log file and never reads stdin, so detaching
+		// from the console is fully invisible to users. No-op on macOS /
+		// Linux (handled by per-OS file).
+		hideConsoleOnDaemonStart()
+
 		cfg, err := config.Load()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: config error (%v), using defaults\n", err)

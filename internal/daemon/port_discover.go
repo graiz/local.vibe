@@ -1,23 +1,24 @@
 package daemon
 
 import (
-	"bufio"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // discoverRoutePort tries to locate the real listening port for a route
 // whose registered Port no longer accepts connections. Two strategies, in
 // order:
 //
-//  1. lsof on the route's process group (managed routes whose original
+//  1. Inspect the route's process group (managed routes whose original
 //     child is still alive but whose app rebound to a different port).
+//     Implementation lives in port_discover_<goos>.go because the unix
+//     approach uses lsof and process groups, while Windows (Phase 2)
+//     enumerates a Job Object and parses netstat.
 //  2. Regex-scan the tail of the per-route log file (works even when the
 //     tracked PID is gone, as long as vibe's log is still being written).
+//     This step is portable and stays here.
 //
 // A candidate is returned only if it differs from route.Port AND a TCP
 // dial to 127.0.0.1 or [::1] on that port succeeds.
@@ -28,87 +29,6 @@ func (s *Server) discoverRoutePort(route *Route) (int, bool) {
 	logPath := filepath.Join(s.configDir(), route.Name+".log")
 	if p, ok := portFromLog(logPath); ok && p != route.Port && s.isPortReady(p) {
 		return p, true
-	}
-	return 0, false
-}
-
-// portFromProcessGroup returns the first listening TCP port owned by any
-// process in the route's process group.
-func portFromProcessGroup(route *Route) (int, bool) {
-	pid, ok := route.PIDValue()
-	if !ok || !processAlive(pid) {
-		return 0, false
-	}
-	pids := []int{pid}
-	if pgid, err := syscall.Getpgid(pid); err == nil {
-		if group, err := pidsInGroup(pgid); err == nil && len(group) > 0 {
-			pids = group
-		}
-	}
-	return lsofListenPort(pids)
-}
-
-// pidsInGroup returns all process IDs whose process group matches pgid,
-// via `ps -A -o pid=,pgid=`. Works on macOS and Linux.
-func pidsInGroup(pgid int) ([]int, error) {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,pgid=").Output()
-	if err != nil {
-		return nil, err
-	}
-	var pids []int
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 2 {
-			continue
-		}
-		pid, err1 := strconv.Atoi(fields[0])
-		gid, err2 := strconv.Atoi(fields[1])
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		if gid == pgid {
-			pids = append(pids, pid)
-		}
-	}
-	return pids, nil
-}
-
-// lsofListenPort invokes `lsof -iTCP -sTCP:LISTEN -P -n -p <csv>` for the
-// given PIDs and returns the first listening TCP port.
-func lsofListenPort(pids []int) (int, bool) {
-	if len(pids) == 0 {
-		return 0, false
-	}
-	ids := make([]string, len(pids))
-	for i, p := range pids {
-		ids[i] = strconv.Itoa(p)
-	}
-	out, err := exec.Command("lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-p", strings.Join(ids, ",")).Output()
-	if err != nil {
-		// lsof exits non-zero when there are no matching sockets — that's a
-		// legitimate "no listener yet" case, not an error we should propagate.
-		return 0, false
-	}
-	return parseLsofListenPort(string(out))
-}
-
-// lsofPortRE matches the "NAME" column of lsof output for listening
-// sockets: "127.0.0.1:3001 (LISTEN)" or "[::1]:3001 (LISTEN)" or
-// "*:3001 (LISTEN)".
-var lsofPortRE = regexp.MustCompile(`:(\d{2,5})\s*\(LISTEN\)`)
-
-func parseLsofListenPort(out string) (int, bool) {
-	for _, line := range strings.Split(out, "\n") {
-		m := lsofPortRE.FindStringSubmatch(line)
-		if len(m) < 2 {
-			continue
-		}
-		n, err := strconv.Atoi(m[1])
-		if err != nil || n <= 0 || n > 65535 {
-			continue
-		}
-		return n, true
 	}
 	return 0, false
 }
@@ -155,6 +75,27 @@ func scanLogForPort(tail string) (int, bool) {
 			}
 			return n, true
 		}
+	}
+	return 0, false
+}
+
+// lsofPortRE matches the "NAME" column of lsof output for listening
+// sockets: "127.0.0.1:3001 (LISTEN)" or "[::1]:3001 (LISTEN)" or
+// "*:3001 (LISTEN)". Used by the unix portFromProcessGroup; kept here
+// because parseLsofListenPort is shared by tests on all platforms.
+var lsofPortRE = regexp.MustCompile(`:(\d{2,5})\s*\(LISTEN\)`)
+
+func parseLsofListenPort(out string) (int, bool) {
+	for _, line := range strings.Split(out, "\n") {
+		m := lsofPortRE.FindStringSubmatch(line)
+		if len(m) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n <= 0 || n > 65535 {
+			continue
+		}
+		return n, true
 	}
 	return 0, false
 }

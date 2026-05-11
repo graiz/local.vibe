@@ -2,11 +2,15 @@ package cert
 
 import (
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,8 +39,13 @@ func TestEnsureCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ca-key.pem not found: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("ca-key.pem permissions: got %o, want 0600", perm)
+	// Windows (NTFS) doesn't store unix mode bits — Go's os layer reports
+	// 0666 regardless of what we passed to WriteFile. Skip on Windows; the
+	// real ACL story there is a Phase 2 concern.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("ca-key.pem permissions: got %o, want 0600", perm)
+		}
 	}
 
 	// Calling again should return the same CA (idempotent)
@@ -101,8 +110,10 @@ func TestEnsureLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vibe-key.pem not found: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("vibe-key.pem permissions: got %o, want 0600", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("vibe-key.pem permissions: got %o, want 0600", perm)
+		}
 	}
 
 	// Validity should be ~825 days
@@ -255,6 +266,48 @@ func TestGenerateLeaf(t *testing.T) {
 	if leaf1.SerialNumber.Cmp(leaf2.SerialNumber) == 0 {
 		t.Error("GenerateLeaf should always create a new cert")
 	}
+}
+
+func TestCAThumbprint(t *testing.T) {
+	dir := t.TempDir()
+	ca, _, err := EnsureCA(dir)
+	if err != nil {
+		t.Fatalf("EnsureCA: %v", err)
+	}
+
+	thumb, err := CAThumbprint(dir)
+	if err != nil {
+		t.Fatalf("CAThumbprint: %v", err)
+	}
+
+	// Compute expected: SHA1 of cert.Raw, uppercase hex.
+	want := strings.ToUpper(hex.EncodeToString(sha1Sum(ca.Raw)))
+	if thumb != want {
+		t.Errorf("thumbprint = %q; want %q", thumb, want)
+	}
+
+	// Format invariants — certutil expects 40 hex chars, no separators.
+	if len(thumb) != 40 {
+		t.Errorf("thumbprint length = %d; want 40", len(thumb))
+	}
+	if thumb != strings.ToUpper(thumb) {
+		t.Errorf("thumbprint should be uppercase, got %q", thumb)
+	}
+	if strings.ContainsAny(thumb, " :-") {
+		t.Errorf("thumbprint should not contain separators, got %q", thumb)
+	}
+}
+
+func TestCAThumbprintMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := CAThumbprint(dir); err == nil {
+		t.Error("expected error when ca.pem doesn't exist")
+	}
+}
+
+func sha1Sum(data []byte) []byte {
+	sum := sha1.Sum(data)
+	return sum[:]
 }
 
 func TestCoversAll(t *testing.T) {

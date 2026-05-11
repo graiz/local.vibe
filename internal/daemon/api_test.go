@@ -1,3 +1,9 @@
+//go:build !windows
+
+// Phase 1 of Windows support: this test file uses syscall.SysProcAttr.Setpgid
+// and syscall.Kill, which don't exist on Windows. The tests themselves are
+// useful and will be split into Windows-compatible variants in Phase 2.
+
 package daemon
 
 import (
@@ -14,22 +20,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/graiz/local.vibe/internal/config"
 )
 
-func testServer() *Server {
-	cfg := &config.Config{
-		Daemon: config.DaemonConfig{
-			Port: 0,
-			TLD:  "test",
-		},
-	}
-	s := NewServer(cfg)
-	// Use a temp dir so tests never clobber the real ~/.vibe/routes.json.
-	s.ConfigDir = os.TempDir()
-	return s
-}
+// testServer is defined in test_helpers_test.go so it stays visible on
+// Windows builds, where this file is excluded by build tag.
 
 func TestAPIRegisterAndList(t *testing.T) {
 	s := testServer()

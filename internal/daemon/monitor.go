@@ -1,19 +1,11 @@
 package daemon
 
 import (
-	"os"
-	"syscall"
 	"time"
 )
 
-// processAlive checks if a process with the given PID is still running.
-func processAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
-}
+// processAlive lives in process_alive_{unix,windows}.go — the implementation
+// differs by GOOS, but the signature is shared.
 
 // monitorRoutes runs a periodic sweep that removes stale routes:
 // PID-tracked routes whose process has exited, and TTL routes that have expired.

@@ -21,12 +21,24 @@ type DaemonConfig struct {
 	Mode             string    `json:"mode"`
 	PIDCheckInterval int       `json:"pid_check_interval"`
 	TLS              TLSConfig `json:"tls"`
+	DNS              DNSConfig `json:"dns"`
 }
 
 type TLSConfig struct {
 	Enabled  bool   `json:"enabled"`
 	Port     int    `json:"port"`
 	CertsDir string `json:"certs_dir"`
+}
+
+// DNSConfig controls the embedded DNS resolver. Used on platforms that lack
+// a native per-domain resolver hook (currently Windows). On macOS the
+// /etc/resolver/vibe entry handles routing without us listening on :53, so
+// Enabled defaults to false everywhere — `vibe setup` flips it to true on
+// Windows.
+type DNSConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Listen   string `json:"listen"`   // default 127.0.0.1:53
+	Upstream string `json:"upstream"` // default 8.8.8.8:53
 }
 
 type DashboardConfig struct {
@@ -55,6 +67,11 @@ func DefaultConfig() *Config {
 				Enabled:  false,
 				Port:     7443,
 				CertsDir: filepath.Join(dir, "certs"),
+			},
+			DNS: DNSConfig{
+				Enabled:  false,
+				Listen:   "127.0.0.1:53",
+				Upstream: "8.8.8.8:53",
 			},
 		},
 		Dashboard: DashboardConfig{

@@ -4,15 +4,17 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -173,6 +175,25 @@ func coversAll(cert *x509.Certificate, hostnames []string) bool {
 	return true
 }
 
+// CAThumbprint returns the SHA1 thumbprint of the CA cert at certsDir/ca.pem
+// formatted as uppercase hex with no separators — the form `certutil -delstore`
+// accepts as a unique identifier on Windows. Used at uninstall time to delete
+// the exact cert we installed, instead of matching by Subject CN (which can
+// collide with unrelated certs sharing "local.vibe CA" as their name).
+//
+// Cross-platform helper — the SHA1 calculation is the same everywhere; only
+// the consumer (Windows certutil) is OS-specific. SHA1 is the established
+// thumbprint algorithm in every cert store API; collision resistance isn't
+// the property being relied on here, identity-as-a-key is.
+func CAThumbprint(certsDir string) (string, error) {
+	cert, err := loadCert(filepath.Join(certsDir, "ca.pem"))
+	if err != nil {
+		return "", err
+	}
+	sum := sha1.Sum(cert.Raw)
+	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
+}
+
 // LoadTLSConfig returns a tls.Config loaded from the given cert and key files.
 func LoadTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
@@ -184,28 +205,10 @@ func LoadTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 	}, nil
 }
 
-// TrustCA installs the CA certificate into the macOS System Keychain.
-// Requires root privileges.
-func TrustCA(certsDir string) error {
-	certPath := filepath.Join(certsDir, "ca.pem")
-
-	// Check if already trusted
-	out, err := exec.Command("security", "find-certificate", "-c", "local.vibe CA", "/Library/Keychains/System.keychain").CombinedOutput()
-	if err == nil && len(out) > 0 {
-		// Already trusted — remove old one first so we can update
-		_ = exec.Command("security", "delete-certificate", "-c", "local.vibe CA", "/Library/Keychains/System.keychain").Run()
-	}
-
-	cmd := exec.Command("security", "add-trusted-cert",
-		"-d", "-r", "trustRoot",
-		"-k", "/Library/Keychains/System.keychain",
-		certPath,
-	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("trust CA: %w — %s", err, string(output))
-	}
-	return nil
-}
+// TrustCA installs the CA certificate into the OS-level trust store.
+// Implementation lives in cert_<goos>.go. Requires elevated privileges.
+// macOS uses Keychain (`security add-trusted-cert`); Windows uses certutil
+// (`certutil -addstore Root`). Linux is a stub — see FUTURE_PLAN.md.
 
 // --- helpers ---
 

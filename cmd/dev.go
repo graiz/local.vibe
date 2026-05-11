@@ -37,38 +37,28 @@ var devCmd = &cobra.Command{
 
 		binary, err := exec.LookPath("vibe")
 		if err != nil {
-			binary = "/opt/homebrew/bin/vibe"
+			binary = defaultVibeInstallPath()
 		}
 
 		fmt.Printf("building from %s...\n", srcDir)
-		// Build to a temp file first, then move into place. Building directly
-		// to the running binary path can SIGKILL the current process on macOS.
-		tmpBin := binary + ".tmp"
-		build := exec.Command("go", "build", "-o", tmpBin, ".")
-		build.Dir = srcDir
-		build.Stdout = os.Stdout
-		build.Stderr = os.Stderr
-		if err := build.Run(); err != nil {
-			os.Remove(tmpBin)
-			return fmt.Errorf("build failed: %w", err)
-		}
-		if err := os.Rename(tmpBin, binary); err != nil {
-			os.Remove(tmpBin)
-			return fmt.Errorf("install failed: %w", err)
+		if err := replaceVibeBinary(srcDir, binary); err != nil {
+			return err
 		}
 		fmt.Println("build ok")
 
-		// Kill the running daemon — LaunchAgent will restart with the new binary.
-		pid, err := readDaemonPID()
-		if err == nil && pid > 0 {
-			if p, err := os.FindProcess(pid); err == nil {
-				_ = p.Signal(os.Kill)
-			}
+		// Restart the daemon. On macOS the LaunchAgent KeepAlive will revive
+		// it automatically once we kill the old PID; on Windows we have to
+		// explicitly schtasks /run (or fork) since the Scheduled Task is
+		// OnLogon-only. restartDaemonForDev encapsulates the platform pick.
+		if err := restartDaemonForDev(); err != nil {
+			fmt.Fprintf(os.Stderr, "daemon restart: %v\n", err)
 		}
 
-		// Wait for new daemon to come up.
-		time.Sleep(1 * time.Second)
-		if isDaemonRunning() {
+		// Wait for the daemon to actually answer HTTP before declaring
+		// success. schtasks /run on Windows can take a few seconds to
+		// launch the elevated process, and even on macOS LaunchAgent's
+		// KeepAlive respawn isn't instant — a flat 1s sleep was racy.
+		if waitForDaemonReady(8 * time.Second) {
 			pid, _ := readDaemonPID()
 			fmt.Printf("daemon restarted (pid %d)\n", pid)
 		} else {

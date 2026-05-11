@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/spf13/cobra"
 )
@@ -29,28 +28,17 @@ var installCmd = &cobra.Command{
 			return nil
 		}
 
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			return fmt.Errorf("create install dir %s: %w", filepath.Dir(dest), err)
+		}
+
 		if err := copyFile(self, dest); err != nil {
-			return fmt.Errorf("install to %s: %w\n(try: sudo vibe install)", dest, err)
+			return fmt.Errorf("install to %s: %w\n(try running with elevated privileges)", dest, err)
 		}
 
 		fmt.Printf("installed → %s\n", dest)
 		return nil
 	},
-}
-
-func installDestination() string {
-	switch runtime.GOOS {
-	case "darwin":
-		// Prefer Homebrew bin (writable without sudo); fall back to /usr/local/bin
-		for _, p := range []string{"/opt/homebrew/bin", "/usr/local/bin"} {
-			if _, err := os.Stat(p); err == nil {
-				return filepath.Join(p, "vibe")
-			}
-		}
-	case "linux":
-		return "/usr/local/bin/vibe"
-	}
-	return "/usr/local/bin/vibe"
 }
 
 func copyFile(src, dst string) error {
