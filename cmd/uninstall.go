@@ -11,9 +11,10 @@ var uninstallCmd = &cobra.Command{
 
   macOS:    pf LaunchDaemon, dnsmasq config, /etc/resolver/vibe, LaunchAgent,
             and the trusted CA in your Keychain
+  Linux:    systemd-resolved drop-in, nftables ruleset + vibe-nft.service,
+            user vibe.service, and the trusted CA from the system store + NSS
   Windows:  netsh portproxy rules, adapter DNS reset to DHCP, the vibe
             Scheduled Task, and the trusted CA in the system root store
-  Linux:    not yet implemented
 
 The vibe binary itself is left in place — delete it manually if you want
 a fully clean machine.`,

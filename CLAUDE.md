@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 local.vibe — a local DNS daemon that gives dev servers friendly `.vibe` names. CLI binary is `vibe` (`vibe.exe` on Windows). Single Go binary, minimal dependencies (only Cobra + `golang.org/x/sys` for Windows syscalls; rest is stdlib).
 
-Supports macOS and Windows. Linux is stubbed out behind build tags but not wired up — see `FUTURE_PLAN.md`.
+Supports macOS, Linux (systemd-based distros), and Windows. Linux setup uses systemd-resolved for DNS, nftables for port forwarding, and a user systemd unit for autostart — see `cmd/setup_linux.go`.
 
 ## Workflow
 
@@ -32,6 +32,8 @@ The daemon runs a compiled binary, not source — changes aren't picked up until
 ## Architecture
 
 **Request flow (macOS):** Browser → dnsmasq (*.vibe → 127.0.0.1) → pf (443 → 7443, 80 → 7999) → daemon (HTTPS or HTTP) → reverse proxy → app on target port.
+
+**Request flow (Linux):** Browser → systemd-resolved per-domain DNS (`Domains=~vibe` → 127.0.0.1) → nftables `output` chain redirect (80→7999, 443→7443) → daemon → reverse proxy → app. The nft ruleset is loaded at boot by a one-shot `vibe-nft.service`; the daemon itself runs unprivileged as a `--user` unit (`~/.config/systemd/user/vibe.service`).
 
 **Request flow (Windows):** Browser → adapter DNS (set to 127.0.0.1) → embedded Go DNS resolver on `:53` (synthesizes A=127.0.0.1 for `*.vibe`, forwards everything else to upstream) → netsh portproxy (80→7999, 443→7443) → daemon → reverse proxy → app.
 
@@ -63,7 +65,7 @@ Bookmark routes either redirect (307) to an external URL or reverse-proxy to it 
 
 **DNS resolver** (`internal/dns/`) — Tiny UDP DNS server used on Windows (where there's no `/etc/resolver/` equivalent). Synthesizes `A=127.0.0.1` / empty AAAA for `*.<TLD>`; forwards everything else to upstream. Started by the daemon when `cfg.Daemon.DNS.Enabled`. Listens on 127.0.0.1:53. Off by default everywhere except Windows (set true by `vibe setup` on Windows). Has a fuzz test on the question-section parser.
 
-**Cert** (`internal/cert/`) — Generates local ECDSA CA + leaf certs using Go stdlib. Per-OS trust install in `cert_<goos>.go`: macOS uses `security add-trusted-cert` into Keychain; Windows uses `certutil -addstore Root`. Leaf certs use explicit SANs per route (Chrome rejects `*.vibe` wildcards). `CAThumbprint` returns the SHA1 hex used by `certutil -delstore` for precise removal at uninstall (CN match would clobber unrelated certs sharing "local.vibe CA" as their name).
+**Cert** (`internal/cert/`) — Generates local ECDSA CA + leaf certs using Go stdlib. Per-OS trust install in `cert_<goos>.go`: macOS uses `security add-trusted-cert` into Keychain; Windows uses `certutil -addstore Root`; Linux probes for `update-ca-certificates` (Debian/Ubuntu) → `update-ca-trust` (Fedora/Arch) → p11-kit's `trust anchor --store` and also installs into the user's NSS db (`~/.pki/nssdb`) via `certutil` so Chromium-family browsers accept the cert without per-profile work. Firefox is documented separately (`security.enterprise_roots.enabled`). Leaf certs use explicit SANs per route (Chrome rejects `*.vibe` wildcards). `CAThumbprint` returns the SHA1 hex used by `certutil -delstore` for precise removal at uninstall (CN match would clobber unrelated certs sharing "local.vibe CA" as their name).
 
 **winutil** (`internal/winutil/`, Windows only) — Small helpers shared between `cmd/` and `internal/daemon/`. `Sys32(name)` resolves a System32-shipped tool to its absolute path (never falls back to PATH lookup — a privilege-escalation surface during elevated setup). `PowerShellJSON(script)` runs Windows PowerShell with `-NoProfile -ExecutionPolicy Bypass` and returns stdout — used to talk to locale-invariant cmdlets (`Get-DnsClientServerAddress`, `Get-NetAdapter`) instead of screen-scraping localized netsh output. `TaskImageName(pid)` parses `tasklist /FO CSV` to recover an executable name for a PID.
 

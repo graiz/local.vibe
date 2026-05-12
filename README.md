@@ -1,6 +1,6 @@
 # local.vibe
 
-> `myapp.vibe` instead of `localhost:3000` — for every project on your Mac or Windows box.
+> `myapp.vibe` instead of `localhost:3000` — for every project on your Mac, Linux, or Windows box.
 
 <p align="center">
   <img src="docs/dashboard-grid.jpg" alt="local.vibe dashboard" width="820">
@@ -8,7 +8,7 @@
 
 Dev work drifts into a mess of `localhost:3000`, `localhost:5173`, `localhost:8080` tabs. Which port was the blog on again? **local.vibe** gives every local project a friendly `.vibe` hostname and puts start/stop controls in one dashboard at [https://local.vibe](https://local.vibe).
 
-macOS and Windows. Single Go binary. No external services.
+macOS, Linux (systemd-based distros), and Windows. Single Go binary. No external services.
 
 ## What you get
 
@@ -69,7 +69,28 @@ netsh interface ipv4 set dnsservers name="Wi-Fi" dhcp
 
 ### Linux
 
-Linux support is documented but not yet automated. Run `./setup.sh` for now and follow the printed instructions, or wait for the dedicated Linux branch.
+Tested on Arch, Fedora, Debian/Ubuntu — anything with systemd, systemd-resolved, and nftables.
+
+```bash
+git clone https://github.com/graiz/local.vibe.git
+cd local.vibe
+go build -o vibe . && sudo install -m 0755 vibe /usr/local/bin/vibe
+sudo vibe setup
+```
+
+`sudo vibe setup` does the equivalent of the macOS path: writes a systemd-resolved drop-in (`/etc/systemd/resolved.conf.d/vibe.conf`) routing `.vibe` queries to 127.0.0.1, installs an nftables ruleset (`/etc/nftables.d/vibe.nft`) plus a one-shot `vibe-nft.service` that loads it on boot (so 80→7999 / 443→7443 reapply across reboots), generates the local CA + leaf cert, installs the CA into the system trust store (`update-ca-certificates` / `update-ca-trust` / p11-kit `trust`, whichever your distro ships), installs the CA into your user NSS database (`~/.pki/nssdb`) so Chrome/Chromium accept it, and installs a `vibe.service` user unit (`~/.config/systemd/user/vibe.service`) enabled via `systemctl --user`.
+
+`sudo vibe uninstall` reverses every step.
+
+**If `*.vibe` doesn't resolve in your browser:** check that `/etc/resolv.conf` is wired up to systemd-resolved's stub. Per-domain DNS routing requires it.
+
+```bash
+sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+```
+
+**Firefox:** Firefox uses NSS, not the system root store. Open `about:config` and set `security.enterprise_roots.enabled` to `true` — Firefox will then read the system root and trust the local CA. (Same flag works on macOS and Windows.)
+
+**Autostart at boot when not logged in:** `systemctl --user enable` runs the daemon at *login*, not at *boot*. If you want vibe up before you log in (e.g. on a headless box), run `loginctl enable-linger $USER` once.
 
 ## Your first app
 
