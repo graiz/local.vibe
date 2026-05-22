@@ -187,14 +187,15 @@ func installPFLaunchDaemon() error {
 </plist>
 `
 	existing, _ := os.ReadFile(launchDaemonPlist)
-	if string(existing) == plist {
-		// Already installed — reload to apply immediately
-		_ = exec.Command("launchctl", "unload", launchDaemonPlist).Run()
-	} else {
+	if string(existing) != plist {
 		if err := os.WriteFile(launchDaemonPlist, []byte(plist), 0644); err != nil {
 			return fmt.Errorf("write plist: %w", err)
 		}
 	}
+	// launchctl load against an already-loaded label silently no-ops, so any
+	// updated plist content wouldn't activate until reboot. Unload unconditionally
+	// first (ignore error: not-loaded is fine) so the new content takes effect now.
+	_ = exec.Command("launchctl", "unload", launchDaemonPlist).Run()
 	out, err := exec.Command("launchctl", "load", "-w", launchDaemonPlist).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl load: %w — %s", err, strings.TrimSpace(string(out)))
