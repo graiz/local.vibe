@@ -12,7 +12,10 @@ import (
 )
 
 func TestProcessStartEarlyCrashDetection(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel: depends on the 1-second early-exit window in
+	// ProcessManager.Start. Under heavy parallel test load the cmd.Wait()
+	// goroutine can miss its scheduling slice and the timer wins, masking
+	// the immediate-exit signal we're asserting on.
 	pm := NewProcessManager()
 
 	route := &Route{

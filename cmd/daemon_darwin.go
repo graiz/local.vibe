@@ -65,9 +65,16 @@ func forkDaemon() error {
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 	logFile.Close()
-	for i := 0; i < 10; i++ {
+	// isDaemonRunning flips true as soon as the pidfile lands, which happens
+	// before the HTTP listener is bound. Gate on an actual /_api/health response
+	// so callers don't race the listener.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
-		if isDaemonRunning() {
+		if !isDaemonRunning() {
+			continue
+		}
+		if daemonHTTPResponding() {
 			fmt.Printf("daemon started (pid %d)\n", proc.Process.Pid)
 			fmt.Printf("log: %s\n", logPath)
 			openDashboard()
