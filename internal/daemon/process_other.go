@@ -31,3 +31,9 @@ func killProcessTree(name string, cmd *exec.Cmd) error {
 	}
 	return cmd.Process.Kill()
 }
+
+// killAdoptedProcess terminates a re-adopted managed child by PID. No process
+// group on this generic build (Setpgid is skipped), so it's a single-PID kill.
+func killAdoptedProcess(pid int) error {
+	return terminateProcess(pid)
+}
