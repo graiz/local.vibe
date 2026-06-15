@@ -570,7 +570,12 @@ func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name s
 		return
 	}
 	if route.Type == RouteManaged {
-		_ = s.procs.Stop(name)
+		// Stop handles both spawned and re-adopted children. Fall back to
+		// killing whatever holds the port (mirrors handleStop) so a route the
+		// daemon couldn't track cleanly still releases its port on removal.
+		if err := s.procs.Stop(name); err != nil {
+			s.killPort(route.Port)
+		}
 	}
 	s.table.Remove(name)
 	if err := s.reconcileOAuthBridgeListeners(); err != nil {
@@ -801,6 +806,9 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 	route.Ready.Store(false)
 	route.SetFailure(nil)
 	route.TouchActivity()
+	// Persist the PID so a daemon restart can re-adopt this child instead of
+	// reporting the route as stopped.
+	_ = s.saveStickyRoutes()
 	go s.waitForReady(route)
 
 	// If request came from browser form, redirect back to the app.
@@ -869,10 +877,12 @@ func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name strin
 			"port":   route.Port,
 			"reason": "could not locate a listening port for this route",
 		}
-		// Offer a restart affordance when the managed child is gone.
+		// Offer a restart affordance when the managed child is gone — but not
+		// while an on-demand start is in flight, where the process simply
+		// hasn't bound its port yet and the page should keep polling.
 		if route.Type == RouteManaged {
 			pid, hasPID := route.PIDValue()
-			if !hasPID || !processAlive(pid) {
+			if (!hasPID || !processAlive(pid)) && !s.isAutoStarting(route.Name) {
 				resp["restartable"] = true
 			}
 		}
@@ -896,7 +906,7 @@ func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name strin
 			}
 			if route.Type == RouteManaged {
 				pid, hasPID := route.PIDValue()
-				if !hasPID || !processAlive(pid) {
+				if (!hasPID || !processAlive(pid)) && !s.isAutoStarting(route.Name) {
 					resp["restartable"] = true
 				}
 			}

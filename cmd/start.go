@@ -51,8 +51,11 @@ Full guide: curl http://localhost:7999/setup.md`,
 	DisableFlagParsing: false,
 	SilenceUsage:       true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Split args at "--" to separate vibe args from the app command
-		vibeArgs, appCmd := splitAtDash(args)
+		// Split args at "--" to separate vibe args from the app command.
+		// Cobra strips the literal "--" before RunE runs (flag parsing is on)
+		// and records its position via ArgsLenAtDash(), so we can't scan args
+		// for "--" ourselves — it's already gone by the time we get here.
+		vibeArgs, appCmd := splitAtDash(args, cmd.ArgsLenAtDash())
 
 		switch {
 		case len(vibeArgs) == 0 && len(appCmd) == 0:
@@ -143,14 +146,17 @@ func startNew(name string, port int, command string, oauthCallbackPort int, rese
 	return nil
 }
 
-// splitAtDash splits args into the portion before "--" and after "--".
-func splitAtDash(args []string) (before, after []string) {
-	for i, a := range args {
-		if a == "--" {
-			return args[:i], args[i+1:]
-		}
+// splitAtDash splits cobra's positional args into the portion before "--"
+// and the portion after it. cobra removes the literal "--" from args and
+// reports its index via cmd.ArgsLenAtDash() (which dashPos carries here):
+// dashPos is the number of args that preceded "--", or -1 when no "--" was
+// given. With dashPos in hand the split is just a slice — no scanning for a
+// "--" token that cobra has already consumed.
+func splitAtDash(args []string, dashPos int) (before, after []string) {
+	if dashPos < 0 || dashPos > len(args) {
+		return args, nil
 	}
-	return args, nil
+	return args[:dashPos], args[dashPos:]
 }
 
 func init() {

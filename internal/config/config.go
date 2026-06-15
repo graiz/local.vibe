@@ -22,6 +22,20 @@ type DaemonConfig struct {
 	PIDCheckInterval int       `json:"pid_check_interval"`
 	TLS              TLSConfig `json:"tls"`
 	DNS              DNSConfig `json:"dns"`
+	// AutoStart controls on-demand recovery of managed routes. When true
+	// (default), visiting a stopped managed route's URL spawns its process
+	// and shows a "reconnecting" page instead of a manual Start button.
+	// Surviving children from a prior daemon are always re-adopted regardless
+	// of this flag (adoption never spawns anything). Set false to keep the
+	// old click-to-start behavior. Uses a pointer so an omitted key defaults
+	// to on rather than Go's zero-value false.
+	AutoStart *bool `json:"autostart,omitempty"`
+}
+
+// AutoStartEnabled reports whether on-demand managed-route auto-start is on.
+// Defaults to true when the config key is absent.
+func (d DaemonConfig) AutoStartEnabled() bool {
+	return d.AutoStart == nil || *d.AutoStart
 }
 
 type TLSConfig struct {
@@ -56,6 +70,7 @@ type LoggingConfig struct {
 // DefaultConfig returns a Config with production defaults (port 7999, TLD "vibe").
 func DefaultConfig() *Config {
 	dir := Dir()
+	autoStart := true
 	return &Config{
 		Daemon: DaemonConfig{
 			Port:             7999,
@@ -63,6 +78,7 @@ func DefaultConfig() *Config {
 			TLD:              "vibe",
 			Mode:             "redirect",
 			PIDCheckInterval: 5,
+			AutoStart:        &autoStart,
 			TLS: TLSConfig{
 				Enabled:  false,
 				Port:     7443,

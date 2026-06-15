@@ -134,6 +134,8 @@ vibe dev                             # Rebuild + restart daemon (for contributor
 
 **Tip:** use `python3` (not `python`) on macOS. For Python apps, prefer a venv: `".venv/bin/python app.py"`.
 
+> **The one rule — your `cmd` must bind the port vibe assigns, via `$PORT`.** Omit `port` and vibe auto-assigns a free one and injects it as `$PORT`; your app reads it (`process.env.PORT`, `os.environ["PORT"]`) or you pass `--port $PORT`. If the cmd ignores `$PORT` and lets the framework fall back to its own default, the app binds one port while vibe proxies to another. Self-healing port-discovery hides the mismatch for a while — so it *works* until something else claims the registered port, then the route silently stops responding. Frameworks that don't auto-read `$PORT` (Jekyll, Rails, Flask/Django CLI) need an explicit flag — see below. When unsure, pass `--port $PORT`; it never hurts.
+
 ### Framework notes
 
 **Vite** (React, Vue, Svelte) — add `.vibe` to `vite.config.js`:
@@ -156,6 +158,16 @@ Or via CLI: `flask run --debug --no-reload --port $PORT`
 **Django**:
 ```bash
 python3 manage.py runserver --noreload 0.0.0.0:$PORT
+```
+
+**Jekyll** — ignores `$PORT` and defaults to 4000, so pass it explicitly:
+```bash
+bundle exec jekyll serve --port $PORT
+```
+
+**Rails**:
+```bash
+bin/rails server -p $PORT
 ```
 
 ### Route types
