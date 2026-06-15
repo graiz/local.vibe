@@ -35,6 +35,31 @@ Your app reads `process.env.PORT` (Node), `os.environ["PORT"]` (Python), etc.
 Pin a specific port only when the app hard-codes it or an external system
 (e.g. a webhook) must reach a known number.
 
+### Your cmd must bind `$PORT` (the #1 gotcha)
+
+Vibe proxies `name.{{TLD}}` to the port it assigned, but it can't force your app
+to listen there — your `cmd` has to bind it. Read it from the `$PORT` env var,
+or pass `--port $PORT` on the command line. If the cmd instead lets the
+framework fall back to its own default port, the app binds one port while vibe
+proxies to another. Self-healing port-discovery papers over the mismatch for a
+while, so it *looks* fine — until something else claims the registered port and
+the route silently stops responding.
+
+Most Node tooling (Vite, Next, CRA) reads `process.env.PORT` on its own. Many
+others **don't** and need an explicit flag:
+
+| Framework | cmd |
+|-----------|-----|
+| Jekyll | `bundle exec jekyll serve --port $PORT` |
+| Rails | `bin/rails server -p $PORT` |
+| Flask (CLI) | `flask run --no-reload --port $PORT` |
+| Django | `python3 manage.py runserver --noreload 0.0.0.0:$PORT` |
+
+When in doubt, pass the port explicitly — `--port $PORT` never hurts, even for
+frameworks that would have read the env var anyway. And prefer auto-assign
+(omit `port`) so a stale or system-claimed number — e.g. macOS AirPlay Receiver
+holds **7000** — can never block your start.
+
 ### Apps that bind more than one port
 
 Some dev setups run multiple processes that each bind their own port — a
@@ -155,7 +180,21 @@ Or via CLI (with auto-assigned port):
 ### Django
 
 ```json
-{"name": "myapi", "port": 8000, "cmd": "python3 manage.py runserver --noreload 0.0.0.0:8000"}
+{"name": "myapi", "cmd": "python3 manage.py runserver --noreload 0.0.0.0:$PORT"}
+```
+
+### Jekyll
+
+Jekyll ignores `$PORT` and defaults to 4000, so pass the port explicitly:
+
+```json
+{"name": "myblog", "cmd": "bundle exec jekyll serve --port $PORT"}
+```
+
+### Rails
+
+```json
+{"name": "myapp", "cmd": "bin/rails server -p $PORT"}
 ```
 
 ## Command Tips
