@@ -23,6 +23,7 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("daemon:  %s\n", h.Status)
 		fmt.Printf("uptime:  %s\n", uptime.Round(time.Second))
 		fmt.Printf("routes:  %d\n", h.Routes)
+		warnIfRedirectDown()
 		return nil
 	},
 }

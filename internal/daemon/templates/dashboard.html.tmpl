@@ -175,6 +175,7 @@
   <button class="btn-add" onclick="openAddModal()">+ Add Route</button>
 </nav>
 <main class="main">
+{{if .RedirectDown}}<div class="warn"><span class="led led-red"></span>HTTPS redirect is down — <code style="color:var(--text)">https://*.{{.TLD}}</code> won't connect. A VPN or firewall likely flushed it. Run <code style="color:var(--text)">vibe doctor --fix</code> to restore it.</div>{{end}}
 {{if .UnknownVisible}}<div class="warn"><span class="led led-yellow"></span>No route for <strong style="color:var(--text);margin:0 4px">{{.UnknownName}}.{{.TLD}}</strong> — register it below.</div>{{end}}
 <div class="toolbar">
   <div class="toolbar-left">
@@ -631,4 +632,9 @@ document.addEventListener('visibilitychange',function(){if(!document.hidden){loc
   <span class="footer-sep">|</span>
   <a href="/_api/health">Health</a>
 </footer>
+<script>
+// Register the offline fallback worker so a flushed redirect / down daemon shows
+// a helpful page instead of the browser's bare "can't connect". Best-effort.
+if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(function(){}); }
+</script>
 </body></html>

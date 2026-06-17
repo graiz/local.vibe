@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/graiz/local.vibe/internal/netprobe"
 )
 
 // vibeScheme returns "https" when TLS is enabled, "http" otherwise. Used
@@ -36,6 +38,7 @@ type dashboardData struct {
 	ListDisplay    string
 	GridDisplay    string
 	RouteCount     int // includes the synthetic "local" daemon row
+	RedirectDown   bool // privileged-port redirect (pf/portproxy) isn't forwarding
 	Routes         []dashboardRoute
 }
 
@@ -103,6 +106,20 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 
 	uptime := time.Since(s.startedAt).Round(time.Second)
 
+	// On-request (not polled) check of the privileged-port redirect: dialing :80
+	// succeeds only if the redirect forwards to us. pf-apply adds/removes the :80
+	// and :443 rules together, so :80 is a faithful proxy for the whole redirect
+	// layer — and unlike dialing :443, a bare TCP connect to the plain-HTTP port
+	// doesn't trigger a half-handshake that would spam the TLS error log. A
+	// failure means a VPN/firewall flushed the redirect; surface a banner so the
+	// user isn't left guessing why https://*.vibe "refuses to connect". Only
+	// meaningful once TLS/redirect is set up. Short timeout so a down redirect
+	// doesn't stall page render.
+	redirectDown := false
+	if s.cfg.Daemon.TLS.Enabled {
+		redirectDown = !netprobe.PortOpen(80, 250*time.Millisecond)
+	}
+
 	data := dashboardData{
 		Head:           template.HTML(themeHead("local.vibe")),
 		CSS:            template.CSS(themeCSS),
@@ -117,6 +134,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		ListDisplay:    listDisplay,
 		GridDisplay:    gridDisplay,
 		RouteCount:     len(routes) + 1,
+		RedirectDown:   redirectDown,
 		Routes:         make([]dashboardRoute, 0, len(routes)),
 	}
 

@@ -15,6 +15,7 @@ var listCmd = &cobra.Command{
 	Short:   "List registered routes",
 	Aliases: []string{"ls"},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		warnIfRedirectDown()
 		c := client.New()
 		routes, err := c.List()
 		if err != nil {

@@ -281,6 +281,10 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 
 		// local.vibe is the built-in dashboard — always serve directly.
 		if name == "local" {
+			if r.URL.Path == "/sw.js" {
+				s.serveServiceWorker(w, r)
+				return
+			}
 			s.serveDashboard(w, r)
 			return
 		}
