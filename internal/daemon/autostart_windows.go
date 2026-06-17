@@ -11,14 +11,3 @@ package daemon
 func (s *Server) adoptOrphan(route *Route) (pid int, port int, ok bool) {
 	return 0, 0, false
 }
-
-// managedPortHealthy is a no-op on Windows (always healthy). The unix monitor
-// uses this to catch a managed route whose port got recycled to a squatter
-// after its child died and its PID was reused — a scenario that hinges on
-// children outliving the daemon, which Job Objects prevent here. Without a
-// cheap process-group ownership probe on Windows, a real check would risk
-// false positives, so the monitor relies on processAlive + the on-demand
-// recoverManagedRoute spawn path instead.
-func (s *Server) managedPortHealthy(route *Route) bool {
-	return true
-}

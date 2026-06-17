@@ -60,25 +60,6 @@ func (s *Server) adoptOrphan(route *Route) (pid int, port int, ok bool) {
 	return 0, 0, false
 }
 
-// managedPortHealthy reports whether a managed route that believes it is
-// running is still genuinely served by its own process group. It reuses the
-// exact ownership anchor as adoptOrphan: the route's registered port must be
-// held by a member of the route's process group.
-//
-// This is the monitor's defense against silent rot. processAlive(pid) alone is
-// fooled by PID reuse — when a child dies the OS can recycle its PID to an
-// unrelated live process — and a bare readiness dial is fooled by a squatter
-// that grabs the freed port and answers TCP without speaking HTTP. Anchoring
-// on "is the registered port owned by my group" catches both at once: a dead
-// child, a recycled PID, and a port stranger all fail it.
-//
-// It uses lsof (not a dial) for the same reason adoptOrphan does — dialing
-// perturbs single-connection servers and tells us nothing about ownership.
-func (s *Server) managedPortHealthy(route *Route) bool {
-	_, _, ok := s.adoptOrphan(route)
-	return ok
-}
-
 // pidsListeningOnPort returns the PIDs with a LISTEN socket on the given TCP
 // port, via `lsof -t -nP -iTCP:<port> -sTCP:LISTEN`. Empty on none (lsof exits
 // non-zero when there are no matches — that's "nobody listening", not an error).

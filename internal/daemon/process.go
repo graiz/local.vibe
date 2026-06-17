@@ -34,6 +34,13 @@ type ProcessManager struct {
 	mu      sync.Mutex
 	procs   map[string]*exec.Cmd // keyed by route name; spawned by this daemon
 	adopted map[string]int       // keyed by route name; pid of a child re-adopted after a daemon restart (no *exec.Cmd)
+
+	// onExit is invoked (event-based, no polling) when a managed child exits
+	// after having started running — from cmd.Wait for spawned children, and
+	// from a per-OS PID-exit watcher for adopted ones. The daemon uses it to
+	// flip the route to not-running immediately. pid identifies the exited
+	// process so a stale exit from a since-restarted route can be ignored.
+	onExit func(name string, pid int)
 }
 
 func NewProcessManager() *ProcessManager {
@@ -43,14 +50,49 @@ func NewProcessManager() *ProcessManager {
 	}
 }
 
+// SetExitHandler registers the callback fired when a managed child exits.
+func (pm *ProcessManager) SetExitHandler(fn func(name string, pid int)) {
+	pm.mu.Lock()
+	pm.onExit = fn
+	pm.mu.Unlock()
+}
+
+func (pm *ProcessManager) fireExit(name string, pid int) {
+	pm.mu.Lock()
+	fn := pm.onExit
+	pm.mu.Unlock()
+	if fn != nil {
+		fn(name, pid)
+	}
+}
+
 // Adopt records a managed child the daemon re-attached to after a restart.
 // The daemon has the process-group leader PID but no *exec.Cmd, so Stop kills
 // it via killAdoptedProcess (process-group SIGTERM) rather than through cmd.
 // Calling Start for the same route later supersedes the adoption.
 func (pm *ProcessManager) Adopt(name string, pid int) {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
 	pm.adopted[name] = pid
+	pm.mu.Unlock()
+
+	// Adopted children have no *exec.Cmd to Wait on, so watch their PID for exit
+	// via a per-OS primitive (kqueue on darwin, pidfd on linux; no-op elsewhere
+	// — Windows never adopts). When it exits, notify so the route flips to
+	// not-running, replacing the sweep's role for adopted children. Event-based,
+	// no polling.
+	go watchPIDExit(pid, func() {
+		pm.mu.Lock()
+		cur, ok := pm.adopted[name]
+		stillOurs := ok && cur == pid
+		if stillOurs {
+			delete(pm.adopted, name)
+		}
+		pm.mu.Unlock()
+		if stillOurs {
+			afterExit(name)
+			pm.fireExit(name, pid)
+		}
+	})
 }
 
 // Start launches the command for a managed route.
@@ -105,31 +147,68 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	pid := cmd.Process.Pid
 	pm.mu.Unlock()
 
-	// Monitor in background — when process exits, close log file.
-	exited := make(chan error, 1)
+	// One goroutine owns the child's lifetime via cmd.Wait. The first second is
+	// a "startup window": an exit there is an immediate failure that Start
+	// reports synchronously (StartError). An exit *after* the window is a
+	// runtime death that fires onExit so the daemon flips the route — event
+	// based, no polling.
+	//
+	// startup state transitions (stStarting → stRunning | stExitedEarly) all
+	// happen under pm.mu, so the goroutine and Start can't disagree about which
+	// case occurred even when the exit races the 1s boundary exactly.
+	const (
+		stStarting = iota
+		stRunning
+		stExitedEarly
+	)
+	state := stStarting
+	var earlyErr error // exit error when the child dies in the startup window
+	exitedEarly := make(chan struct{})
 	go func() {
 		err := cmd.Wait()
 		logFile.Close()
-		exited <- err
-	}()
-
-	// Wait briefly to catch immediate failures (command not found, missing deps, etc.)
-	select {
-	case err := <-exited:
 		pm.mu.Lock()
-		delete(pm.procs, route.Name)
+		if cur, ok := pm.procs[route.Name]; ok && cur == cmd {
+			delete(pm.procs, route.Name)
+		}
+		if state == stRunning {
+			pm.mu.Unlock()
+			afterExit(route.Name)
+			pm.fireExit(route.Name, pid) // runtime death → notify
+			return
+		}
+		state = stExitedEarly
+		earlyErr = err
 		pm.mu.Unlock()
 		afterExit(route.Name)
+		close(exitedEarly)
+	}()
+
+	startupFailed := func() (int, error) {
 		tail := tailLogFile(logPath, 12)
 		var inner error
-		if err != nil {
-			inner = fmt.Errorf("process exited immediately: %w", err)
+		if earlyErr != nil {
+			inner = fmt.Errorf("process exited immediately: %w", earlyErr)
 		} else {
 			inner = fmt.Errorf("process exited immediately with status 0")
 		}
 		return 0, &StartError{Err: inner, Tail: tail}
+	}
+
+	// Wait briefly to catch immediate failures (command not found, missing deps, etc.)
+	select {
+	case <-exitedEarly:
+		return startupFailed()
 	case <-time.After(1 * time.Second):
-		// Still running after 1s — likely a real server process.
+		pm.mu.Lock()
+		if state == stExitedEarly {
+			// Raced the boundary: the child already exited and the goroutine
+			// handled it as an early exit.
+			pm.mu.Unlock()
+			return startupFailed()
+		}
+		state = stRunning // commit: a later exit becomes a runtime death
+		pm.mu.Unlock()
 	}
 
 	return pid, nil

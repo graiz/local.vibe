@@ -332,43 +332,6 @@ func TestStoppedManagedRouteDropsPID(t *testing.T) {
 	}
 }
 
-// TestSweepFlagsSquatterOnManagedPort covers the silent-rot case: a managed
-// route that became Ready, then had its registered port taken over by a
-// process outside its group (e.g. the child died, the OS recycled the port to
-// a squatter and the PID to an unrelated live process). The sweep must notice
-// the port is no longer served by the route's own group, flip Running/Ready
-// off, and seed a failure so the start page can offer a restart.
-func TestSweepFlagsSquatterOnManagedPort(t *testing.T) {
-	s := testServer()
-	s.ConfigDir = t.TempDir()
-	port := freeTCPPort(t)
-	route, _ := startManagedListener(t, s, "rot", port)
-	s.table.Add(route)
-
-	// Healthy: the sweep must NOT disturb a route whose registered port is
-	// still served by its own group (guards against false positives).
-	s.sweepRoutes()
-	if !route.Ready.Load() || !route.Running.Load() {
-		t.Fatalf("sweep flagged a healthy managed route: running=%v ready=%v",
-			route.Running.Load(), route.Ready.Load())
-	}
-
-	// Simulate the registered port being recycled away from the group: repoint
-	// the route at a port its process group does not serve. The tracked PID is
-	// still alive (the listener keeps running), so processAlive stays true —
-	// only the port-ownership check can catch this.
-	route.Port = freeTCPPort(t)
-
-	s.sweepRoutes()
-
-	if route.Running.Load() || route.Ready.Load() {
-		t.Errorf("sweep left a squatted route healthy: running=%v ready=%v",
-			route.Running.Load(), route.Ready.Load())
-	}
-	if route.LoadFailure() == nil {
-		t.Error("sweep did not seed a failure; start page would have nothing to offer a restart from")
-	}
-	if _, ok := route.PIDValue(); ok {
-		t.Error("sweep left a stale PID on a squatted route")
-	}
-}
+// Event-based managed-route death detection is covered in process_event_test.go
+// (cmd.Wait + watchPIDExit) and TTL/idle in managed_timers_test.go; the old
+// sweep-based squatter test was removed with the sweep.

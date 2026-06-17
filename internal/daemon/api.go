@@ -825,11 +825,13 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
+	// Mark not-running *before* killing so the event-based exit handler treats
+	// this as an intentional stop (no failure seeded).
+	route.Running.Store(false)
 	// Try the ProcessManager first, then fall back to killing whatever is on the port.
 	if err := s.procs.Stop(name); err != nil {
 		s.killPort(route.Port)
 	}
-	route.Running.Store(false)
 	route.Ready.Store(false)
 	route.ClearPID()
 
