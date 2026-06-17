@@ -17,7 +17,9 @@ import (
 	"github.com/graiz/local.vibe/internal/cert"
 )
 
-// launchDaemonPlist is a root-owned LaunchDaemon that only applies pf rules at boot.
+// launchDaemonPlist is a root-owned LaunchDaemon that applies vibe's pf redirect
+// at boot and re-applies it on every network change (WatchPaths on resolv.conf),
+// so a VPN flushing pf doesn't silently break *.vibe HTTPS until reboot.
 const launchDaemonPlist = "/Library/LaunchDaemons/com.vibe.pf.plist"
 
 // launchAgentPlist is a user-level LaunchAgent that keeps the daemon running.
@@ -167,7 +169,18 @@ func startDNSMasq() error {
 // forwarding port 80 → 7999 and port 443 → 7443 at each boot. The daemon
 // itself runs as the user — no root required at runtime.
 func installPFLaunchDaemon() error {
-	const plist = `<?xml version="1.0" encoding="UTF-8"?>
+	binary, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("could not locate binary: %w", err)
+	}
+	binary, _ = filepath.EvalSymlinks(binary)
+
+	// The daemon runs `vibe pf-apply` (which idempotently merges vibe's redirect
+	// into the live pf ruleset) at boot via RunAtLoad and on every network change
+	// via WatchPaths on resolv.conf — macOS rewrites resolv.conf on VPN up/down,
+	// which is exactly when a VPN's pf reload tends to flush our rules. Event
+	// driven, no polling.
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -175,17 +188,24 @@ func installPFLaunchDaemon() error {
 	<string>com.vibe.pf</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/bin/sh</string>
-		<string>-c</string>
-		<string>printf 'rdr pass on lo0 proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 7999\nrdr pass on lo0 proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7443\npass all\n' | /sbin/pfctl -ef -</string>
+		<string>%s</string>
+		<string>pf-apply</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
+	<key>WatchPaths</key>
+	<array>
+		<string>/etc/resolv.conf</string>
+		<string>/var/run/resolv.conf</string>
+	</array>
 	<key>StandardErrorPath</key>
+	<string>/var/log/vibe-pf.log</string>
+	<key>StandardOutPath</key>
 	<string>/var/log/vibe-pf.log</string>
 </dict>
 </plist>
-`
+`, binary)
+
 	existing, _ := os.ReadFile(launchDaemonPlist)
 	if string(existing) != plist {
 		if err := os.WriteFile(launchDaemonPlist, []byte(plist), 0644); err != nil {
