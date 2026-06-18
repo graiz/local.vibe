@@ -36,18 +36,5 @@ func replaceVibeBinary(srcDir, binary string) error {
 	return nil
 }
 
-// restartDaemonForDev kills the running daemon. On macOS the LaunchAgent
-// KeepAlive flag restarts it automatically; on Linux there's no autostart
-// yet so the user has to bring it back up manually.
-func restartDaemonForDev() error {
-	pid, err := readDaemonPID()
-	if err != nil || pid <= 0 {
-		return nil
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return nil
-	}
-	_ = p.Signal(os.Kill)
-	return nil
-}
+// restartDaemonForDev is per-OS: dev_darwin.go (launchctl kickstart) and
+// dev_unix_other.go (kill + manual restart).
