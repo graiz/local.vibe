@@ -58,7 +58,9 @@ var devCmd = &cobra.Command{
 		// success. schtasks /run on Windows can take a few seconds to
 		// launch the elevated process, and even on macOS LaunchAgent's
 		// KeepAlive respawn isn't instant — a flat 1s sleep was racy.
-		if waitForDaemonReady(8 * time.Second) {
+		// 12s leaves margin over launchd's ~10s respawn throttle so a quick
+		// succession of `vibe dev` runs doesn't time out before the restart lands.
+		if waitForDaemonReady(12 * time.Second) {
 			pid, _ := readDaemonPID()
 			fmt.Printf("daemon restarted (pid %d)\n", pid)
 		} else {

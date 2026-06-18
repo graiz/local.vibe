@@ -51,6 +51,12 @@ type Server struct {
 	// so concurrent requests to a just-stopped route don't each spawn a
 	// duplicate process. Keys are route names; presence means "starting".
 	autoStarting sync.Map
+
+	// Per-route lifecycle timers (event-based replacements for the monitor
+	// sweep): a one-shot TTL-expiry timer and a self-rescheduling idle timer.
+	timersMu   sync.Mutex
+	ttlTimers  map[string]*time.Timer
+	idleTimers map[string]*time.Timer
 }
 
 // NewServer creates a daemon server with the given configuration.
@@ -62,6 +68,8 @@ func NewServer(cfg *config.Config) *Server {
 		quit:                 make(chan struct{}),
 		oauthBridgeServers:   make(map[int]*http.Server),
 		oauthBridgeListeners: make(map[int]net.Listener),
+		ttlTimers:            make(map[string]*time.Timer),
+		idleTimers:           make(map[string]*time.Timer),
 	}
 }
 
@@ -71,6 +79,13 @@ func (s *Server) Start() error {
 	if err := os.MkdirAll(config.Dir(), 0755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
+
+	// Register the event-based exit handler before loading/adopting routes, so
+	// adopted children's PID-exit watchers report through it.
+	s.procs.SetExitHandler(s.handleManagedExit)
+	// Arm/cancel per-route TTL + idle timers from the table's add/remove hooks,
+	// so loaded routes below get their timers too.
+	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	if err := loadStickyRoutes(s.table, s.configDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load persisted routes: %v\n", err)
@@ -107,7 +122,10 @@ func (s *Server) Start() error {
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
 
 	go s.startUnixSocket(mux)
-	go s.monitorRoutes(time.Duration(s.cfg.Daemon.PIDCheckInterval) * time.Second)
+	// Route lifecycle is event-based (no sweep): managed-process death via
+	// cmd.Wait / PID-exit watchers, TTL + idle via per-route timers, PID-tracked
+	// removal via PID-exit watchers — all wired through the ProcessManager exit
+	// handler and the RouteTable add/remove hooks set above.
 
 	if s.cfg.Daemon.TLS.Enabled {
 		go s.startTLS(mux)

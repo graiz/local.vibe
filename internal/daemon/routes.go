@@ -125,6 +125,13 @@ func (r *Route) LastActivityOr(fallback time.Time) time.Time {
 type RouteTable struct {
 	mu     sync.RWMutex
 	routes map[string]*Route
+
+	// Lifecycle hooks fired (outside the lock) after a route is added/removed.
+	// The daemon uses them to arm/cancel per-route TTL and idle timers from a
+	// single place, instead of threading timer calls through every register /
+	// start / stop / deregister site.
+	onAdd    func(*Route)
+	onRemove func(string)
 }
 
 // NewRouteTable creates an empty route table.
@@ -132,20 +139,36 @@ func NewRouteTable() *RouteTable {
 	return &RouteTable{routes: make(map[string]*Route)}
 }
 
-func (t *RouteTable) Add(r *Route) {
+// SetHooks registers add/remove lifecycle callbacks. Either may be nil.
+func (t *RouteTable) SetHooks(onAdd func(*Route), onRemove func(string)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.onAdd = onAdd
+	t.onRemove = onRemove
+}
+
+func (t *RouteTable) Add(r *Route) {
+	t.mu.Lock()
 	t.routes[r.Name] = r
+	onAdd := t.onAdd
+	t.mu.Unlock()
+	if onAdd != nil {
+		onAdd(r)
+	}
 }
 
 func (t *RouteTable) Remove(name string) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if _, ok := t.routes[name]; !ok {
-		return false
+	_, ok := t.routes[name]
+	if ok {
+		delete(t.routes, name)
 	}
-	delete(t.routes, name)
-	return true
+	onRemove := t.onRemove
+	t.mu.Unlock()
+	if ok && onRemove != nil {
+		onRemove(name)
+	}
+	return ok
 }
 
 func (t *RouteTable) Get(name string) (*Route, bool) {

@@ -3,13 +3,13 @@ package cmd
 import (
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/graiz/local.vibe/internal/client"
 	"github.com/graiz/local.vibe/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -185,32 +185,18 @@ func isDaemonRunning() bool {
 	return cliProcessAlive(pid)
 }
 
-// daemonHTTPResponding probes the daemon's TCP port and health endpoint.
+// daemonHTTPResponding reports whether the daemon answers a health check.
 // Stronger than isDaemonRunning (which only checks pidfile + process alive)
-// because it confirms the HTTP listener is actually serving — pidfile may
-// be stale for a few hundred ms during a restart race.
+// because it confirms the daemon is actually serving requests.
 //
-// TCP-dial first (cheap, fails fast), HTTP only if the port is listening —
-// avoids stacking up failed HTTP requests during the startup window.
+// It uses the same client as the rest of the CLI — unix socket preferred, TCP
+// (127.0.0.1:7999) fallback — rather than a raw TCP dial to 7999. A daemon
+// that's up and serving over the socket then isn't reported "down" just because
+// a direct TCP connection to 7999 is unreachable (e.g. a pf rule filtering it),
+// which is exactly what made `vibe dev` print a spurious "daemon not running".
 func daemonHTTPResponding() bool {
-	cfg, err := config.Load()
-	if err != nil || cfg.Daemon.Port == 0 {
-		return false
-	}
-	addr := fmt.Sprintf("127.0.0.1:%d", cfg.Daemon.Port)
-	c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	c.Close()
-
-	client := http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Get("http://" + addr + "/_api/health")
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	_, err := client.New().Health()
+	return err == nil
 }
 
 // waitForDaemonReady polls daemonHTTPResponding for up to maxWait. Returns
