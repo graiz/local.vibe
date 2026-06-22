@@ -345,12 +345,47 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 			route.TouchActivity()
 			target, _ := url.Parse(fmt.Sprintf("http://localhost:%d", route.Port))
 			proxy := httputil.NewSingleHostReverseProxy(target)
+			// The default reverse-proxy error path returns a bare 502 when the
+			// upstream fails. That happens when the registered port is dead, or
+			// when a squatter on a recycled port answers TCP but not HTTP (the
+			// pre-proxy isPortReady dial and processAlive check are both fooled
+			// by that). Hook the error path to run recovery instead — this fires
+			// ONLY on a failed upstream, never on a healthy request, so the
+			// ownership probing it triggers costs nothing on the hot path.
+			proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, _ error) {
+				s.handleProxyError(rw, req, route)
+			}
 			proxy.ServeHTTP(w, r)
 			return
 		}
 	}
 
 	s.serveDashboard(w, r)
+}
+
+// handleProxyError runs when a proxied upstream fails — connection refused, or
+// an empty/garbage reply from a process squatting a recycled port. It is the
+// reverse proxy's ErrorHandler, so it executes only on that failure path and
+// never on a healthy request; the recovery probing below (process-group
+// ownership via lsof, port dial) therefore adds no per-request cost.
+//
+// Instead of surfacing an opaque 502, it re-checks the route's ground truth.
+// For managed routes recoverManagedRoute re-verifies port ownership and either
+// re-adopts a surviving child, shows the start page when a stranger holds the
+// port, auto-spawns when it's free, or shows the start page — never proxies
+// blindly into whatever now occupies the port. Other route types get the
+// repair page so the client retries once the port answers again.
+func (s *Server) handleProxyError(w http.ResponseWriter, r *http.Request, route *Route) {
+	route.Ready.Store(false)
+	if route.Type == RouteManaged {
+		if s.recoverManagedRoute(w, r, route) {
+			return
+		}
+		// recoverManagedRoute re-adopted a live child (the registered port is
+		// served by our own group again); fall through to the repair page so the
+		// client retries into the now-healthy proxy.
+	}
+	s.serveRepairPage(w, r, route)
 }
 
 // safeKillPID sends a termination signal to an arbitrary PID on behalf of
