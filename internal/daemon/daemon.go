@@ -410,14 +410,34 @@ func (s *Server) safeKillPID(pid int) error {
 	return terminateProcess(pid)
 }
 
-// killPort terminates every process listening on the given TCP port. Used
-// by the recovery flow to clear an EADDRINUSE before retrying a managed
-// route's start. The PID-discovery and signal calls live in per-OS files.
+// killPort terminates external processes listening on the given TCP port. Used
+// by the recovery flow to clear an EADDRINUSE before retrying a managed route's
+// start. The PID-discovery and signal calls live in per-OS files.
+//
+// It refuses to signal the daemon itself or another managed route — mirroring
+// safeKillPID. This matters when a managed route's primary port collides with a
+// port the daemon already binds for another route (an oauth_callback_port or
+// reserve_port): without the guard, preflightPort → killPort would SIGTERM the
+// daemon and take down every route (observed as the daemon "restarting" on every
+// start attempt). A genuine port collision then surfaces as a clean start error
+// instead of a daemon suicide.
 func (s *Server) killPort(port int) {
+	myPID := os.Getpid()
 	for _, pid := range findPortHoldersFn(port) {
-		_ = terminateProcess(pid)
+		switch {
+		case pid == myPID:
+			fmt.Fprintf(os.Stderr, "vibe: killPort(%d) refusing to signal the daemon itself\n", port)
+		case s.procs.OwnsPID(pid):
+			fmt.Fprintf(os.Stderr, "vibe: killPort(%d) refusing to signal managed route process %d — stop the route instead\n", port, pid)
+		default:
+			_ = terminateProcessFn(pid)
+		}
 	}
 }
+
+// terminateProcessFn signals a PID; indirected through a var so tests can
+// observe killPort's targeting without actually killing processes.
+var terminateProcessFn = terminateProcess
 
 // findPortHoldersFn returns the listening PIDs on a TCP port. The default
 // implementation is per-OS (lsof on unix, netstat on Windows). Tests swap
