@@ -105,6 +105,15 @@ func (s *Server) startManagedNow(route *Route) error {
 		route.Port = port
 	}
 
+	// Fail fast with a clear message on a vibe-internal port collision (daemon
+	// listeners, or another route's primary/oauth/reserve port) — mirrors
+	// handleStart, so the start page shows the real cause instead of a generic
+	// EADDRINUSE the user can't act on.
+	if msg := s.checkVibePortCollisions(route); msg != "" {
+		route.SetFailure(&Failure{Message: msg})
+		return fmt.Errorf("%s", msg)
+	}
+
 	// Clear any stale listener still holding a port the command will bind
 	// (e.g. a half-dead child from a prior run), mirroring handleStart. If the
 	// port can't be freed it's held by an unrelated process — record the

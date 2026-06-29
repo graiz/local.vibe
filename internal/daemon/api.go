@@ -166,6 +166,60 @@ func reservePortConflictsWith(table *RouteTable, ownName string, reserve map[str
 // of its reserve_ports — both go through the same kill-and-recheck flow so
 // the user gets a single, consistent recovery UX regardless of which port
 // is the offender.
+// vibePortClaim reports, as a human-readable message, whether `port` is already
+// claimed by vibe's own world — the daemon's HTTP/HTTPS listeners, or another
+// route's primary port, oauth_callback_port, or a reserve_port. Returns "" when
+// no vibe-internal claim exists (the port may still be held by an unrelated
+// external process; that's preflightPort's job).
+//
+// This turns an opaque EADDRINUSE — or, before killPort was guarded, a daemon
+// suicide — into a clear "port N is reserved as route X's oauth_callback_port"
+// up front. excludeRoute is the route being started, so it isn't flagged
+// against itself.
+func (s *Server) vibePortClaim(excludeRoute string, port int) string {
+	if port <= 0 {
+		return ""
+	}
+	if port == s.cfg.Daemon.Port {
+		return fmt.Sprintf("port %d is the vibe daemon's HTTP port", port)
+	}
+	if s.cfg.Daemon.TLS.Enabled && port == s.cfg.Daemon.TLS.Port {
+		return fmt.Sprintf("port %d is the vibe daemon's HTTPS port", port)
+	}
+	for _, r := range s.table.List() {
+		if r.Name == excludeRoute {
+			continue
+		}
+		switch {
+		case r.Port == port:
+			return fmt.Sprintf("port %d is already route %q's port", port, r.Name)
+		case r.OAuthCallbackPort == port:
+			return fmt.Sprintf("port %d is reserved as route %q's oauth_callback_port", port, r.Name)
+		}
+		for key, p := range r.ReservePorts {
+			if p == port {
+				return fmt.Sprintf("port %d is reserved by route %q (reserve_ports[%q])", port, r.Name, key)
+			}
+		}
+	}
+	return ""
+}
+
+// checkVibePortCollisions returns a clear message if the route's primary port or
+// any of its reserve_ports collides with a vibe-internal claim, else "". Used by
+// the start paths to fail fast with an actionable error.
+func (s *Server) checkVibePortCollisions(route *Route) string {
+	if msg := s.vibePortClaim(route.Name, route.Port); msg != "" {
+		return msg
+	}
+	for _, kv := range reservePortValuesSorted(route.ReservePorts) {
+		if msg := s.vibePortClaim(route.Name, kv.Port); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
 func (s *Server) preflightPort(port int) *Recovery {
 	if port <= 0 {
 		return nil
@@ -769,6 +823,15 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 			return
 		}
 		route.Port = port
+	}
+	// Fail fast with a clear message if a port the cmd will bind collides with
+	// vibe's own ports (the daemon's listeners, or another route's primary /
+	// oauth_callback / reserve port) — a misconfiguration no amount of killing
+	// or retrying can fix, distinct from an external process squatting the port.
+	if msg := s.checkVibePortCollisions(route); msg != "" {
+		route.SetFailure(&Failure{Message: msg})
+		writeJSONError(w, http.StatusConflict, msg)
+		return
 	}
 	// Pre-flight every port the cmd will bind: each reserve_port first, then
 	// the primary. Persist the recovery on the route's Failure so a startpage
