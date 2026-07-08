@@ -19,17 +19,30 @@ import (
 const pfRDRRules = "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 7999\n" +
 	"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7443\n"
 
-// pfRedirectSentinel uniquely marks vibe's redirect in a dumped ruleset. Anchor
-// on the full redirect target (not a bare "port 7443") so an unrelated rule that
-// merely mentions 7443 can't be mistaken for our rule.
-const pfRedirectSentinel = "-> 127.0.0.1 port 7443"
+// pfRedirectSentinelHTTP and pfRedirectSentinelHTTPS uniquely mark vibe's two
+// redirects in a dumped ruleset. Anchor on the full redirect target (not a bare
+// "port 7443") so an unrelated rule that merely mentions the port can't be
+// mistaken for ours.
+const (
+	pfRedirectSentinelHTTP  = "-> 127.0.0.1 port 7999"
+	pfRedirectSentinelHTTPS = "-> 127.0.0.1 port 7443"
+)
 
-// vibeRDRPresent reports whether vibe's redirect is already in the given
-// `pfctl -sn` (translation rules) dump. This is the idempotency guard: when the
-// redirect is already active we do NOT reload pf, so we never needlessly
-// disturb a coexisting tool's rules (e.g. a VPN's kill-switch anchors).
+// vibeRDRPresent reports whether BOTH of vibe's redirects (:80→7999 and
+// :443→7443) are already in the given `pfctl -sn` (translation rules) dump.
+// This is the idempotency guard: when the redirect is fully active we do NOT
+// reload pf, so we never needlessly disturb a coexisting tool's rules (e.g. a
+// VPN's kill-switch anchors).
+//
+// It requires both sentinels deliberately. If a coexisting tool reloads a
+// ruleset that preserved vibe's :443 rdr but dropped the :80 one, anchoring on
+// :443 alone would make pf-apply a permanent no-op — the redirect probe (doctor,
+// dashboard banner, warnIfRedirectDown) reports it down, but `vibe doctor --fix`
+// would see the sentinel and refuse to reload, leaving http://*.vibe broken with
+// no way out. Requiring both means a partial ruleset correctly triggers a merge.
 func vibeRDRPresent(natRules string) bool {
-	return strings.Contains(natRules, pfRedirectSentinel)
+	return strings.Contains(natRules, pfRedirectSentinelHTTP) &&
+		strings.Contains(natRules, pfRedirectSentinelHTTPS)
 }
 
 // buildMergedRuleset assembles a complete pf ruleset that re-adds vibe's rdr

@@ -15,7 +15,45 @@ import (
 	"time"
 
 	"github.com/graiz/local.vibe/internal/cert"
+	"github.com/graiz/local.vibe/internal/vibeskill"
 )
+
+// installVibeSkillBestEffort runs the skill install as a labeled step but never
+// fails setup — on error it prints a "skipped" note and returns. No-op when
+// --no-skill was passed.
+func installVibeSkillBestEffort() {
+	if setupNoSkill {
+		return
+	}
+	fmt.Printf("  %-54s", "Installing agent skill (~/.claude/skills/local-vibe)...")
+	if err := installVibeSkill(); err != nil {
+		fmt.Printf("skipped (%v)\n", err)
+		return
+	}
+	fmt.Println("ok")
+}
+
+// installVibeSkill writes the global local.vibe agent skill into the real
+// user's home (not root's, when invoked via sudo) and chowns the created tree
+// back to that user so they can later edit or remove it. The files are
+// world-readable regardless, so the user-mode daemon and coding agents can read
+// them either way.
+func installVibeSkill() error {
+	home, err := realUserHome()
+	if err != nil {
+		return err
+	}
+	if _, err := vibeskill.InstallTo(home); err != nil {
+		return err
+	}
+	// Best-effort chown of every directory level we may have created plus the
+	// file itself. chownToUser no-ops when not running under sudo.
+	chownToUser(filepath.Join(home, ".claude"))
+	chownToUser(filepath.Join(home, ".claude", "skills"))
+	chownToUser(filepath.Join(home, ".claude", "skills", vibeskill.SkillName))
+	chownToUser(vibeskill.Path(home))
+	return nil
+}
 
 // launchDaemonPlist is a root-owned LaunchDaemon that applies vibe's pf redirect
 // at boot and re-applies it on every network change (WatchPaths on resolv.conf),
@@ -40,7 +78,7 @@ func setupMacOS() error {
 	fmt.Println("Setting up local.vibe on macOS...")
 	fmt.Println()
 
-	err := runSteps([]setupStep{
+	steps := []setupStep{
 		{"Checking for Homebrew", checkHomebrew},
 		{"Installing dnsmasq", installDNSMasq},
 		{"Configuring dnsmasq (*.vibe → 127.0.0.1)", configureDNSMasq},
@@ -52,11 +90,18 @@ func setupMacOS() error {
 		{"Enabling TLS in daemon config", enableTLSConfig},
 		{"Installing daemon LaunchAgent (start at login)", installLaunchAgent},
 		{"Verifying DNS resolution (test.vibe → 127.0.0.1)", verifyDNS},
-	})
+	}
+
+	err := runSteps(steps)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nSetup failed: %v\n", err)
 		return err
 	}
+
+	// Best-effort: the agent skill is a convenience layer, not part of the
+	// request path, so a write failure must not fail setup or suppress the
+	// "start daemon now?" prompt below.
+	installVibeSkillBestEffort()
 
 	fmt.Println()
 	fmt.Println("Setup complete! HTTPS enabled for all *.vibe domains.")
@@ -165,15 +210,68 @@ func startDNSMasq() error {
 	return cmd.Run()
 }
 
+// pfHelperDir is a root-owned directory holding a root-owned copy of the vibe
+// binary that the pf LaunchDaemon executes. See stagePFHelper.
+const pfHelperDir = "/Library/Application Support/local.vibe"
+
+// stagePFHelper copies the vibe binary to a root-owned, root-only-writable
+// location and returns that path, so the root pf LaunchDaemon never executes a
+// user-writable file.
+//
+// The LaunchDaemon runs as root at boot and on every network change. Pointing
+// it at the install path (typically /opt/homebrew/bin/vibe, whose Homebrew
+// prefix is user-owned) would let any process running as the user replace that
+// binary and gain root code execution on the next VPN toggle — the same
+// privilege-escalation class winutil.Sys32 guards against on Windows. Staging a
+// root:wheel 0755 copy (only root can overwrite it) closes that surface.
+//
+// Refreshed on every `sudo vibe setup`. `vibe dev` rebuilds don't refresh it,
+// but pf-apply is a stable, self-contained subcommand; a user who changes its
+// behavior must re-run setup.
+func stagePFHelper(src string) (string, error) {
+	if err := os.MkdirAll(pfHelperDir, 0755); err != nil {
+		return "", fmt.Errorf("create helper dir: %w", err)
+	}
+	// Lock the dir to root:wheel so a non-root user can't swap the helper via a
+	// writable parent (setup runs as root; belt-and-suspenders if the dir
+	// pre-existed with looser ownership).
+	_ = os.Chown(pfHelperDir, 0, 0)
+	_ = os.Chmod(pfHelperDir, 0755)
+
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return "", fmt.Errorf("read binary: %w", err)
+	}
+	dst := filepath.Join(pfHelperDir, "vibe-pf")
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, data, 0755); err != nil {
+		return "", fmt.Errorf("write helper: %w", err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("install helper: %w", err)
+	}
+	_ = os.Chown(dst, 0, 0)
+	_ = os.Chmod(dst, 0755)
+	return dst, nil
+}
+
 // installPFLaunchDaemon installs a root LaunchDaemon that applies pf rules
 // forwarding port 80 → 7999 and port 443 → 7443 at each boot. The daemon
 // itself runs as the user — no root required at runtime.
 func installPFLaunchDaemon() error {
-	binary, err := os.Executable()
+	src, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("could not locate binary: %w", err)
 	}
-	binary, _ = filepath.EvalSymlinks(binary)
+	src, _ = filepath.EvalSymlinks(src)
+
+	// Stage a root-owned copy and point the plist at it — never at the
+	// user-writable install path (privilege escalation; see stagePFHelper).
+	binary, err := stagePFHelper(src)
+	if err != nil {
+		return fmt.Errorf("stage pf helper: %w", err)
+	}
 
 	// The daemon runs `vibe pf-apply` (which idempotently merges vibe's redirect
 	// into the live pf ruleset) at boot via RunAtLoad and on every network change

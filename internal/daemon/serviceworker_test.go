@@ -27,6 +27,9 @@ func TestServeServiceWorker(t *testing.T) {
 	if !strings.Contains(body, "local.test") {
 		t.Error("TLD not injected into worker")
 	}
+	if strings.Contains(body, "__PORT__") {
+		t.Error("daemon port placeholder not substituted")
+	}
 	for _, want := range []string{"addEventListener", "FALLBACK_HTML", "vibe doctor --fix", "vibe daemon start"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("worker body missing %q", want)

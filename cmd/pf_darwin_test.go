@@ -8,9 +8,22 @@ import (
 )
 
 func TestPFVibeRDRPresent(t *testing.T) {
-	withRules := "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 7443"
+	// Both redirects present → active.
+	withRules := "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 80 -> 127.0.0.1 port 7999\n" +
+		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 7443"
 	if !vibeRDRPresent(withRules) {
-		t.Error("expected vibe rdr to be detected as present")
+		t.Error("expected vibe rdr to be detected as present when both redirects exist")
+	}
+	// Only the :443 redirect survived a coexisting tool's reload — must NOT be
+	// treated as present, or pf-apply would no-op forever and never restore :80.
+	onlyHTTPS := "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 7443"
+	if vibeRDRPresent(onlyHTTPS) {
+		t.Error("expected absence when only the :443 redirect is present (partial ruleset must trigger a reload)")
+	}
+	// Only the :80 redirect present — likewise partial.
+	onlyHTTP := "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 80 -> 127.0.0.1 port 7999"
+	if vibeRDRPresent(onlyHTTP) {
+		t.Error("expected absence when only the :80 redirect is present")
 	}
 	if vibeRDRPresent("rdr-anchor \"com.apple/*\" all\nnat-anchor \"xvpn\" all") {
 		t.Error("expected absence when only foreign anchors are present")

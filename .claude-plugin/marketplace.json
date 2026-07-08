@@ -1,0 +1,14 @@
+{
+  "name": "vibe",
+  "owner": {
+    "name": "Gregory Raiz",
+    "email": "graizlabs@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "local-vibe",
+      "source": "./plugins/local-vibe",
+      "description": "Teaches coding agents to register local dev servers with local.vibe (friendly https://<name>.vibe URLs) instead of guessing or hardcoding ports."
+    }
+  ]
+}

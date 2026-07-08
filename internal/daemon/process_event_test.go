@@ -82,6 +82,38 @@ func TestProcessManagerFiresExitOnDeath(t *testing.T) {
 	}
 }
 
+// TestStartNoOpWhenAdoptedChildAlive verifies ProcessManager.Start is a no-op
+// (returns the adopted PID, spawns nothing) when the route has a live adopted
+// child. Regression: Start's already-running guard only checked pm.procs, so it
+// would spawn a second copy and then delete(pm.adopted) — orphaning the original
+// child and crash-looping the new one on EADDRINUSE.
+func TestStartNoOpWhenAdoptedChildAlive(t *testing.T) {
+	pm := NewProcessManager()
+
+	cmd := exec.Command("sleep", "10")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	adoptedPID := cmd.Process.Pid
+	pm.Adopt("app", adoptedPID)
+
+	// A start command that would bind nothing but must NOT run — if Start spawns
+	// it, the adopted PID would be dropped from tracking.
+	route := &Route{Name: "app", Type: RouteManaged, Cmd: "sleep 30", Dir: t.TempDir(), RegisteredAt: time.Now()}
+	pid, err := pm.Start(route)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if pid != adoptedPID {
+		t.Errorf("Start returned pid %d, want the live adopted pid %d (should be a no-op)", pid, adoptedPID)
+	}
+	// The adopted child must still be tracked so Stop/Deregister can kill it.
+	if !pm.OwnsPID(adoptedPID) {
+		t.Error("adopted child was dropped from tracking by a duplicate Start")
+	}
+}
+
 // TestWatchPIDExitFires validates the per-OS PID-exit watcher (kqueue on darwin,
 // pidfd on linux) used for adopted children: it must fire fn when the watched
 // process dies, with no polling.

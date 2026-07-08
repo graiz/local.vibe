@@ -213,10 +213,21 @@ Port conflicts return `409` with the occupied port. Immediate process crashes in
 
 ### Agents & automation
 
-A per-project setup guide is served by the daemon — paste this into any agentic IDE (Claude Code, Cursor, etc.) and the agent will know how to register a `.vibe` name for the project:
+`vibe setup` installs a **global agent skill** at `~/.claude/skills/local-vibe/SKILL.md`. Claude Code auto-discovers it in every session, on every project — so a fresh session already knows this machine runs local.vibe and registers dev servers with `vibe` (getting a friendly `https://<name>.vibe`) instead of guessing or hardcoding a port. Skip it with `vibe setup --no-skill`; `vibe uninstall` removes it.
+
+The skill is deliberately lean — it points agents at the full, always-current guide served by the daemon:
 
 ```bash
 curl http://localhost:7999/setup.md
+```
+
+Paste that same URL into any other agentic IDE (Cursor, Codex, etc.) and the agent will know how to register a `.vibe` name for the project.
+
+**Install the skill without running full setup** (or on a machine where vibe is managed elsewhere) via the plugin marketplace bundled in this repo:
+
+```
+/plugin marketplace add graiz/local.vibe
+/plugin install local-vibe@vibe
 ```
 
 ### Contributing

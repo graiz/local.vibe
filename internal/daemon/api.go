@@ -157,15 +157,6 @@ func reservePortConflictsWith(table *RouteTable, ownName string, reserve map[str
 	return 0, ""
 }
 
-// preflightPort verifies that a port is currently free, attempting to clear
-// any stale process via killPort before giving up. Returns a Recovery hint
-// when the port is still held by an external process after the kill attempt;
-// returns nil when the port is free (or only held by daemon-managed PIDs).
-//
-// This is the shared entry point used for the route's primary port AND each
-// of its reserve_ports — both go through the same kill-and-recheck flow so
-// the user gets a single, consistent recovery UX regardless of which port
-// is the offender.
 // vibePortClaim reports, as a human-readable message, whether `port` is already
 // claimed by vibe's own world — the daemon's HTTP/HTTPS listeners, or another
 // route's primary port, oauth_callback_port, or a reserve_port. Returns "" when
@@ -220,6 +211,15 @@ func (s *Server) checkVibePortCollisions(route *Route) string {
 	return ""
 }
 
+// preflightPort verifies that a port is currently free, attempting to clear
+// any stale process via killPort before giving up. Returns a Recovery hint
+// when the port is still held by an external process after the kill attempt;
+// returns nil when the port is free (or only held by daemon-managed PIDs).
+//
+// This is the shared entry point used for the route's primary port AND each
+// of its reserve_ports — both go through the same kill-and-recheck flow so
+// the user gets a single, consistent recovery UX regardless of which port
+// is the offender.
 func (s *Server) preflightPort(port int) *Recovery {
 	if port <= 0 {
 		return nil
@@ -926,7 +926,14 @@ func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name strin
 		writeJSONError(w, http.StatusBadRequest, "bookmarks don't need repair")
 		return
 	}
-	if s.isPortReady(route.Port) {
+	// "Already reachable" only counts when the reachable listener is actually
+	// ours. A stranger squatting the recycled registered port also answers the
+	// dial, so gate the short-circuit on ownership — otherwise repair reports
+	// success while the browser keeps getting the stranger's 401, and the
+	// reconnecting page reload-loops. portForeignToRoute is fail-open and a
+	// no-op for non-managed routes, so this preserves existing behavior
+	// everywhere except the stranger case, where we fall through to rediscovery.
+	if s.isPortReady(route.Port) && !s.portForeignToRoute(route) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"ok":   true,
 			"port": route.Port,

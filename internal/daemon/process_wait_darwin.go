@@ -7,11 +7,20 @@ import "golang.org/x/sys/unix"
 // watchPIDExit blocks until the given pid exits, then calls fn once. It uses
 // kqueue's EVFILT_PROC/NOTE_EXIT — an event delivered by the kernel when the
 // process dies — so there's no polling. Used to detect death of adopted managed
-// children (which have no *exec.Cmd to Wait on). Returns silently without
-// calling fn if the watch can't be established (e.g. the pid is already gone).
+// children and PID-tracked routes (which have no *exec.Cmd to Wait on).
+//
+// If the watch can't be established it falls back to a definitive liveness
+// check: the common failure is EV_ADD returning ESRCH because the pid already
+// exited in the gap between the caller's aliveness check and here — in which
+// case fn must still fire, since there's no other death signal now that the
+// polling sweep is removed. A watch that fails while the process is genuinely
+// alive (e.g. fd exhaustion) can't be recovered, so we return without firing.
 func watchPIDExit(pid int, fn func()) {
 	kq, err := unix.Kqueue()
 	if err != nil {
+		if !processAlive(pid) {
+			fn()
+		}
 		return
 	}
 	defer unix.Close(kq)
@@ -23,6 +32,9 @@ func watchPIDExit(pid int, fn func()) {
 		Fflags: unix.NOTE_EXIT,
 	}
 	if _, err := unix.Kevent(kq, []unix.Kevent_t{ev}, nil, nil); err != nil {
+		if !processAlive(pid) {
+			fn()
+		}
 		return
 	}
 

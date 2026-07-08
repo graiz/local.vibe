@@ -11,3 +11,9 @@ package daemon
 func (s *Server) adoptOrphan(route *Route) (pid int, port int, ok bool) {
 	return 0, 0, false
 }
+
+// portForeignToRoute is conservative on Windows: it always reports "not
+// foreign" so a healthy route is never misclassified and forced into recovery.
+// Job-Object-based ownership detection (the analogue of the unix process-group
+// check) is Phase 2 — see port_discover_windows.go.
+func (s *Server) portForeignToRoute(route *Route) bool { return false }

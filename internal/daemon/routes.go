@@ -64,6 +64,15 @@ type Route struct {
 	PID          atomic.Pointer[int]       `json:"-"` // managed/tracked process PID; nil when not running
 	LastActivity atomic.Pointer[time.Time] `json:"-"` // last proxy request; nil until first activity
 	LastFailure  atomic.Pointer[Failure]   `json:"-"` // diagnostics from the most recent failed start, if any
+
+	// ownerForeign / ownerCheckedUnixNano cache the most recent
+	// registered-port ownership probe so the managed request hot path doesn't
+	// shell out to lsof on every request. ownerChecking single-flights the probe
+	// so a burst of parallel requests (a page load fires many at once) can't each
+	// fork their own lsof. See Server.managedStrangerOnPort.
+	ownerForeign         atomic.Bool  `json:"-"`
+	ownerCheckedUnixNano atomic.Int64 `json:"-"`
+	ownerChecking        atomic.Bool  `json:"-"`
 }
 
 // Failure captures why a managed route's most recent start attempt failed,
@@ -149,9 +158,19 @@ func (t *RouteTable) SetHooks(onAdd func(*Route), onRemove func(string)) {
 
 func (t *RouteTable) Add(r *Route) {
 	t.mu.Lock()
+	_, existed := t.routes[r.Name]
 	t.routes[r.Name] = r
 	onAdd := t.onAdd
+	onRemove := t.onRemove
 	t.mu.Unlock()
+	// Overwriting an existing name (e.g. re-registering `api` from TTL to
+	// sticky) must first tear down the old route's lifecycle timers — otherwise
+	// a stale TTL AfterFunc later fires s.table.Remove(name) and silently
+	// deletes the replacement route. Firing onRemove before onAdd cancels the
+	// old timers, then onAdd arms the correct ones for the new route.
+	if existed && onRemove != nil {
+		onRemove(r.Name)
+	}
 	if onAdd != nil {
 		onAdd(r)
 	}

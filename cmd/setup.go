@@ -9,6 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// setupNoSkill, when set via --no-skill, skips installing the global
+// local.vibe agent skill (~/.claude/skills/local-vibe/SKILL.md).
+var setupNoSkill bool
+
 var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure DNS and autostart (one-time, requires elevation)",
@@ -16,11 +20,20 @@ var setupCmd = &cobra.Command{
 rules (80 → 7999, 443 → 7443), and registers an autostart hook so the daemon
 runs at login.
 
+Setup also installs a global agent skill so coding agents (Claude Code, Codex,
+etc.) discover local.vibe and register dev servers via vibe instead of guessing
+ports. Skip it with --no-skill.
+
 This command is idempotent — safe to run multiple times. Platform-specific
 implementations live in setup_<goos>.go.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return setupPlatform()
 	},
+}
+
+func init() {
+	setupCmd.Flags().BoolVar(&setupNoSkill, "no-skill", false,
+		"skip installing the global local.vibe agent skill")
 }
 
 type setupStep struct {

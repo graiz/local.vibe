@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -333,6 +334,18 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 					if s.recoverManagedRoute(w, r, route) {
 						return
 					}
+				} else if s.managedStrangerOnPort(route) {
+					// The child is alive, but a foreign process now holds the
+					// route's registered port — a recycled ephemeral port grabbed
+					// by a stranger that even speaks HTTP, so the proxy round-trip
+					// would succeed and slip its response (e.g. a 401) straight
+					// through. isPortReady below is fooled by it; only the
+					// ownership probe catches it. Don't proxy to the stranger —
+					// serve the repair page, which polls /repair and rediscovers
+					// the child's real port.
+					route.Ready.Store(false)
+					s.serveRepairPage(w, r, route)
+					return
 				}
 			}
 			// If the registered port isn't answering, use the repair page for
@@ -352,7 +365,17 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 			// by that). Hook the error path to run recovery instead — this fires
 			// ONLY on a failed upstream, never on a healthy request, so the
 			// ownership probing it triggers costs nothing on the hot path.
-			proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, _ error) {
+			proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
+				// A client-aborted request (tab closed, Esc, canceled prefetch or
+				// HMR reconnect) surfaces here as context.Canceled — the upstream
+				// is healthy, the browser just went away. Treating it as an
+				// upstream failure would run full recovery against a live route:
+				// leaking a watcher per cancel on macOS, and (since adoptOrphan
+				// can't re-adopt on Windows) wedging the route onto the start page
+				// while the app is still up. Ignore it.
+				if errors.Is(err, context.Canceled) || req.Context().Err() != nil {
+					return
+				}
 				s.handleProxyError(rw, req, route)
 			}
 			proxy.ServeHTTP(w, r)
@@ -361,6 +384,46 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.serveDashboard(w, r)
+}
+
+// managedOwnerCheckInterval bounds how often the managed request hot path
+// re-verifies that its registered port is still held by the route's own
+// process group. The probe shells out to lsof, so a recent "healthy" result is
+// cached this long to keep the hot path cheap; the window also bounds how long
+// a freshly-arrived stranger can be proxied before it's caught.
+const managedOwnerCheckInterval = 3 * time.Second
+
+// managedStrangerOnPort reports whether a foreign process has taken over the
+// route's registered port, throttling the (lsof-backed) ownership probe so the
+// request hot path stays cheap. A recent healthy result short-circuits; a
+// foreign result or a cold/stale cache triggers a fresh probe. It only ever
+// returns true on a positive foreign identification (see portForeignToRoute),
+// so a healthy route is never sent into recovery.
+func (s *Server) managedStrangerOnPort(route *Route) bool {
+	now := time.Now().UnixNano()
+	last := route.ownerCheckedUnixNano.Load()
+	if last != 0 && now-last < int64(managedOwnerCheckInterval) && !route.ownerForeign.Load() {
+		return false
+	}
+	// Single-flight the lsof probe. A page load fires many parallel asset
+	// requests; without this, every one that sees a cold or stale cache forks
+	// its own lsof pipeline synchronously on the request path — a process storm
+	// that stalls all of them. Only the request that wins the CAS probes; the
+	// rest serve the last cached verdict.
+	if !route.ownerChecking.CompareAndSwap(false, true) {
+		return route.ownerForeign.Load()
+	}
+	defer route.ownerChecking.Store(false)
+	// Re-check under the guard: a prober that just finished may have refreshed
+	// the cache while we contended for the CAS.
+	last = route.ownerCheckedUnixNano.Load()
+	if last != 0 && now-last < int64(managedOwnerCheckInterval) && !route.ownerForeign.Load() {
+		return false
+	}
+	foreign := s.portForeignToRoute(route)
+	route.ownerForeign.Store(foreign)
+	route.ownerCheckedUnixNano.Store(time.Now().UnixNano())
+	return foreign
 }
 
 // handleProxyError runs when a proxied upstream fails — connection refused, or

@@ -47,7 +47,17 @@ func (s *Server) armTTL(name string, expires time.Time) {
 		old.Stop()
 	}
 	s.ttlTimers[name] = time.AfterFunc(d, func() {
-		// Remove() fires onRouteRemoved, which cleans up this timer entry.
+		// Defense against a stale fire: only expire the route if it's still the
+		// same TTL registration that's actually past its deadline. A
+		// re-registration under this name cancels the old timer via Add's remove
+		// hook, but this guards the narrow window where the timer already fired
+		// concurrently with the re-registration. Remove() fires onRouteRemoved,
+		// which cleans up this timer entry.
+		if r, ok := s.table.Get(name); ok {
+			if r.Type != RouteTTL || r.ExpiresAt == nil || r.ExpiresAt.After(time.Now()) {
+				return
+			}
+		}
 		s.table.Remove(name)
 	})
 	s.timersMu.Unlock()

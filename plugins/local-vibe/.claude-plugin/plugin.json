@@ -1,0 +1,10 @@
+{
+  "name": "local-vibe",
+  "description": "Teaches coding agents to register local dev servers with local.vibe (friendly https://<name>.vibe URLs) instead of guessing or hardcoding ports.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Gregory Raiz",
+    "email": "graizlabs@gmail.com"
+  },
+  "homepage": "https://github.com/graiz/local.vibe"
+}

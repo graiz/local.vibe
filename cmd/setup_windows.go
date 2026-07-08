@@ -13,9 +13,37 @@ import (
 	"time"
 
 	"github.com/graiz/local.vibe/internal/cert"
+	"github.com/graiz/local.vibe/internal/vibeskill"
 	"github.com/graiz/local.vibe/internal/winutil"
 	"golang.org/x/sys/windows"
 )
+
+// installVibeSkillBestEffort runs the skill install as a labeled step but never
+// fails setup — on error it prints a "skipped" note and returns. No-op when
+// --no-skill was passed.
+func installVibeSkillBestEffort() {
+	if setupNoSkill {
+		return
+	}
+	fmt.Printf("  %-54s", "Installing agent skill (~/.claude/skills/local-vibe)...")
+	if err := installVibeSkillWindows(); err != nil {
+		fmt.Printf("skipped (%v)\n", err)
+		return
+	}
+	fmt.Println("ok")
+}
+
+// installVibeSkillWindows writes the global local.vibe agent skill so coding
+// agents discover local.vibe. Windows setup runs as the user (medium
+// integrity), so no ownership fixups are needed.
+func installVibeSkillWindows() error {
+	home, err := vibeHomeDir()
+	if err != nil {
+		return err
+	}
+	_, err = vibeskill.InstallTo(home)
+	return err
+}
 
 func setupPlatform() error {
 	if !isElevated() {
@@ -33,7 +61,7 @@ func setupPlatform() error {
 	fmt.Println("Setting up local.vibe on Windows...")
 	fmt.Println()
 
-	err := runSteps([]setupStep{
+	steps := []setupStep{
 		{"Generating TLS certificates (*.vibe)", generateCertsWindows},
 		{"Trusting CA in Windows root store", trustCAWindows},
 		{"Installing netsh portproxy rules (80→7999, 443→7443)", installPortProxy},
@@ -43,11 +71,18 @@ func setupPlatform() error {
 		{"Registering Scheduled Task for autostart", installScheduledTask},
 		{"Flushing DNS cache", flushDNS},
 		{"Verifying DNS resolution (test.vibe → 127.0.0.1)", verifyDNSWindows},
-	})
+	}
+
+	err := runSteps(steps)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nSetup failed: %v\n", err)
 		return err
 	}
+
+	// Best-effort: the agent skill is a convenience layer, not part of the
+	// request path, so a write failure must not fail setup or suppress the
+	// "start daemon now?" prompt below.
+	installVibeSkillBestEffort()
 
 	fmt.Println()
 	fmt.Println("Setup complete! HTTPS enabled for all *.vibe domains.")

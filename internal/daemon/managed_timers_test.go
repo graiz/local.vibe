@@ -86,6 +86,40 @@ func TestIdleCheckNeverVisitedFallsBackToRegisteredAt(t *testing.T) {
 	}
 }
 
+// TestReregisterCancelsStaleTTLTimer verifies that re-registering a TTL route
+// under the same name as a non-TTL route cancels the old TTL timer, so it can't
+// later fire and silently delete the healthy replacement route. Regression: Add
+// used to overwrite the map entry without firing the remove hook, leaving the
+// orphaned timer live.
+func TestReregisterCancelsStaleTTLTimer(t *testing.T) {
+	s := testServer()
+	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
+
+	exp := time.Now().Add(80 * time.Millisecond)
+	ttl := &Route{Name: "api", Type: RouteTTL, Port: 1, RegisteredAt: time.Now(), ExpiresAt: &exp}
+	s.table.Add(ttl)
+
+	// Re-register the same name as a sticky route before the TTL expires.
+	sticky := &Route{Name: "api", Type: RouteSticky, Port: 2, RegisteredAt: time.Now()}
+	s.table.Add(sticky)
+
+	// The old TTL timer must not be armed anymore.
+	s.timersMu.Lock()
+	_, armed := s.ttlTimers["api"]
+	s.timersMu.Unlock()
+	if armed {
+		t.Error("stale TTL timer still armed after re-registration as sticky")
+	}
+
+	// Wait past the original expiry: the sticky route must survive.
+	time.Sleep(200 * time.Millisecond)
+	if got, ok := s.table.Get("api"); !ok {
+		t.Fatal("sticky route was deleted by the stale TTL timer")
+	} else if got.Type != RouteSticky {
+		t.Errorf("route type = %v, want sticky", got.Type)
+	}
+}
+
 // TestRemoveCancelsTimers verifies removing a route cancels its timers (no
 // leaked firing against a gone route).
 func TestRemoveCancelsTimers(t *testing.T) {

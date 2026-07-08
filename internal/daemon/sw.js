@@ -9,7 +9,14 @@
 //
 // Scope is local.__TLD__ only. Only top-level navigations are intercepted;
 // everything else passes straight through.
-const TIMEOUT_MS = 1000;
+//
+// The timeout only exists to catch a *hung* backend (a socket that accepts but
+// never responds). A refused/failed connection rejects fetch() immediately and
+// falls back without waiting. It must stay comfortably above a healthy but slow
+// dashboard render (the synchronous redirect probe plus many routes can take
+// well over a second under load) — a too-tight timeout replaces a dashboard
+// that was about to paint with the error page, then flaps on every reload.
+const TIMEOUT_MS = 4000;
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
@@ -62,7 +69,7 @@ const FALLBACK_HTML = `<!doctype html>
   // secure context is allowed (potentially-trustworthy origin); a blocked probe
   // just falls through to the generic message.
   var up=false;
-  try{ await fetch('http://127.0.0.1:7999/_api/health',{mode:'no-cors',cache:'no-store'}); up=true; }catch(e){}
+  try{ await fetch('http://127.0.0.1:__PORT__/_api/health',{mode:'no-cors',cache:'no-store'}); up=true; }catch(e){}
   if(up){
     msg.innerHTML='The daemon is running, but the <b>HTTPS redirect is down</b> &mdash; a VPN or firewall likely flushed it. Restore it with:';
     cmd.textContent='vibe doctor --fix';

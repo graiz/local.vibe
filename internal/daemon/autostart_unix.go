@@ -60,6 +60,52 @@ func (s *Server) adoptOrphan(route *Route) (pid int, port int, ok bool) {
 	return 0, 0, false
 }
 
+// portForeignToRoute reports whether a managed route's *registered* port is
+// held exclusively by processes OUTSIDE the route's process group — i.e. a
+// stranger squatting a recycled ephemeral port. This closes the gap the
+// reverse-proxy ErrorHandler cannot: a squatter that speaks HTTP returns a
+// valid response, so the proxy round-trip succeeds and the ErrorHandler never
+// fires; without this check vibe would pass the stranger's 401/200 straight to
+// the browser.
+//
+// It is deliberately fail-open. It returns true only when it can positively
+// identify a foreign owner: someone is listening on the port and none of the
+// listeners belong to the route's process group. Nobody listening, no live
+// child to compare against, or a group member among the listeners all return
+// false — so a healthy route (or an undeterminable state) is never
+// misclassified and needlessly forced into recovery.
+func (s *Server) portForeignToRoute(route *Route) bool {
+	if route.Type != RouteManaged || route.Port <= 0 {
+		return false
+	}
+	listeners := pidsListeningOnPort(route.Port)
+	if len(listeners) == 0 {
+		return false // nobody home — readiness/repair handles this, not us
+	}
+	leader, ok := route.PIDValue()
+	if !ok || !processAlive(leader) {
+		return false // no live child to anchor ownership on — fail open
+	}
+	pgid, err := syscall.Getpgid(leader)
+	if err != nil {
+		return false
+	}
+	group, err := pidsInGroup(pgid)
+	if err != nil || len(group) == 0 {
+		return false
+	}
+	inGroup := make(map[int]bool, len(group))
+	for _, p := range group {
+		inGroup[p] = true
+	}
+	for _, lp := range listeners {
+		if inGroup[lp] {
+			return false // one of ours is listening — healthy
+		}
+	}
+	return true // someone listens on our port, none are ours — a stranger
+}
+
 // pidsListeningOnPort returns the PIDs with a LISTEN socket on the given TCP
 // port, via `lsof -t -nP -iTCP:<port> -sTCP:LISTEN`. Empty on none (lsof exits
 // non-zero when there are no matches — that's "nobody listening", not an error).

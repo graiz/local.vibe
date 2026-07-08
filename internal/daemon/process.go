@@ -108,6 +108,18 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		}
 	}
 
+	// A child re-adopted after a daemon restart lives in pm.adopted (no
+	// *exec.Cmd). If it's still alive, Start is a no-op: spawning a second copy
+	// would strand the adopted child — the `delete(pm.adopted)` on the spawn
+	// path below drops it from tracking without killing it, so Stop/Deregister
+	// could never reach it, and the new process would crash-loop on EADDRINUSE
+	// against the still-bound port. A dead adopted entry falls through so the
+	// stale record is cleared by the real spawn.
+	if pid, ok := pm.adopted[route.Name]; ok && processAlive(pid) {
+		pm.mu.Unlock()
+		return pid, nil // adopted child still running
+	}
+
 	if route.Cmd == "" {
 		pm.mu.Unlock()
 		return 0, fmt.Errorf("no command configured for %s", route.Name)

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/graiz/local.vibe/internal/cert"
+	"github.com/graiz/local.vibe/internal/vibeskill"
 	"github.com/graiz/local.vibe/internal/winutil"
 )
 
@@ -113,6 +114,12 @@ func uninstallPlatform() error {
 	if certsDir != "" {
 		_ = os.RemoveAll(certsDir)
 		fmt.Println("  ~/.vibe/certs removed")
+	}
+
+	// Remove the global agent skill.
+	if home != "" {
+		_ = vibeskill.UninstallFrom(home)
+		fmt.Println("  ~/.claude/skills/local-vibe removed")
 	}
 
 	// Flush DNS cache so the change takes effect immediately.

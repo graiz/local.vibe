@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/graiz/local.vibe/internal/vibeskill"
 )
 
 // uninstallPlatform reverses setup on macOS. Each step is best-effort: a
@@ -31,6 +33,8 @@ func uninstallPlatform() error {
 	// LaunchDaemon (root, pf rules)
 	_ = exec.Command("launchctl", "unload", launchDaemonPlist).Run()
 	_ = os.Remove(launchDaemonPlist)
+	// Root-owned pf helper copy the LaunchDaemon executed (see stagePFHelper).
+	_ = os.RemoveAll(pfHelperDir)
 	fmt.Println("  pf LaunchDaemon removed")
 
 	// /etc/resolver/vibe
@@ -52,6 +56,10 @@ func uninstallPlatform() error {
 		certsDir := filepath.Join(home, ".vibe", "certs")
 		_ = os.RemoveAll(certsDir)
 		fmt.Println("  ~/.vibe/certs removed")
+
+		// Global agent skill
+		_ = vibeskill.UninstallFrom(home)
+		fmt.Println("  ~/.claude/skills/local-vibe removed")
 	}
 
 	fmt.Println()

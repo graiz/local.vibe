@@ -26,11 +26,34 @@ func (s *Server) discoverRoutePort(route *Route) (int, bool) {
 	if p, ok := portFromProcessGroup(route); ok && p != route.Port && s.isPortReady(p) {
 		return p, true
 	}
+	// Log-scan fallback. Skip it for a managed route whose child is still
+	// alive: that child's real port is authoritative via its process group
+	// (checked above), so a *stale* port named in the log — one an old run
+	// announced, now answered by an unrelated process that squatted the
+	// recycled port — must never hijack the registration. That squatter-
+	// adoption is exactly how a healthy route drifts onto a stranger and starts
+	// serving someone else's 401s. Only when there is no live child to anchor
+	// on (the managed process is gone, or this is a non-managed route) do we
+	// trust the log.
+	if managedLiveChild(route) {
+		return 0, false
+	}
 	logPath := filepath.Join(s.configDir(), route.Name+".log")
 	if p, ok := portFromLog(logPath); ok && p != route.Port && s.isPortReady(p) {
 		return p, true
 	}
 	return 0, false
+}
+
+// managedLiveChild reports whether route is a managed route whose tracked child
+// process is currently alive. When true, the child's process group — not a log
+// line — is the authoritative source of the route's real listening port.
+func managedLiveChild(route *Route) bool {
+	if route.Type != RouteManaged {
+		return false
+	}
+	pid, ok := route.PIDValue()
+	return ok && processAlive(pid)
 }
 
 // portFromLog reads the tail of path and returns the most plausible TCP
