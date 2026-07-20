@@ -76,9 +76,11 @@ func (s *Server) recoverManagedRoute(w http.ResponseWriter, r *http.Request, rou
 			}
 		}
 		// Either we just kicked it off or another request is already starting
-		// it — show the reconnecting page, which polls until the port answers
-		// and then reloads into a working proxy.
-		s.serveRepairPage(w, r, route)
+		// it — show the "Starting" page, which polls until the port answers and
+		// then reloads into a working proxy. This is a fresh cold start, not a
+		// port-recovery, so it uses start-flavored copy rather than the
+		// "Reconnecting / looking in logs" repair wording.
+		s.serveStartingPage(w, r, route)
 		return true
 	}
 
