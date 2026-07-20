@@ -77,8 +77,8 @@ func (s *Server) syncRouteFromVibeJSON(route *Route) error {
 			return err
 		}
 	}
-	if conflictPort, conflictRoute := reservePortConflictsWith(s.table, route.Name, newReserve); conflictPort != 0 {
-		return fmt.Errorf("reserve_ports value %d conflicts with route %q", conflictPort, conflictRoute)
+	if msg := s.reservePortsClaim(route.Name, newReserve); msg != "" {
+		return fmt.Errorf("%s", msg)
 	}
 
 	changed := newCmd != route.Cmd ||

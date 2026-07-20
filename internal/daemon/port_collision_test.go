@@ -69,3 +69,26 @@ func TestVibePortClaimSources(t *testing.T) {
 		t.Errorf("route flagged against itself: %q", msg)
 	}
 }
+
+// TestReservePortsClaimSharesVibePortClaim verifies the register/sync reserve
+// scanner is unified with vibePortClaim: it flags a reserve value colliding with
+// another route's port AND with the daemon's own listener (which the old
+// standalone reservePortConflictsWith missed), and returns "" for a clean set.
+func TestReservePortsClaimSharesVibePortClaim(t *testing.T) {
+	s := testServer()
+	s.cfg.Daemon.Port = 7999
+	s.table.Add(&Route{Name: "other", Type: RouteManaged, Port: 4001, RegisteredAt: time.Now()})
+
+	// Collision with another route's primary port.
+	if msg := s.reservePortsClaim("mine", map[string]int{"api": 4001}); !strings.Contains(msg, "other") {
+		t.Errorf("reserve collision with another route not caught: %q", msg)
+	}
+	// Collision with the daemon's own HTTP port — the case the old scanner missed.
+	if msg := s.reservePortsClaim("mine", map[string]int{"api": 7999}); !strings.Contains(msg, "HTTP port") {
+		t.Errorf("reserve collision with daemon port not caught: %q", msg)
+	}
+	// A clean set is not flagged, and the route isn't flagged against itself.
+	if msg := s.reservePortsClaim("other", map[string]int{"api": 4090}); msg != "" {
+		t.Errorf("clean reserve set flagged: %q", msg)
+	}
+}

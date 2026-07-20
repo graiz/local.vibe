@@ -126,35 +126,21 @@ func reservePortValuesSorted(reserve map[string]int) []struct {
 	return out
 }
 
-// reservePortConflictsWith returns the offending port and the route that owns
-// it if any of this route's reserve_ports values is already claimed by another
-// route's primary, OAuth callback, or reserve port. Used to surface config-time
-// collisions before the spawn.
-func reservePortConflictsWith(table *RouteTable, ownName string, reserve map[string]int) (int, string) {
-	if len(reserve) == 0 {
-		return 0, ""
-	}
-	want := make(map[int]bool, len(reserve))
-	for _, p := range reserve {
-		want[p] = true
-	}
-	for _, r := range table.List() {
-		if r.Name == ownName {
-			continue
-		}
-		if r.Port > 0 && want[r.Port] {
-			return r.Port, r.Name
-		}
-		if r.OAuthCallbackPort > 0 && want[r.OAuthCallbackPort] {
-			return r.OAuthCallbackPort, r.Name
-		}
-		for _, p := range r.ReservePorts {
-			if want[p] {
-				return p, r.Name
-			}
+// reservePortsClaim returns a human-readable message if any of the given
+// reserve_ports values is already claimed by vibe — the daemon's HTTP/HTTPS
+// listeners, or another route's primary port, oauth_callback_port, or
+// reserve_port — else "". It is the single reserve-ports collision scanner,
+// shared by the register/sync paths and (via checkVibePortCollisions) the start
+// paths, so they can never disagree about what counts as a conflict. Delegates
+// to vibePortClaim per value; excludeRoute is the route being registered or
+// started so it isn't flagged against itself.
+func (s *Server) reservePortsClaim(excludeRoute string, reserve map[string]int) string {
+	for _, kv := range reservePortValuesSorted(reserve) {
+		if msg := s.vibePortClaim(excludeRoute, kv.Port); msg != "" {
+			return msg
 		}
 	}
-	return 0, ""
+	return ""
 }
 
 // vibePortClaim reports, as a human-readable message, whether `port` is already
@@ -203,12 +189,7 @@ func (s *Server) checkVibePortCollisions(route *Route) string {
 	if msg := s.vibePortClaim(route.Name, route.Port); msg != "" {
 		return msg
 	}
-	for _, kv := range reservePortValuesSorted(route.ReservePorts) {
-		if msg := s.vibePortClaim(route.Name, kv.Port); msg != "" {
-			return msg
-		}
-	}
-	return ""
+	return s.reservePortsClaim(route.Name, route.ReservePorts)
 }
 
 // preflightPort verifies that a port is currently free, attempting to clear
@@ -493,8 +474,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if conflictPort, conflictRoute := reservePortConflictsWith(s.table, req.Name, reservePorts); conflictPort != 0 {
-		writeJSONError(w, http.StatusConflict, fmt.Sprintf("reserve_ports value %d conflicts with route %q", conflictPort, conflictRoute))
+	if msg := s.reservePortsClaim(req.Name, reservePorts); msg != "" {
+		writeJSONError(w, http.StatusConflict, msg)
 		return
 	}
 
