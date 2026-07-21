@@ -299,6 +299,7 @@ type registerRequest struct {
 
 type routeResponse struct {
 	Name               string     `json:"name"`
+	Parent             string     `json:"parent,omitempty"`
 	Port               int        `json:"port,omitempty"`
 	PID                *int       `json:"pid,omitempty"`
 	RegisteredAt       time.Time  `json:"registered_at"`
@@ -1211,6 +1212,7 @@ func findFaviconHref(page string) string {
 func toResponse(r *Route, tld, scheme string) routeResponse {
 	resp := routeResponse{
 		Name:               r.Name,
+		Parent:             r.Parent,
 		Port:               r.Port,
 		PID:                r.PID.Load(),
 		RegisteredAt:       r.RegisteredAt,

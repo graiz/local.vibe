@@ -54,8 +54,16 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 	}
 	for name, entry := range store.StickyRoutes {
 		lower := strings.ToLower(name)
-		if !validName.MatchString(lower) || lower == "local" {
+		parent, perr := parseRouteName(lower)
+		if perr != nil || lower == "local" {
 			continue
+		}
+		// A worktree whose source dir vanished while the daemon was down is
+		// dead — drop it at load; the next save rewrites routes.json without it.
+		if parent != "" && entry.Dir != "" {
+			if _, statErr := os.Stat(entry.Dir); os.IsNotExist(statErr) {
+				continue
+			}
 		}
 		rt := RouteSticky
 		if entry.Type != "" {
@@ -63,6 +71,7 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 		}
 		r := &Route{
 			Name:               lower,
+			Parent:             parent,
 			Port:               entry.Port,
 			Cmd:                entry.Cmd,
 			Dir:                entry.Dir,

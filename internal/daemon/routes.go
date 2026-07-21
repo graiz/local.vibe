@@ -21,7 +21,12 @@ const (
 // Route represents a registered service or bookmark that maps a .vibe subdomain
 // to a local port or external URL.
 type Route struct {
-	Name         string     `json:"name"`
+	Name string `json:"name"`
+	// Parent is set on worktree routes: the app this route is a worktree of.
+	// The name of a worktree route is always "<worktree>.<Parent>", so Parent
+	// is derivable from Name; it's stored for cheap filtering (dashboard
+	// grouping, dir-gone pruning, picker) without re-parsing.
+	Parent string `json:"parent,omitempty"`
 	Port         int        `json:"port"`
 	TTL          *int       `json:"ttl,omitempty"`
 	Cmd          string     `json:"cmd,omitempty"`
