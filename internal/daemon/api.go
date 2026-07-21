@@ -136,6 +136,10 @@ func reservePortValuesSorted(reserve map[string]int) []struct {
 // started so it isn't flagged against itself.
 func (s *Server) reservePortsClaim(excludeRoute string, reserve map[string]int) string {
 	for _, kv := range reservePortValuesSorted(reserve) {
+		if kv.Port == 0 {
+			// Worktree placeholder awaiting a fresh assignment — nothing to claim.
+			continue
+		}
 		if msg := s.vibePortClaim(excludeRoute, kv.Port); msg != "" {
 			return msg
 		}
@@ -441,13 +445,32 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.ToLower(req.Name)
-	if !validName.MatchString(req.Name) {
-		writeJSONError(w, http.StatusBadRequest, "name must be lowercase letters, digits, or hyphens")
+	parent, err := parseRouteName(req.Name)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.Name == "local" {
 		writeJSONError(w, http.StatusBadRequest, "'local' is reserved for the dashboard")
 		return
+	}
+	if parent != "" {
+		// Worktree route: managed only, and the copied vibe.json's fixed
+		// ports belong to the main checkout — honoring them is exactly the
+		// clobbering this feature exists to prevent.
+		if req.URL != "" {
+			writeJSONError(w, http.StatusBadRequest, "worktree routes (<worktree>.<app>) cannot be bookmarks")
+			return
+		}
+		if req.Cmd == "" {
+			writeJSONError(w, http.StatusBadRequest, "worktree routes (<worktree>.<app>) require a cmd")
+			return
+		}
+		if req.OAuthCallbackPort != nil && *req.OAuthCallbackPort > 0 {
+			writeJSONError(w, http.StatusBadRequest, "oauth_callback_port is not supported on worktree routes — a fixed localhost port can't be shared across worktrees")
+			return
+		}
+		req.Port = 0 // always auto-assign
 	}
 	if req.URL != "" {
 		if err := validateExternalURL(req.URL); err != nil {
@@ -475,6 +498,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if parent != "" {
+		// Keep the names (the cmd references $PORT_<NAME>), zero the values;
+		// fresh ports are assigned once the route is in the table below.
+		for k := range reservePorts {
+			reservePorts[k] = 0
+		}
+	}
 	if msg := s.reservePortsClaim(req.Name, reservePorts); msg != "" {
 		writeJSONError(w, http.StatusConflict, msg)
 		return
@@ -488,6 +518,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	route := &Route{
 		Name:         req.Name,
+		Parent:       parent,
 		Port:         req.Port,
 		ExternalURL:  req.URL,
 		RegisteredAt: time.Now(),
@@ -499,6 +530,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	route.Ready.Store(true)
 	if req.IdleTimeout != nil {
 		route.IdleTimeout = *req.IdleTimeout
+	}
+	if parent != "" && req.IdleTimeout == nil {
+		route.IdleTimeout = defaultWorktreeIdleMinutes
 	}
 	if req.Icon != nil {
 		route.Icon = *req.Icon
@@ -545,6 +579,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			route.Port = port
+		}
+		// Assign fresh reserve-port values for worktree routes. The route is
+		// already in the table, so each findFreePort call sees the values
+		// assigned so far and can't hand out a duplicate.
+		if route.Parent != "" {
+			for _, kv := range reservePortValuesSorted(route.ReservePorts) {
+				if kv.Port != 0 {
+					continue
+				}
+				p, err := findFreePort(s.table)
+				if err != nil {
+					s.table.Remove(route.Name)
+					writeJSONError(w, http.StatusInternalServerError, "could not find a free reserve port")
+					return
+				}
+				route.ReservePorts[kv.Name] = p
+			}
 		}
 		// Clear stale process on the primary port and each reserve_port before
 		// launching. Reserve ports check first so a multi-port app surfaces
