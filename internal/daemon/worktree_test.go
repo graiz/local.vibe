@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,5 +94,43 @@ func TestPersistenceWorktreeRoundTripAndPrune(t *testing.T) {
 	}
 	if _, ok := fresh.Get("app"); !ok {
 		t.Errorf("plain route app missing after reload")
+	}
+}
+
+func TestGoneWorktreeHostRedirectsToParent(t *testing.T) {
+	s := testServer() // TLD "test", TLS disabled → scheme http
+
+	parentRoute := &Route{Name: "app", Type: RouteSticky, Port: 3300, RegisteredAt: time.Now()}
+	parentRoute.Running.Store(true)
+	parentRoute.Ready.Store(true)
+	s.table.Add(parentRoute)
+
+	get := func(host string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/some/path", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		s.routeRequest(w, req)
+		return w
+	}
+
+	// Unknown worktree host with a registered parent → 307 to the parent.
+	w := get("gone.app.test")
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("code = %d; want 307", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "http://app.test/" {
+		t.Errorf("Location = %q; want http://app.test/", loc)
+	}
+
+	// Parent known only via a sibling worktree (parent-as-string): still 307.
+	sib := &Route{Name: "live.other", Parent: "other", Type: RouteManaged, Port: 3301, Cmd: "sleep 1", RegisteredAt: time.Now()}
+	s.table.Add(sib)
+	if w := get("gone.other.test"); w.Code != http.StatusTemporaryRedirect {
+		t.Errorf("sibling-known parent: code = %d; want 307", w.Code)
+	}
+
+	// Entirely unknown parent → falls through to the dashboard (200), no redirect.
+	if w := get("gone.nobody.test"); w.Code != http.StatusOK {
+		t.Errorf("unknown parent: code = %d; want 200 dashboard", w.Code)
 	}
 }

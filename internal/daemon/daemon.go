@@ -381,9 +381,39 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 			proxy.ServeHTTP(w, r)
 			return
 		}
+
+		// A worktree host whose route is missing — never registered, or just
+		// pruned because its dir vanished — goes to its parent app instead of
+		// dead-ending on the "unknown route" dashboard.
+		if parent, ok := worktreeParent(name); ok && s.parentKnown(parent) {
+			s.redirectToParent(w, r, parent)
+			return
+		}
 	}
 
 	s.serveDashboard(w, r)
+}
+
+// parentKnown reports whether an app name is known to the daemon either as a
+// registered route or as the Parent of at least one worktree route — parents
+// are plain strings, not necessarily routes themselves.
+func (s *Server) parentKnown(app string) bool {
+	if _, ok := s.table.Get(app); ok {
+		return true
+	}
+	for _, r := range s.table.List() {
+		if r.Parent == app {
+			return true
+		}
+	}
+	return false
+}
+
+// redirectToParent sends a request for a dead or unknown worktree host to its
+// parent app. 307, never 301 — a permanent redirect would be cached by the
+// browser and poison a future worktree that reuses the same branch name.
+func (s *Server) redirectToParent(w http.ResponseWriter, r *http.Request, parent string) {
+	http.Redirect(w, r, fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), parent, s.cfg.Daemon.TLD), http.StatusTemporaryRedirect)
 }
 
 // managedOwnerCheckInterval bounds how often the managed request hot path
