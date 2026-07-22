@@ -44,6 +44,10 @@ vibe.json fields (used by 'vibe start' with no args):
   icon                  optional — emoji for the dashboard
   idle_timeout          optional — auto-stop after N minutes idle (0 = never)
 
+Inside a git worktree, 'vibe start' registers <branch-slug>.<name>.vibe on an
+auto-assigned port instead of <name>.vibe, so worktrees never clobber the main
+checkout or each other. Override the subdomain with --as <name>.
+
 Full guide: curl http://localhost:7999/setup.md`,
 	Example: `  vibe start
   vibe start myapp
@@ -102,7 +106,27 @@ func startFromConfig() error {
 		return fmt.Errorf("vibe.json must have name and cmd fields")
 	}
 
-	return startNew(cfg.Name, cfg.Port, cfg.Cmd, cfg.OAuthCallbackPort, cfg.ReservePorts)
+	name, port, oauthPort := cfg.Name, cfg.Port, cfg.OAuthCallbackPort
+	if detectWorktree(dir) {
+		slug := worktreeAs
+		if slug == "" {
+			slug = worktreeSlug(dir)
+		}
+		if slug == "" {
+			return fmt.Errorf("could not derive a worktree name from the branch or directory — use: vibe start --as <name>")
+		}
+		name = slug + "." + cfg.Name
+		// The copied vibe.json's fixed ports belong to the main checkout:
+		// the daemon auto-assigns the primary port (and fresh reserve_ports
+		// values); the oauth bridge can't be shared, so it's dropped here.
+		port = 0
+		if oauthPort > 0 {
+			fmt.Println("note: oauth_callback_port is ignored for worktree routes")
+			oauthPort = 0
+		}
+		fmt.Printf("worktree of %s detected → %s\n", cfg.Name, name)
+	}
+	return startNew(name, port, cfg.Cmd, oauthPort, cfg.ReservePorts)
 }
 
 // startExisting starts an already-registered managed route.
@@ -159,6 +183,10 @@ func splitAtDash(args []string, dashPos int) (before, after []string) {
 	return args[:dashPos], args[dashPos:]
 }
 
+// worktreeAs overrides the auto-derived worktree subdomain (vibe start --as).
+var worktreeAs string
+
 func init() {
+	startCmd.Flags().StringVar(&worktreeAs, "as", "", "worktree subdomain override, e.g. --as feature-auth (worktrees only)")
 	rootCmd.AddCommand(startCmd)
 }
