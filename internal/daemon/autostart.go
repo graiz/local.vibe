@@ -30,6 +30,19 @@ import (
 // adoption, signalling the caller to continue to the normal readiness check
 // and proxy path with the route now marked Running+Ready.
 func (s *Server) recoverManagedRoute(w http.ResponseWriter, r *http.Request, route *Route) (served bool) {
+	// A worktree whose source dir vanished (git worktree remove, merged
+	// branch) is dead — deregister it and send the visitor to the parent app
+	// in the same response.
+	if worktreeDirGone(route) {
+		_ = s.procs.Stop(route.Name)
+		s.table.Remove(route.Name)
+		if err := s.saveStickyRoutes(); err != nil {
+			fmt.Fprintf(os.Stderr, "vibe: failed to persist worktree prune of %s: %v\n", route.Name, err)
+		}
+		s.redirectToParent(w, r, route.Parent)
+		return true
+	}
+
 	// Normalize stale state: a dead PID shouldn't linger on the route.
 	if pid, ok := route.PIDValue(); ok && !processAlive(pid) {
 		route.ClearPID()

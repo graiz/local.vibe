@@ -813,6 +813,12 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
+	if worktreeDirGone(route) {
+		s.table.Remove(route.Name)
+		_ = s.saveStickyRoutes()
+		writeJSONError(w, http.StatusGone, fmt.Sprintf("worktree directory %s is gone — route removed", route.Dir))
+		return
+	}
 	// Re-read vibe.json from the route's Dir before launching so edits to
 	// oauth_callback_port, reserve_ports, or cmd take effect without forcing
 	// the user to deregister + re-register. Errors here are config conflicts

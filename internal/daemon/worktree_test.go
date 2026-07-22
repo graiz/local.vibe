@@ -134,3 +134,33 @@ func TestGoneWorktreeHostRedirectsToParent(t *testing.T) {
 		t.Errorf("unknown parent: code = %d; want 200 dashboard", w.Code)
 	}
 }
+
+func TestRecoverManagedRoutePrunesGoneWorktree(t *testing.T) {
+	s := testServer()
+	s.ConfigDir = t.TempDir()
+
+	dir := t.TempDir()
+	wt := &Route{Name: "f.app", Parent: "app", Type: RouteManaged, Port: 3400, Cmd: "sleep 1", Dir: dir, RegisteredAt: time.Now()}
+	s.table.Add(wt)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "f.app.test"
+	w := httptest.NewRecorder()
+	served := s.recoverManagedRoute(w, req, wt)
+
+	if !served {
+		t.Fatal("recoverManagedRoute returned served=false; want a served redirect")
+	}
+	if w.Code != http.StatusTemporaryRedirect {
+		t.Errorf("code = %d; want 307", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "http://app.test/" {
+		t.Errorf("Location = %q; want http://app.test/", loc)
+	}
+	if _, ok := s.table.Get("f.app"); ok {
+		t.Errorf("route survived prune; want removed")
+	}
+}
