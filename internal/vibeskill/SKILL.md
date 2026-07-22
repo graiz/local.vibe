@@ -38,6 +38,15 @@ Minimal `vibe.json` (omit `port` so vibe assigns one and sets `$PORT`):
 The command must bind `$PORT` (read `process.env.PORT` / `os.environ["PORT"]`,
 or pass `--port $PORT`). The app is then reachable at `https://myapp.vibe`.
 
+## Git worktrees
+
+Run `vibe start` inside a linked worktree and it registers
+`https://<branch-slug>.<app>.vibe` on its own auto-assigned port — the main
+checkout's `<app>.vibe` and other worktrees are untouched, so test your branch
+there instead of fighting over ports. Override the subdomain with
+`vibe start --as <name>`. Deleting the worktree cleans up the route
+automatically.
+
 ## Finding what's already running (don't guess the URL)
 
 - `vibe list` — every route and its `https://<name>.vibe` URL

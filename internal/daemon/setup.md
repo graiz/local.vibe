@@ -138,6 +138,20 @@ vibe start myapp 3000 -- npm run dev
 
 Your app is now at **https://myapp.{{TLD}}**
 
+### Git worktrees
+
+Run `vibe start` inside a linked git worktree and vibe registers
+`<branch-slug>.<app>.{{TLD}}` (e.g. `feature-auth.myapp.{{TLD}}`) on its own
+auto-assigned port instead of `<app>.{{TLD}}` — worktrees never clobber the
+main checkout or each other. `--as <name>` overrides the subdomain. Worktree
+routes auto-stop after 60 idle minutes (the next visit restarts them) and are
+removed automatically once the worktree directory is deleted; visiting a
+removed worktree's URL redirects to the parent app. When the main app is
+stopped, its start page lists the running worktrees. Notes: the worktree's
+`vibe.json` `port` and `oauth_callback_port` are ignored, and `reserve_ports`
+get fresh values (still injected as `$PORT_<NAME>`), so always read ports from
+the environment.
+
 ## Framework Configuration
 
 ### Vite (React, Vue, Svelte, etc.)
