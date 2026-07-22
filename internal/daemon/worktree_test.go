@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -201,5 +202,39 @@ func TestSyncWorktreeRouteSyncsCmdOnly(t *testing.T) {
 	}
 	if got, _ := s.table.Get("f.zzz"); got.Cmd != "old" {
 		t.Errorf("stranger Cmd = %q; want untouched", got.Cmd)
+	}
+}
+
+func TestStartPageListsWorktrees(t *testing.T) {
+	s := testServer()
+	s.ConfigDir = t.TempDir()
+
+	main := &Route{Name: "app", Type: RouteManaged, Port: 3600, Cmd: "npm run dev", RegisteredAt: time.Now()}
+	s.table.Add(main)
+	wt := &Route{Name: "feature-auth.app", Parent: "app", Type: RouteManaged, Port: 3601, Cmd: "npm run dev", Dir: t.TempDir(), RegisteredAt: time.Now()}
+	wt.Running.Store(true)
+	s.table.Add(wt)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	s.serveStartPage(w, req, main)
+	body := w.Body.String()
+
+	if !strings.Contains(body, "feature-auth") {
+		t.Errorf("start page missing worktree name; body:\n%s", body)
+	}
+	if !strings.Contains(body, "http://feature-auth.app.test/") {
+		t.Errorf("start page missing worktree URL")
+	}
+
+	// A route with no children renders no worktree section.
+	lone := &Route{Name: "solo", Type: RouteManaged, Port: 3602, Cmd: "x", RegisteredAt: time.Now()}
+	s.table.Add(lone)
+	w2 := httptest.NewRecorder()
+	s.serveStartPage(w2, req, lone)
+	// Match the section markup, not "wt-list" alone — the CSS class
+	// definition is always present in the <style> block.
+	if strings.Contains(w2.Body.String(), `<div class="wt-list">`) {
+		t.Errorf("childless start page rendered a worktree section")
 	}
 }

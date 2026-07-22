@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"net/http"
 	"path/filepath"
+	"strings"
 )
 
 // startPageData feeds templates/startpage.html.tmpl. RecoveryInit is
@@ -19,6 +20,14 @@ type startPageData struct {
 	TLD          string
 	Cmd          string
 	RecoveryInit template.JS
+	Worktrees    []startPageWorktree
+}
+
+// startPageWorktree is one row in the start page's worktree picker section.
+type startPageWorktree struct {
+	Name    string // subdomain label only, e.g. "feature-auth"
+	URL     string
+	Running bool
 }
 
 // serveStartPage renders a "not running" page for managed routes whose process
@@ -28,6 +37,20 @@ func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *R
 	tld := s.cfg.Daemon.TLD
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	// The start page doubles as the worktree picker: when the app itself is
+	// stopped, its running worktrees are one click away. List() is
+	// name-sorted, so siblings render in stable order.
+	var worktrees []startPageWorktree
+	for _, rt := range s.table.List() {
+		if rt.Parent == route.Name {
+			worktrees = append(worktrees, startPageWorktree{
+				Name:    strings.TrimSuffix(rt.Name, "."+route.Name),
+				URL:     fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), rt.Name, tld),
+				Running: rt.Running.Load(),
+			})
+		}
+	}
+
 	data := startPageData{
 		Head:         template.HTML(themeHead(route.Name + "." + tld)),
 		CSS:          template.CSS(themeCSS),
@@ -35,6 +58,7 @@ func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *R
 		TLD:          tld,
 		Cmd:          route.Cmd,
 		RecoveryInit: template.JS(s.startPageRecoveryInitJS(route)),
+		Worktrees:    worktrees,
 	}
 
 	if err := tmplStartPage.Execute(w, data); err != nil {

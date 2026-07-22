@@ -57,6 +57,12 @@ h1{font-family:var(--font-display);font-size:1.1rem;font-weight:400;color:var(--
   border-radius:var(--radius);font-family:var(--font-body);font-size:.72rem;
   color:var(--text-muted);white-space:pre-wrap;max-height:160px;overflow:auto;
 }
+.wt-list{margin-top:24px;text-align:left;border-top:1px solid var(--border);padding-top:16px}
+.wt-list-title{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:8px}
+.wt-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:var(--radius);color:var(--text-secondary);text-decoration:none;font-size:.85rem}
+.wt-item:hover{background:var(--bg);color:var(--text)}
+.wt-dot{width:7px;height:7px;border-radius:50%;background:var(--text-muted);opacity:.4;flex-shrink:0}
+.wt-dot.on{background:#4ade80;opacity:1;box-shadow:0 0 6px rgba(74,222,128,.5)}
 </style>
 </head>
 <body>
@@ -73,6 +79,14 @@ h1{font-family:var(--font-display);font-size:1.1rem;font-weight:400;color:var(--
     <button class="recovery-btn" id="recovery-btn" onclick="recoverAndRetry()"></button>
     <div class="log-tail" id="log-tail" style="display:none"></div>
   </div>
+{{if .Worktrees}}
+  <div class="wt-list">
+    <div class="wt-list-title">Worktrees</div>
+    {{range .Worktrees}}
+    <a class="wt-item" href="{{.URL}}"><span class="wt-dot{{if .Running}} on{{end}}"></span>{{.Name}}</a>
+    {{end}}
+  </div>
+{{end}}
 </div>
 <script>
 var lastRecovery=null;
