@@ -48,6 +48,8 @@
 /* Route table (list view) */
 .list-view{width:100%}
 .route-table{width:100%;border-collapse:collapse}
+tr.wt-tr td:first-child .route-name-cell{padding-left:26px}
+tr.wt-group-header td{padding:10px 4px 2px 8px;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:none}
 .route-table thead th{
   font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;
   color:var(--text-muted);font-weight:500;text-align:left;
@@ -209,7 +211,8 @@
   <td></td>
 </tr>
 {{range .Routes}}
-<tr>
+{{if .GroupHeader}}<tr class="wt-group-header"><td colspan="5">{{.GroupHeader}}</td></tr>{{end}}
+<tr{{if .IsWorktree}} class="wt-tr"{{end}}>
   <td><div class="route-name-cell"><span class="{{if .IsStopped}}route-icon route-icon-stopped{{else}}route-icon{{end}}">{{iconHTML .Icon}}</span><div><a href="{{.VibeURL}}" target="_blank" class="route-name-link">{{.Name}}</a><span class="route-url">{{.URLDisplay}}</span></div></div></td>
   <td class="td-type">{{.Type}}</td>
   <td class="td-port{{if .IsStopped}} td-stopped{{end}}">{{if eq .Type "bookmark"}}—{{else}}<a href="http://localhost:{{.Port}}" target="_blank">{{.Port}}</a>{{end}}</td>

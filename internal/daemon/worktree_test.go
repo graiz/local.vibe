@@ -238,3 +238,43 @@ func TestStartPageListsWorktrees(t *testing.T) {
 		t.Errorf("childless start page rendered a worktree section")
 	}
 }
+
+func TestDashboardGroupsWorktreesUnderParent(t *testing.T) {
+	s := testServer()
+
+	// Deliberately name the worktree so a plain name sort would NOT place it
+	// after its parent ("aaa.zapp" < "other" < "zapp").
+	for _, r := range []*Route{
+		{Name: "zapp", Type: RouteManaged, Port: 3700, Cmd: "x", RegisteredAt: time.Now()},
+		{Name: "aaa.zapp", Parent: "zapp", Type: RouteManaged, Port: 3701, Cmd: "x", Dir: os.TempDir(), RegisteredAt: time.Now()},
+		{Name: "other", Type: RouteSticky, Port: 3702, RegisteredAt: time.Now()},
+	} {
+		s.table.Add(r)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "local.test"
+	w := httptest.NewRecorder()
+	s.serveDashboard(w, req)
+	body := w.Body.String()
+
+	iZapp := strings.Index(body, ">zapp<")
+	iWt := strings.Index(body, ">aaa.zapp<")
+	if iZapp == -1 || iWt == -1 {
+		t.Fatalf("dashboard missing route rows (zapp@%d wt@%d)", iZapp, iWt)
+	}
+	if iWt < iZapp {
+		t.Errorf("worktree row renders before its parent; want grouped after")
+	}
+	if !strings.Contains(body, "wt-tr") {
+		t.Errorf("worktree row missing wt-tr class")
+	}
+
+	// Orphan group: worktree whose parent is only a string gets a header row.
+	s.table.Add(&Route{Name: "b.ghost", Parent: "ghost", Type: RouteManaged, Port: 3703, Cmd: "x", Dir: os.TempDir(), RegisteredAt: time.Now()})
+	w2 := httptest.NewRecorder()
+	s.serveDashboard(w2, req)
+	if !strings.Contains(w2.Body.String(), "wt-group-header") {
+		t.Errorf("orphan worktree group missing header row")
+	}
+}

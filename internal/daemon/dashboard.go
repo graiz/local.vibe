@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -61,6 +62,9 @@ type dashboardRoute struct {
 	Idle        int
 	Proxy       bool
 	Insecure    bool
+	Parent      string // worktree routes: the app this belongs to
+	IsWorktree  bool
+	GroupHeader string // non-empty on the first row of a parent-less worktree group
 }
 
 // iconPool — visually distinct emoji set. A new route with no user-chosen
@@ -171,7 +175,45 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 			Idle:        rt.IdleTimeout,
 			Proxy:       rt.Proxy,
 			Insecure:    rt.InsecureSkipVerify,
+			Parent:      rt.Parent,
+			IsWorktree:  rt.Parent != "",
 		})
+	}
+
+	// Group worktrees under their parent app: sort by group (the parent's
+	// name, or the route's own name), parents before their worktrees, then
+	// by name within each tier. Parent-less groups (the app was never
+	// registered — Parent is just a string) get a header label on their
+	// first row so the cluster is still visibly an app.
+	groupKey := func(r dashboardRoute) string {
+		if r.Parent != "" {
+			return r.Parent
+		}
+		return r.Name
+	}
+	sort.SliceStable(data.Routes, func(i, j int) bool {
+		gi, gj := groupKey(data.Routes[i]), groupKey(data.Routes[j])
+		if gi != gj {
+			return gi < gj
+		}
+		if data.Routes[i].IsWorktree != data.Routes[j].IsWorktree {
+			return !data.Routes[i].IsWorktree
+		}
+		return data.Routes[i].Name < data.Routes[j].Name
+	})
+	registered := make(map[string]bool, len(data.Routes))
+	for _, rt := range data.Routes {
+		if !rt.IsWorktree {
+			registered[rt.Name] = true
+		}
+	}
+	prevGroup := ""
+	for i := range data.Routes {
+		rt := &data.Routes[i]
+		if rt.IsWorktree && !registered[rt.Parent] && groupKey(*rt) != prevGroup {
+			rt.GroupHeader = rt.Parent
+		}
+		prevGroup = groupKey(*rt)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
