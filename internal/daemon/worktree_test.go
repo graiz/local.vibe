@@ -164,3 +164,42 @@ func TestRecoverManagedRoutePrunesGoneWorktree(t *testing.T) {
 		t.Errorf("route survived prune; want removed")
 	}
 }
+
+func TestSyncWorktreeRouteSyncsCmdOnly(t *testing.T) {
+	s := testServer()
+	s.ConfigDir = t.TempDir()
+
+	dir := t.TempDir()
+	vibeJSON := `{"name":"app","cmd":"npm run dev -- --new","port":3000,"oauth_callback_port":8123,"reserve_ports":{"server":3001}}`
+	if err := os.WriteFile(filepath.Join(dir, "vibe.json"), []byte(vibeJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := &Route{Name: "f.app", Parent: "app", Type: RouteManaged, Port: 3500, Cmd: "npm run dev", Dir: dir,
+		ReservePorts: map[string]int{"server": 3555}, RegisteredAt: time.Now()}
+	s.table.Add(wt)
+
+	if err := s.syncRouteFromVibeJSON(wt); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	got, _ := s.table.Get("f.app")
+	if got.Cmd != "npm run dev -- --new" {
+		t.Errorf("Cmd = %q; want the edited cmd synced", got.Cmd)
+	}
+	if got.OAuthCallbackPort != 0 {
+		t.Errorf("OAuthCallbackPort = %d; want 0 (never imported for worktrees)", got.OAuthCallbackPort)
+	}
+	if got.ReservePorts["server"] != 3555 {
+		t.Errorf("ReservePorts[server] = %d; want worktree-local 3555 preserved", got.ReservePorts["server"])
+	}
+
+	// A vibe.json naming some other app entirely must not sync anything.
+	stranger := &Route{Name: "f.zzz", Parent: "zzz", Type: RouteManaged, Port: 3501, Cmd: "old", Dir: dir, RegisteredAt: time.Now()}
+	s.table.Add(stranger)
+	if err := s.syncRouteFromVibeJSON(stranger); err != nil {
+		t.Fatalf("stranger sync: %v", err)
+	}
+	if got, _ := s.table.Get("f.zzz"); got.Cmd != "old" {
+		t.Errorf("stranger Cmd = %q; want untouched", got.Cmd)
+	}
+}

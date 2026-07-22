@@ -52,6 +52,22 @@ func (s *Server) syncRouteFromVibeJSON(route *Route) error {
 		fmt.Fprintf(os.Stderr, "vibe: %s vibe.json is invalid, using last-known config: %v\n", route.Name, err)
 		return nil
 	}
+	if route.Parent != "" {
+		// Worktree route: the file is a copy of the parent's vibe.json, so
+		// its name identifies the app, and its port/oauth/reserve values are
+		// the parent's — never re-import them over the worktree-local
+		// assignments. Only cmd edits sync.
+		if cfg.Name != "" && cfg.Name != route.Parent {
+			return nil
+		}
+		if cfg.Cmd == "" || cfg.Cmd == route.Cmd {
+			return nil
+		}
+		if !s.table.UpdateManagedConfig(route.Name, cfg.Cmd, route.OAuthCallbackPort, route.ReservePorts) {
+			return nil
+		}
+		return s.saveStickyRoutes()
+	}
 	if cfg.Name != "" && cfg.Name != route.Name {
 		// Don't cross-pollinate fields between routes. The user is probably
 		// in the wrong directory.
