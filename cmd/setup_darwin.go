@@ -20,6 +20,24 @@ import (
 // launchDaemonPlist is a root-owned LaunchDaemon that only applies pf rules at boot.
 const launchDaemonPlist = "/Library/LaunchDaemons/com.vibe.pf.plist"
 
+// pf redirect rules live in their own anchor referenced from /etc/pf.conf —
+// never loaded as a replacement main ruleset. Anything else that reloads
+// /etc/pf.conf (VPN clients, Internet Sharing / vmnet backing Docker and VMs,
+// macOS updates) re-installs the vibe rules instead of wiping them, and
+// Apple's com.apple/* anchors stay attached.
+const (
+	pfAnchorName = "com.vibe"
+	pfAnchorFile = "/etc/pf.anchors/com.vibe"
+	pfConfPath   = "/etc/pf.conf"
+
+	pfAnchorRules = `rdr pass on lo0 proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 7999
+rdr pass on lo0 proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7443
+`
+
+	pfRdrAnchorLine = `rdr-anchor "com.vibe"`
+	pfLoadLine      = `load anchor "com.vibe" from "/etc/pf.anchors/com.vibe"`
+)
+
 // launchAgentPlist is a user-level LaunchAgent that keeps the daemon running.
 func launchAgentPlist() string {
 	home, _ := os.UserHomeDir()
@@ -163,10 +181,39 @@ func startDNSMasq() error {
 	return cmd.Run()
 }
 
-// installPFLaunchDaemon installs a root LaunchDaemon that applies pf rules
-// forwarding port 80 → 7999 and port 443 → 7443 at each boot. The daemon
-// itself runs as the user — no root required at runtime.
+// installPFLaunchDaemon writes the vibe pf anchor, references it from
+// /etc/pf.conf, and installs a root LaunchDaemon that enables pf and reloads
+// /etc/pf.conf at each boot. The daemon itself runs as the user — no root
+// required at runtime.
 func installPFLaunchDaemon() error {
+	if err := os.MkdirAll(filepath.Dir(pfAnchorFile), 0755); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(pfAnchorFile), err)
+	}
+	if err := os.WriteFile(pfAnchorFile, []byte(pfAnchorRules), 0644); err != nil {
+		return fmt.Errorf("write anchor file: %w", err)
+	}
+
+	conf, err := os.ReadFile(pfConfPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", pfConfPath, err)
+	}
+	if patched, changed := patchPFConf(string(conf)); changed {
+		// Vet the patched config before it replaces the live file — a broken
+		// pf.conf would fail every future reload, including Apple's at boot.
+		tmp := pfConfPath + ".vibe.tmp"
+		if err := os.WriteFile(tmp, []byte(patched), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", tmp, err)
+		}
+		if out, err := exec.Command("/sbin/pfctl", "-n", "-f", tmp).CombinedOutput(); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("patched pf.conf failed validation: %w — %s", err, strings.TrimSpace(string(out)))
+		}
+		if err := os.Rename(tmp, pfConfPath); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("replace %s: %w", pfConfPath, err)
+		}
+	}
+
 	const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -175,9 +222,10 @@ func installPFLaunchDaemon() error {
 	<string>com.vibe.pf</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/bin/sh</string>
-		<string>-c</string>
-		<string>printf 'rdr pass on lo0 proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 7999\nrdr pass on lo0 proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7443\npass all\n' | /sbin/pfctl -ef -</string>
+		<string>/sbin/pfctl</string>
+		<string>-E</string>
+		<string>-f</string>
+		<string>/etc/pf.conf</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -201,6 +249,71 @@ func installPFLaunchDaemon() error {
 		return fmt.Errorf("launchctl load: %w — %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// patchPFConf inserts the vibe anchor lines into pf.conf content, keeping
+// pf's required section order (translation rules before filter rules) by
+// placing each line right after its com.apple counterpart. Returns the
+// possibly-modified content and whether anything changed.
+func patchPFConf(conf string) (string, bool) {
+	hasRdr := containsPFLine(conf, pfRdrAnchorLine)
+	hasLoad := containsPFLine(conf, pfLoadLine)
+	if hasRdr && hasLoad {
+		return conf, false
+	}
+
+	lines := strings.Split(conf, "\n")
+	var out []string
+	for _, l := range lines {
+		out = append(out, l)
+		switch strings.TrimSpace(l) {
+		case `rdr-anchor "com.apple/*"`:
+			if !hasRdr {
+				out = append(out, pfRdrAnchorLine)
+				hasRdr = true
+			}
+		case `load anchor "com.apple" from "/etc/pf.anchors/com.apple"`:
+			if !hasLoad {
+				out = append(out, pfLoadLine)
+				hasLoad = true
+			}
+		}
+	}
+	// Fallback for a pf.conf without the stock com.apple lines: append at the
+	// end. Valid as long as the file has no filter rules after this point;
+	// the pfctl -n vet in installPFLaunchDaemon catches the rest.
+	if !hasRdr {
+		out = append(out, pfRdrAnchorLine)
+	}
+	if !hasLoad {
+		out = append(out, pfLoadLine)
+	}
+	return strings.Join(out, "\n"), true
+}
+
+// stripPFConf removes the vibe anchor lines from pf.conf content.
+func stripPFConf(conf string) (string, bool) {
+	lines := strings.Split(conf, "\n")
+	out := lines[:0]
+	changed := false
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == pfRdrAnchorLine || t == pfLoadLine {
+			changed = true
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n"), changed
+}
+
+func containsPFLine(conf, want string) bool {
+	for _, l := range strings.Split(conf, "\n") {
+		if strings.TrimSpace(l) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // installLaunchAgent installs a user-level LaunchAgent that starts the daemon

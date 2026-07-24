@@ -104,7 +104,9 @@ Five route types with different lifecycle semantics:
 
 ### macOS (`cmd/setup_darwin.go`)
 
-`sudo vibe setup` installs: dnsmasq, `/etc/resolver/vibe`, pf LaunchDaemon (port 80→7999 and 443→7443 at boot), TLS certificates (local CA + leaf, trusted in macOS Keychain), enables TLS in config, user LaunchAgent (daemon at login). De-escalates brew/launchctl ops via `SUDO_USER`. `vibe uninstall` reverses every step.
+`sudo vibe setup` installs: dnsmasq, `/etc/resolver/vibe`, pf redirect rules (80→7999, 443→7443), TLS certificates (local CA + leaf, trusted in macOS Keychain), enables TLS in config, user LaunchAgent (daemon at login). De-escalates brew/launchctl ops via `SUDO_USER`. `vibe uninstall` reverses every step.
+
+pf rules live in a dedicated anchor (`/etc/pf.anchors/com.vibe`) referenced from `/etc/pf.conf` (`rdr-anchor "com.vibe"` + `load anchor` lines inserted next to their `com.apple` counterparts — translation rules must precede filter rules). **Never load rules as a replacement main ruleset** (`pfctl -ef -`): that detaches Apple's `com.apple/*` anchors and gets silently wiped by anything that reloads `/etc/pf.conf` — VPN clients, Internet Sharing / vmnet (Docker Desktop, VMs), macOS updates. With the anchor approach those reloads *re-install* vibe's rules. The `com.vibe.pf` LaunchDaemon just runs `pfctl -E -f /etc/pf.conf` at boot. Setup vets the patched pf.conf with `pfctl -n -f` before swapping it into place; uninstall strips the lines and reloads.
 
 ### Windows (`cmd/setup_windows.go`)
 

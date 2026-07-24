@@ -33,6 +33,18 @@ func uninstallPlatform() error {
 	_ = os.Remove(launchDaemonPlist)
 	fmt.Println("  pf LaunchDaemon removed")
 
+	// pf anchor: flush its rules, drop the anchor file, strip our lines from
+	// /etc/pf.conf, then reload so the live ruleset matches the file again.
+	_ = exec.Command("/sbin/pfctl", "-a", pfAnchorName, "-F", "all").Run()
+	_ = os.Remove(pfAnchorFile)
+	if conf, err := os.ReadFile(pfConfPath); err == nil {
+		if stripped, changed := stripPFConf(string(conf)); changed {
+			_ = os.WriteFile(pfConfPath, []byte(stripped), 0644)
+		}
+	}
+	_ = exec.Command("/sbin/pfctl", "-f", pfConfPath).Run()
+	fmt.Println("  pf anchor removed, /etc/pf.conf restored")
+
 	// /etc/resolver/vibe
 	_ = os.Remove("/etc/resolver/vibe")
 	fmt.Println("  /etc/resolver/vibe removed")
