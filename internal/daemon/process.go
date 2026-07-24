@@ -31,12 +31,26 @@ func (e *StartError) Unwrap() error { return e.Err }
 
 // ProcessManager tracks managed child processes spawned by the daemon.
 type ProcessManager struct {
-	mu    sync.Mutex
-	procs map[string]*exec.Cmd // keyed by route name
+	mu      sync.Mutex
+	procs   map[string]*exec.Cmd // keyed by route name; spawned by this daemon
+	adopted map[string]int       // keyed by route name; pid of a child re-adopted after a daemon restart (no *exec.Cmd)
 }
 
 func NewProcessManager() *ProcessManager {
-	return &ProcessManager{procs: make(map[string]*exec.Cmd)}
+	return &ProcessManager{
+		procs:   make(map[string]*exec.Cmd),
+		adopted: make(map[string]int),
+	}
+}
+
+// Adopt records a managed child the daemon re-attached to after a restart.
+// The daemon has the process-group leader PID but no *exec.Cmd, so Stop kills
+// it via killAdoptedProcess (process-group SIGTERM) rather than through cmd.
+// Calling Start for the same route later supersedes the adoption.
+func (pm *ProcessManager) Adopt(name string, pid int) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.adopted[name] = pid
 }
 
 // Start launches the command for a managed route.
@@ -87,6 +101,7 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	afterSpawn(route.Name, cmd)
 
 	pm.procs[route.Name] = cmd
+	delete(pm.adopted, route.Name) // a real spawn supersedes any prior adoption
 	pid := cmd.Process.Pid
 	pm.mu.Unlock()
 
@@ -154,15 +169,24 @@ func (pm *ProcessManager) Stop(name string) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	cmd, ok := pm.procs[name]
-	if !ok || cmd.Process == nil {
-		return fmt.Errorf("%s is not running", name)
+	if cmd, ok := pm.procs[name]; ok && cmd.Process != nil {
+		_ = killProcessTree(name, cmd)
+		delete(pm.procs, name)
+		delete(pm.adopted, name)
+		afterExit(name)
+		return nil
 	}
 
-	_ = killProcessTree(name, cmd)
-	delete(pm.procs, name)
-	afterExit(name)
-	return nil
+	// A child re-adopted after a daemon restart has no *exec.Cmd; kill it by
+	// its process-group leader PID instead.
+	if pid, ok := pm.adopted[name]; ok {
+		_ = killAdoptedProcess(pid)
+		delete(pm.adopted, name)
+		afterExit(name)
+		return nil
+	}
+
+	return fmt.Errorf("%s is not running", name)
 }
 
 // IsRunning checks if the managed process for the given route is alive.
@@ -170,11 +194,13 @@ func (pm *ProcessManager) IsRunning(name string) bool {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	cmd, ok := pm.procs[name]
-	if !ok || cmd.Process == nil {
-		return false
+	if cmd, ok := pm.procs[name]; ok && cmd.Process != nil {
+		return processAlive(cmd.Process.Pid)
 	}
-	return processAlive(cmd.Process.Pid)
+	if pid, ok := pm.adopted[name]; ok {
+		return processAlive(pid)
+	}
+	return false
 }
 
 // OwnsPID reports whether pid belongs to one of the daemon's managed children.
@@ -185,6 +211,11 @@ func (pm *ProcessManager) OwnsPID(pid int) bool {
 	defer pm.mu.Unlock()
 	for _, cmd := range pm.procs {
 		if cmd.Process != nil && cmd.Process.Pid == pid {
+			return true
+		}
+	}
+	for _, p := range pm.adopted {
+		if p == pid {
 			return true
 		}
 	}

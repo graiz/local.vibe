@@ -26,6 +26,13 @@ type stickyEntry struct {
 	InsecureSkipVerify bool           `json:"insecure_skip_verify,omitempty"`
 	ReservePorts       map[string]int `json:"reserve_ports,omitempty"`
 	OAuthCallbackPort  int            `json:"oauth_callback_port,omitempty"`
+	// PID is the process-group leader of a running managed route. It is
+	// persisted so that after a daemon restart (where managed children, in
+	// their own process group, outlive the daemon) the new daemon can re-adopt
+	// the surviving process instead of losing track of it and reporting the
+	// route as stopped. A stale PID is harmless: adoption re-verifies that the
+	// PID is alive and still listening before trusting it.
+	PID int `json:"pid,omitempty"`
 }
 
 // loadStickyRoutes restores persisted routes (sticky, managed, bookmark)
@@ -70,9 +77,16 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 			ReservePorts:       entry.ReservePorts,
 			OAuthCallbackPort:  entry.OAuthCallbackPort,
 		}
-		// Managed routes start not running until launched; others are assumed ready.
+		// Managed routes start not running until launched (or re-adopted on
+		// startup); others are assumed ready. The persisted PID is stashed so
+		// the startup adoption pass can check whether the managed child
+		// survived a `vibe daemon restart` — but Running stays false until that
+		// check confirms the process is alive and listening.
 		r.Running.Store(rt != RouteManaged)
 		r.Ready.Store(rt != RouteManaged)
+		if rt == RouteManaged && entry.PID > 0 {
+			r.SetPID(entry.PID)
+		}
 		table.Add(r)
 	}
 	return nil
@@ -84,6 +98,15 @@ func saveStickyRoutes(table *RouteTable, dir string) error {
 	store := stickyStore{StickyRoutes: make(map[string]stickyEntry)}
 	for _, r := range table.List() {
 		if r.Type == RouteSticky || r.Type == RouteManaged || r.Type == RouteBookmark {
+			// Persist the PID only for managed routes the daemon believes are
+			// running, so a restart can re-adopt the surviving child. Other
+			// route types never own a process.
+			var pid int
+			if r.Type == RouteManaged && r.Running.Load() {
+				if p, ok := r.PIDValue(); ok {
+					pid = p
+				}
+			}
 			store.StickyRoutes[r.Name] = stickyEntry{
 				Port:               r.Port,
 				Cmd:                r.Cmd,
@@ -98,6 +121,7 @@ func saveStickyRoutes(table *RouteTable, dir string) error {
 				InsecureSkipVerify: r.InsecureSkipVerify,
 				ReservePorts:       r.ReservePorts,
 				OAuthCallbackPort:  r.OAuthCallbackPort,
+				PID:                pid,
 			}
 		}
 	}

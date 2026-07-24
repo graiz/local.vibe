@@ -46,6 +46,11 @@ type Server struct {
 	oauthBridgeListeners map[int]net.Listener
 
 	dnsServer *vdns.Server // nil unless cfg.Daemon.DNS.Enabled
+
+	// autoStarting tracks managed routes with an on-demand start in flight,
+	// so concurrent requests to a just-stopped route don't each spawn a
+	// duplicate process. Keys are route names; presence means "starting".
+	autoStarting sync.Map
 }
 
 // NewServer creates a daemon server with the given configuration.
@@ -70,6 +75,11 @@ func (s *Server) Start() error {
 	if err := loadStickyRoutes(s.table, s.configDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load persisted routes: %v\n", err)
 	}
+	// Re-adopt managed children that outlived a previous daemon (e.g. across
+	// `vibe daemon restart`), so they report as running immediately rather than
+	// stopped. This only re-attaches to live, listening processes — it never
+	// spawns anything.
+	s.adoptManagedOrphansOnStartup()
 	if err := s.reconcileOAuthBridgeListeners(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not start oauth callback bridge listeners: %v\n", err)
 	}
@@ -292,13 +302,15 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 			if route.Type == RouteManaged {
 				pid, hasPID := route.PIDValue()
 				if !route.Running.Load() || !hasPID || !processAlive(pid) {
-					route.Running.Store(false)
-					route.Ready.Store(false)
-					if hasPID && !processAlive(pid) {
-						route.ClearPID()
+					// Stopped, or the tracked process died: attempt on-demand
+					// recovery — re-adopt a surviving child, auto-spawn it, or
+					// fall back to the manual start page. recoverManagedRoute
+					// writes the response itself unless it adopted a live
+					// process, in which case it returns false and we fall
+					// through to the readiness check + proxy below.
+					if s.recoverManagedRoute(w, r, route) {
+						return
 					}
-					s.serveStartPage(w, r, route)
-					return
 				}
 			}
 			// If the registered port isn't answering, use the repair page for

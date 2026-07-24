@@ -157,6 +157,15 @@ func killProcessTree(name string, cmd *exec.Cmd) error {
 	return nil
 }
 
+// killAdoptedProcess exists only to satisfy the shared ProcessManager API.
+// Windows never re-adopts a managed child across a daemon restart — the Job
+// Object's KILL_ON_JOB_CLOSE terminates children when the daemon exits — so
+// adoptOrphan always returns false and this is unreachable in practice. It's a
+// best-effort single-process terminate regardless.
+func killAdoptedProcess(pid int) error {
+	return terminateProcess(pid)
+}
+
 // createKillOnCloseJob creates an anonymous Job Object and configures it
 // so closing the last handle kills every process inside. That's the
 // safety net: if the daemon crashes without calling TerminateJobObject,
