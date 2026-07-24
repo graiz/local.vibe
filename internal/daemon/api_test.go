@@ -389,8 +389,10 @@ func TestManagedRouteReadyImmediatePort(t *testing.T) {
 		t.Fatalf("register status = %d; body: %s", w.Code, w.Body.String())
 	}
 
-	// Should become ready within 2 seconds.
-	deadline := time.After(2 * time.Second)
+	// Should become ready well within the 30s polling window. The child is
+	// spawned through a login shell ($SHELL -lic), which under full-suite
+	// parallel load can take several seconds to reach nc — 2s flaked.
+	deadline := time.After(10 * time.Second)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {

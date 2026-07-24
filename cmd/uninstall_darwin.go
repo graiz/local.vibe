@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/graiz/local.vibe/internal/cert"
 )
 
 // uninstallPlatform reverses setup on macOS. Each step is best-effort: a
@@ -54,14 +56,23 @@ func uninstallPlatform() error {
 	// `address=/.vibe/127.0.0.1` lying around in dnsmasq.conf.
 	fmt.Println("  (dnsmasq.conf left intact — remove `address=/.vibe/127.0.0.1` manually if desired)")
 
-	// Trusted CA in Keychain
-	_ = exec.Command("security", "delete-certificate", "-c", "local.vibe CA",
-		"/Library/Keychains/System.keychain").Run()
-	fmt.Println("  Trusted CA removed from Keychain")
-
-	// Cert files in ~/.vibe/certs
+	// Trusted CA in Keychain. Match by SHA1 thumbprint when ca.pem is still
+	// on disk — a CN match (-c) only deletes one of possibly several certs
+	// named "local.vibe CA" (e.g. after an uninstall/setup cycle regenerated
+	// the CA) and could hit the wrong one. Fall back to CN when the certs
+	// dir is already gone.
 	if home, _ := realUserHome(); home != "" {
 		certsDir := filepath.Join(home, ".vibe", "certs")
+		if thumb, err := cert.CAThumbprint(certsDir); err == nil {
+			_ = exec.Command("security", "delete-certificate", "-Z", thumb,
+				"/Library/Keychains/System.keychain").Run()
+		} else {
+			_ = exec.Command("security", "delete-certificate", "-c", "local.vibe CA",
+				"/Library/Keychains/System.keychain").Run()
+		}
+		fmt.Println("  Trusted CA removed from Keychain")
+
+		// Cert files in ~/.vibe/certs
 		_ = os.RemoveAll(certsDir)
 		fmt.Println("  ~/.vibe/certs removed")
 	}
