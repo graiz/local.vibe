@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+sudo launchctl kickstart -k system/com.vibe.pf
