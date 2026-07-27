@@ -341,6 +341,15 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject state-changing calls from a foreign page. Checked here — after
+	// the passthrough above — so a proxied app's own /_api/ endpoints keep
+	// working cross-origin; only vibe's own API is guarded. See origin.go.
+	if apiStateChanging(r.Method, path) && s.apiRequestCrossSite(r) {
+		writeJSONError(w, http.StatusForbidden,
+			"cross-site request blocked: the vibe API only accepts state-changing requests from the dashboard, a route's own page, or a local client like the vibe CLI")
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 
 	switch {
