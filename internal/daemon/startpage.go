@@ -21,13 +21,23 @@ type startPageData struct {
 	Cmd          string
 	RecoveryInit template.JS
 	Worktrees    []startPageWorktree
+	// AutoLaunch makes the page start the app on load (the historical UX for
+	// a worktree-less app). In picker mode — any worktree exists — the page
+	// must NOT auto-launch: doing so would navigate away from the picker
+	// before the visitor can choose, defeating its purpose. They get a
+	// manual Start button instead.
+	AutoLaunch bool
 }
 
 // startPageWorktree is one row in the start page's worktree picker section.
+// Registered rows link straight to the route; discovered (unregistered) rows
+// carry the on-disk Path and register-and-start on click.
 type startPageWorktree struct {
-	Name    string // subdomain label only, e.g. "feature-auth"
-	URL     string
-	Running bool
+	Name       string // subdomain label only, e.g. "feature-auth"
+	URL        string // registered rows only
+	Running    bool
+	Registered bool
+	Path       string // discovered rows only
 }
 
 // serveStartPage renders a "not running" page for managed routes whose process
@@ -44,11 +54,20 @@ func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *R
 	for _, rt := range s.table.List() {
 		if rt.Parent == route.Name {
 			worktrees = append(worktrees, startPageWorktree{
-				Name:    strings.TrimSuffix(rt.Name, "."+route.Name),
-				URL:     fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), rt.Name, tld),
-				Running: rt.Running.Load(),
+				Name:       strings.TrimSuffix(rt.Name, "."+route.Name),
+				URL:        fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), rt.Name, tld),
+				Running:    rt.Running.Load(),
+				Registered: true,
 			})
 		}
+	}
+	// On-disk worktrees nobody registered yet — one click registers them with
+	// this route's cmd and starts them.
+	for _, d := range s.discoverUnregisteredWorktrees(route) {
+		worktrees = append(worktrees, startPageWorktree{
+			Name: d.Slug,
+			Path: d.Path,
+		})
 	}
 
 	data := startPageData{
@@ -59,6 +78,7 @@ func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *R
 		Cmd:          route.Cmd,
 		RecoveryInit: template.JS(s.startPageRecoveryInitJS(route)),
 		Worktrees:    worktrees,
+		AutoLaunch:   len(worktrees) == 0,
 	}
 
 	if err := tmplStartPage.Execute(w, data); err != nil {

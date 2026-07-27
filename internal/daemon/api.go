@@ -373,6 +373,9 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/start"):
 		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/start")
 		s.handleStart(w, r, name)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/worktrees"):
+		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/worktrees")
+		s.handleAdoptWorktree(w, r, name)
 	case r.Method == http.MethodPut && path == "/preferences":
 		s.handleSetPreferences(w, r)
 	default:
@@ -403,6 +406,8 @@ func isDaemonAPIPath(method, path string) bool {
 	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/stop"):
 		return true
 	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/start"):
+		return true
+	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/worktrees"):
 		return true
 	case method == http.MethodPut && path == "/preferences":
 		return true
@@ -614,6 +619,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writePortConflict(w, route.Port, rec)
 			return
 		}
+		s.prepareWorktreeEnv(route)
 		pid, err := s.procs.Start(route)
 		if err != nil {
 			s.table.Remove(route.Name)
@@ -807,6 +813,62 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
+// handleAdoptWorktree registers a discovered on-disk worktree of a managed
+// app as a worktree route (inheriting the app's cmd) and starts it. The path
+// must be one the daemon itself discovers via git — arbitrary directories
+// can't be registered through this endpoint.
+func (s *Server) handleAdoptWorktree(w http.ResponseWriter, r *http.Request, name string) {
+	parent, ok := s.table.Get(name)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "route not found")
+		return
+	}
+	if parent.Type != RouteManaged || parent.Cmd == "" {
+		writeJSONError(w, http.StatusBadRequest, "worktrees can only be adopted for managed routes with a cmd")
+		return
+	}
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Path == "" {
+		writeJSONError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	var match *discoveredWorktree
+	for _, d := range s.discoverUnregisteredWorktrees(parent) {
+		if realpath(d.Path) == realpath(req.Path) {
+			m := d
+			match = &m
+			break
+		}
+	}
+	if match == nil {
+		writeJSONError(w, http.StatusNotFound, "path is not an unregistered worktree of this app")
+		return
+	}
+	route := &Route{
+		Name:         match.Slug + "." + parent.Name,
+		Parent:       parent.Name,
+		Type:         RouteManaged,
+		Cmd:          parent.Cmd,
+		Dir:          match.Path,
+		IdleTimeout:  defaultWorktreeIdleMinutes,
+		RegisteredAt: time.Now(),
+	}
+	s.table.Add(route)
+	if err := s.startManagedNow(route); err != nil {
+		s.table.Remove(route.Name)
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
+	_ = s.saveStickyRoutes()
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":   true,
+		"url":  fmt.Sprintf("%s://%s.%s", s.vibeScheme(), route.Name, s.cfg.Daemon.TLD),
+		"port": route.Port,
+	})
+}
+
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
@@ -895,6 +957,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 
+	s.prepareWorktreeEnv(route)
 	pid, err := s.procs.Start(route)
 	if err != nil {
 		route.Running.Store(false)

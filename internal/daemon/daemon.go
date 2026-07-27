@@ -84,6 +84,7 @@ func (s *Server) Start() error {
 	// Register the event-based exit handler before loading/adopting routes, so
 	// adopted children's PID-exit watchers report through it.
 	s.procs.SetExitHandler(s.handleManagedExit)
+	s.procs.SetEnvHook(s.oauthEnvForRoute)
 	// Arm/cancel per-route TTL + idle timers from the table's add/remove hooks,
 	// so loaded routes below get their timers too.
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
@@ -309,6 +310,14 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if route, ok := s.table.Get(name); ok {
+			// Worktree routes: if the checkout was removed, prune the route
+			// and redirect to the parent — on EVERY request, not just the
+			// recovery path, because a running child outlives its worktree
+			// and would otherwise keep serving stale content indefinitely.
+			// One stat syscall; worktree routes only.
+			if route.Parent != "" && s.pruneGoneWorktree(w, r, route) {
+				return
+			}
 			// Bookmarks: reverse-proxy when Proxy=true so the browser keeps
 			// the .vibe host in the URL bar; otherwise 307-redirect to the
 			// external URL.
@@ -377,6 +386,39 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				s.handleProxyError(rw, req, route)
+			}
+			// OAuth bridging (see oauth_worktree.go). For worktrees: tag
+			// outbound authorize URLs — in 3xx Locations AND in small JSON
+			// bodies (client-side signIn() receives {"url": ...} and
+			// navigates itself) — so the parent's callback bridge can route
+			// the callback back to this worktree's origin. For parent and
+			// worktrees alike: point bridge-host redirects (post-login
+			// bounces to http://localhost:<N>/...) back at this route's own
+			// origin. Accept-Encoding is stripped so JSON bodies arrive
+			// uncompressed and taggable.
+			bridgePort := route.OAuthCallbackPort
+			isWorktree := false
+			if bridgePort == 0 {
+				bridgePort = s.parentBridgePort(route)
+				isWorktree = bridgePort > 0
+			}
+			if bridgePort > 0 {
+				routeName := route.Name
+				vibeHost := routeName + "." + s.cfg.Daemon.TLD
+				scheme := s.vibeScheme()
+				if isWorktree {
+					r.Header.Del("Accept-Encoding")
+				}
+				proxy.ModifyResponse = func(resp *http.Response) error {
+					if isWorktree {
+						tagOAuthAuthorizeRedirect(resp, routeName, bridgePort)
+						if err := tagOAuthJSONResponse(resp, routeName, bridgePort); err != nil {
+							return err
+						}
+					}
+					rewriteBridgeHostRedirect(resp, scheme, vibeHost, bridgePort)
+					return nil
+				}
 			}
 			proxy.ServeHTTP(w, r)
 			return

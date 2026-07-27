@@ -45,7 +45,9 @@ Run `vibe start` inside a linked worktree and it registers
 checkout's `<app>.vibe` and other worktrees are untouched, so test your branch
 there instead of fighting over ports. Override the subdomain with
 `vibe start --as <name>`. Deleting the worktree cleans up the route
-automatically.
+automatically. Even unregistered worktrees are discovered and offered on the
+app's picker page, but running `vibe start` yourself is still the best path —
+it hands you the URL directly.
 
 ## Finding what's already running (don't guess the URL)
 

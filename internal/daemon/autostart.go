@@ -30,16 +30,9 @@ import (
 // adoption, signalling the caller to continue to the normal readiness check
 // and proxy path with the route now marked Running+Ready.
 func (s *Server) recoverManagedRoute(w http.ResponseWriter, r *http.Request, route *Route) (served bool) {
-	// A worktree whose source dir vanished (git worktree remove, merged
-	// branch) is dead — deregister it and send the visitor to the parent app
-	// in the same response.
-	if worktreeDirGone(route) {
-		_ = s.procs.Stop(route.Name)
-		s.table.Remove(route.Name)
-		if err := s.saveStickyRoutes(); err != nil {
-			fmt.Fprintf(os.Stderr, "vibe: failed to persist worktree prune of %s: %v\n", route.Name, err)
-		}
-		s.redirectToParent(w, r, route.Parent)
+	// A worktree that no longer exists is dead — deregister it and send the
+	// visitor to the parent app in the same response.
+	if s.pruneGoneWorktree(w, r, route) {
 		return true
 	}
 
@@ -76,8 +69,11 @@ func (s *Server) recoverManagedRoute(w http.ResponseWriter, r *http.Request, rou
 	// (3) On-demand spawn — the port is free. Only when auto-start is enabled,
 	// the route has a command, and it isn't crash-looping. A recent failure
 	// routes the user to the start page (with its "Kill PID X and retry" UX)
-	// instead of silently respawning on every asset request.
-	if s.cfg.Daemon.AutoStartEnabled() && route.Cmd != "" && route.LoadFailure() == nil {
+	// instead of silently respawning on every asset request. Existing
+	// worktrees — registered routes or ones discovered on disk — also
+	// suppress the spawn: the visitor gets the picker (start page with the
+	// worktree list) and chooses — starting main is one click.
+	if s.cfg.Daemon.AutoStartEnabled() && route.Cmd != "" && route.LoadFailure() == nil && !s.hasWorktrees(route) {
 		if s.beginAutoStart(route.Name) {
 			err := s.startManagedNow(route)
 			s.endAutoStart(route.Name)
@@ -100,6 +96,27 @@ func (s *Server) recoverManagedRoute(w http.ResponseWriter, r *http.Request, rou
 	// (4) Nothing to recover automatically (auto-start disabled, no command,
 	// or a recent crash) — fall back to the manual start page.
 	s.serveStartPage(w, r, route)
+	return true
+}
+
+// pruneGoneWorktree deregisters a worktree route whose checkout was removed
+// (see worktreeDirGone), kills any still-running child, and answers with a
+// 307 to the parent app. Returns true when it wrote the response. Called from
+// both the recovery path and the healthy proxy path — a removed worktree's
+// child process happily outlives the checkout and would otherwise keep
+// serving stale content forever.
+func (s *Server) pruneGoneWorktree(w http.ResponseWriter, r *http.Request, route *Route) bool {
+	if !worktreeDirGone(route) {
+		return false
+	}
+	route.Running.Store(false) // intentional stop: no failure seeded by the exit handler
+	_ = s.procs.Stop(route.Name)
+	s.table.Remove(route.Name)
+	if err := s.saveStickyRoutes(); err != nil {
+		fmt.Fprintf(os.Stderr, "vibe: failed to persist worktree prune of %s: %v\n", route.Name, err)
+	}
+	fmt.Fprintf(os.Stderr, "vibe: pruned worktree route %s (checkout %s is gone)\n", route.Name, route.Dir)
+	s.redirectToParent(w, r, route.Parent)
 	return true
 }
 
@@ -147,6 +164,7 @@ func (s *Server) startManagedNow(route *Route) error {
 		return fmt.Errorf("%s", f.Message)
 	}
 
+	s.prepareWorktreeEnv(route)
 	pid, err := s.procs.Start(route)
 	if err != nil {
 		route.Running.Store(false)

@@ -7,22 +7,6 @@ import (
 	"testing"
 )
 
-func TestSlugify(t *testing.T) {
-	cases := map[string]string{
-		"feature/auth":      "feature-auth",
-		"Feature/OAuth_2.0": "feature-oauth-2-0",
-		"bugfix-123":        "bugfix-123",
-		"--weird--":         "weird",
-		"///":               "",
-		"UPPER":             "upper",
-	}
-	for in, want := range cases {
-		if got := slugify(in); got != want {
-			t.Errorf("slugify(%q) = %q; want %q", in, got, want)
-		}
-	}
-}
-
 func TestDetectWorktreeAndSlug(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")

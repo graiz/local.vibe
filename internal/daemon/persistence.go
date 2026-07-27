@@ -58,10 +58,17 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 		if perr != nil || lower == "local" {
 			continue
 		}
-		// A worktree whose source dir vanished while the daemon was down is
-		// dead — drop it at load; the next save rewrites routes.json without it.
+		// A worktree removed while the daemon was down is dead — drop it at
+		// load; the next save rewrites routes.json without it. The .git-link
+		// probe matches worktreeDirGone: a leftover dir without it is gone.
+		// A child that survived the restart (managed children outlive the
+		// daemon on unix) must be killed here too — dropping the entry alone
+		// would orphan a running server nobody tracks.
 		if parent != "" && entry.Dir != "" {
-			if _, statErr := os.Stat(entry.Dir); os.IsNotExist(statErr) {
+			if _, statErr := os.Stat(filepath.Join(entry.Dir, ".git")); os.IsNotExist(statErr) {
+				if entry.PID > 0 && processAlive(entry.PID) {
+					_ = killAdoptedProcess(entry.PID)
+				}
 				continue
 			}
 		}

@@ -41,6 +41,12 @@ type ProcessManager struct {
 	// flip the route to not-running immediately. pid identifies the exited
 	// process so a stale exit from a since-restarted route can be ignored.
 	onExit func(name string, pid int)
+
+	// envHook supplies additional "KEY=value" bindings for a route being
+	// spawned. It lets the daemon inject values it derives from the route
+	// table (which the ProcessManager can't see) without threading the
+	// Server through Start.
+	envHook func(*Route) []string
 }
 
 func NewProcessManager() *ProcessManager {
@@ -54,6 +60,13 @@ func NewProcessManager() *ProcessManager {
 func (pm *ProcessManager) SetExitHandler(fn func(name string, pid int)) {
 	pm.mu.Lock()
 	pm.onExit = fn
+	pm.mu.Unlock()
+}
+
+// SetEnvHook registers a callback supplying extra env bindings per route.
+func (pm *ProcessManager) SetEnvHook(fn func(*Route) []string) {
+	pm.mu.Lock()
+	pm.envHook = fn
 	pm.mu.Unlock()
 }
 
@@ -134,6 +147,12 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	cmd.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", route.Port))
 	for name, p := range route.ReservePorts {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("PORT_%s=%d", strings.ToUpper(name), p))
+	}
+	// Extra route-derived bindings the daemon supplies (e.g. the OAuth base
+	// URL for a route with a callback bridge). Appended last so they win over
+	// anything inherited from the daemon's own environment.
+	if pm.envHook != nil {
+		cmd.Env = append(cmd.Env, pm.envHook(route)...)
 	}
 
 	logDir := config.Dir()

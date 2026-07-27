@@ -44,12 +44,24 @@ func killProcessTree(name string, cmd *exec.Cmd) error {
 // restart — it has the process-group leader PID but no *exec.Cmd. It signals
 // the whole process group, matching killProcessTree's semantics for children
 // the daemon spawned itself.
+// The PID comes from routes.json and may be stale: the daemon was down while
+// the real child exited, and the OS may have recycled the number. Signalling a
+// whole process group off a recycled PID would hit an unrelated tree, so the
+// ownership of the PID is verified first. applySpawnAttrs starts every managed
+// child with Setpgid, making it its own group leader (pgid == pid); a PID that
+// isn't a group leader was therefore never one of ours, and is left alone
+// rather than signalled individually. This mirrors the refusal guards in
+// safeKillPID / killPort.
 func killAdoptedProcess(pid int) error {
-	if pid <= 1 {
+	if pid <= 1 || pid == os.Getpid() {
 		return nil
 	}
-	if pgid, err := syscall.Getpgid(pid); err == nil {
-		return syscall.Kill(-pgid, syscall.SIGTERM)
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		return nil // already gone
 	}
-	return syscall.Kill(pid, syscall.SIGTERM)
+	if pgid != pid {
+		return nil // not a group leader — not a child we spawned
+	}
+	return syscall.Kill(-pgid, syscall.SIGTERM)
 }

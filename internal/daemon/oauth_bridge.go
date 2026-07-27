@@ -110,6 +110,25 @@ func (s *Server) handleOAuthCallbackBridge(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Worktree routing: a state tagged by the reverse proxy names the route
+	// that started the flow. Restore the original state and forward there —
+	// but only to an actual worktree of this bridge's owner, so a crafted
+	// state can't bounce callbacks to an unrelated route.
+	q := r.URL.Query()
+	if name, orig, ok := parseWrappedOAuthState(q.Get("state")); ok {
+		if wt, found := s.table.Get(name); found && wt.Parent == route.Name {
+			if orig == "" {
+				// Synthetic state injected for a PKCE-only flow — the app
+				// never sent one, so it must not receive one.
+				q.Del("state")
+			} else {
+				q.Set("state", orig)
+			}
+			r.URL.RawQuery = q.Encode()
+			route = wt
+		}
+	}
+
 	target := fmt.Sprintf("%s://%s.%s%s", s.vibeScheme(), route.Name, s.cfg.Daemon.TLD, r.URL.RequestURI())
 	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }

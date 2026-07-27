@@ -63,6 +63,7 @@ h1{font-family:var(--font-display);font-size:1.1rem;font-weight:400;color:var(--
 .wt-item:hover{background:var(--bg);color:var(--text)}
 .wt-dot{width:7px;height:7px;border-radius:50%;background:var(--text-muted);opacity:.4;flex-shrink:0}
 .wt-dot.on{background:#4ade80;opacity:1;box-shadow:0 0 6px rgba(74,222,128,.5)}
+.wt-hint{margin-left:auto;font-size:.7rem;color:var(--text-muted);white-space:nowrap}
 </style>
 </head>
 <body>
@@ -83,12 +84,28 @@ h1{font-family:var(--font-display);font-size:1.1rem;font-weight:400;color:var(--
   <div class="wt-list">
     <div class="wt-list-title">Worktrees</div>
     {{range .Worktrees}}
-    <a class="wt-item" href="{{.URL}}"><span class="wt-dot{{if .Running}} on{{end}}"></span>{{.Name}}</a>
+    {{if .Registered}}
+    <a class="wt-item" href="{{.URL}}"><span class="wt-dot{{if .Running}} on{{end}}"></span>{{.Name}}{{if not .Running}}<span class="wt-hint">stopped</span>{{end}}</a>
+    {{else}}
+    <a class="wt-item" href="#" onclick="startWorktree(this,{{.Path}});return false"><span class="wt-dot"></span>{{.Name}}<span class="wt-hint">not started — click to launch</span></a>
+    {{end}}
     {{end}}
   </div>
 {{end}}
 </div>
 <script>
+// Register-and-start an on-disk worktree the daemon discovered but nobody
+// has run `vibe start` in. The daemon inherits the app's cmd, assigns a
+// port, and spawns it; we then navigate to the new route, whose starting
+// page polls until it's ready.
+function startWorktree(el,path){
+  var hint=el.querySelector('.wt-hint');
+  hint.textContent='starting…';
+  fetch('/_api/routes/'+{{.Name}}+'/worktrees',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path})})
+    .then(function(r){return r.json()})
+    .then(function(d){ if(d.url){ window.location.href=d.url } else { hint.textContent=d.error||'failed' } })
+    .catch(function(){ hint.textContent='failed' });
+}
 var lastRecovery=null;
 var launchCanceled=false;
 var activeXHR=null;
@@ -339,7 +356,17 @@ function pollUntilReady(attempts){
   xhr.send();
 }
 {{.RecoveryInit}}
+{{if .AutoLaunch}}
+var vibeAutoLaunch=true;
 startApp();
+{{else}}
+// Picker mode: worktrees exist, so the visitor chooses — no auto-launch.
+var vibeAutoLaunch=false;
+setLaunchMode('retry');
+document.getElementById('btn').textContent='Start';
+document.getElementById('spinner').style.display='none';
+document.getElementById('msg').style.display='none';
+{{end}}
 </script>
 </body>
 </html>
