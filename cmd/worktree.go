@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -37,6 +39,34 @@ func worktreeSlug(dir string) string {
 		}
 	}
 	return gitwt.Slugify(filepath.Base(dir))
+}
+
+// mainCheckoutDir returns the root of the repository's main working tree, or
+// "" when dir isn't in a repo. --git-common-dir points at the main checkout's
+// .git directory, so its parent is that checkout's root.
+func mainCheckoutDir(dir string) string {
+	common, err := gitOut(dir, "rev-parse", "--git-common-dir")
+	if err != nil || common == "" {
+		return ""
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(dir, common)
+	}
+	return filepath.Dir(filepath.Clean(common))
+}
+
+// vibeJSONName reads the `name` field of dir/vibe.json, or "" if the file is
+// missing, unreadable, or malformed.
+func vibeJSONName(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "vibe.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg vibeConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	return cfg.Name
 }
 
 func gitOut(dir string, args ...string) (string, error) {

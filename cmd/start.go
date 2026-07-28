@@ -115,16 +115,30 @@ func startFromConfig() error {
 		if slug == "" {
 			return fmt.Errorf("could not derive a worktree name from the branch or directory — use: vibe start --as <name>")
 		}
-		name = slug + "." + cfg.Name
+		// The app name comes from the MAIN checkout, not this worktree's copy
+		// of vibe.json. The copy is editable, and renaming it there (a common
+		// "avoid a collision" reflex) silently breaks the parent link: the
+		// route stops grouping under the app, drops off the app's picker, and
+		// no longer inherits the app's oauth_callback_port. vibe already keeps
+		// worktrees isolated, so the name never needs to change.
+		app := cfg.Name
+		if mainDir := mainCheckoutDir(dir); mainDir != "" {
+			if mainName := vibeJSONName(mainDir); mainName != "" && mainName != app {
+				fmt.Printf("note: using app name %q from the main checkout (this worktree's vibe.json says %q)\n", mainName, app)
+				app = mainName
+			}
+		}
+		name = slug + "." + app
 		// The copied vibe.json's fixed ports belong to the main checkout:
 		// the daemon auto-assigns the primary port (and fresh reserve_ports
-		// values); the oauth bridge can't be shared, so it's dropped here.
+		// values); the oauth bridge is inherited from the parent route rather
+		// than rebound here.
 		port = 0
 		if oauthPort > 0 {
-			fmt.Println("note: oauth_callback_port is ignored for worktree routes")
+			fmt.Println("note: oauth_callback_port is inherited from the parent app, not rebound per worktree")
 			oauthPort = 0
 		}
-		fmt.Printf("worktree of %s detected → %s\n", cfg.Name, name)
+		fmt.Printf("worktree of %s detected → %s\n", app, name)
 	}
 	return startNew(name, port, cfg.Cmd, oauthPort, cfg.ReservePorts)
 }

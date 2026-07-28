@@ -168,7 +168,16 @@ Your app is now at **https://myapp.{{TLD}}**
 Run `vibe start` inside a linked git worktree and vibe registers
 `<branch-slug>.<app>.{{TLD}}` (e.g. `feature-auth.myapp.{{TLD}}`) on its own
 auto-assigned port instead of `<app>.{{TLD}}` — worktrees never clobber the
-main checkout or each other. `--as <name>` overrides the subdomain. Worktree
+main checkout or each other. `--as <name>` overrides the subdomain.
+
+**Leave the worktree's `vibe.json` `name` alone.** It is a copy, and renaming
+it to dodge a collision (there isn't one — vibe handles the isolation) breaks
+the parent link: the route drops out of the app's picker and dashboard group
+and stops inheriting the app's `oauth_callback_port`, which breaks OAuth. The
+app name is read from the main checkout, and `vibe start` prints a note when
+the worktree's copy disagrees. Likewise, don't register a worktree as a
+separate app with `vibe start <name> <port> -- <cmd>` — that makes an
+unrelated route, not a worktree of the app. Worktree
 routes auto-stop after 60 idle minutes (the next visit restarts them) and are
 removed automatically once the worktree itself is removed — the directory
 deleted, or `git worktree remove` run even if leftover files linger (vibe

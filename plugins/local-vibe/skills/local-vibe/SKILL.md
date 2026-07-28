@@ -28,6 +28,7 @@ then use the `https://<name>.vibe` URL it hands back.
 - **In a project that has a `vibe.json`:** `vibe start`
 - **Ad hoc, no config file:** `vibe start <name> <port> -- <command>`
   Pass `0` for the port to let vibe auto-assign one and inject it as `$PORT`.
+  Do **not** use this form inside a git worktree — see below.
 
 Minimal `vibe.json` (omit `port` so vibe assigns one and sets `$PORT`):
 
@@ -38,16 +39,39 @@ Minimal `vibe.json` (omit `port` so vibe assigns one and sets `$PORT`):
 The command must bind `$PORT` (read `process.env.PORT` / `os.environ["PORT"]`,
 or pass `--port $PORT`). The app is then reachable at `https://myapp.vibe`.
 
-## Git worktrees
+## Git worktrees — run `vibe start`, change nothing else
 
-Run `vibe start` inside a linked worktree and it registers
-`https://<branch-slug>.<app>.vibe` on its own auto-assigned port — the main
-checkout's `<app>.vibe` and other worktrees are untouched, so test your branch
-there instead of fighting over ports. Override the subdomain with
-`vibe start --as <name>`. Deleting the worktree cleans up the route
-automatically. Even unregistered worktrees are discovered and offered on the
-app's picker page, but running `vibe start` yourself is still the best path —
-it hands you the URL directly.
+Inside a linked worktree, the whole procedure is:
+
+```bash
+vibe start            # from the worktree directory. That's it.
+```
+
+You get `https://<branch-slug>.<app>.vibe` on its own auto-assigned port. The
+main checkout's `<app>.vibe` and every other worktree keep running untouched —
+**vibe already guarantees that isolation, so you never need to arrange it
+yourself.**
+
+**Do not "avoid a collision" — there isn't one.** Specifically, in a worktree:
+
+- **Do not change `name` in the worktree's `vibe.json`.** It is a copy, and
+  renaming it (`myapp` → `myapp-wt`) is the single most common way to break
+  this. The worktree stops being a worktree *of* the app: it disappears from
+  the app's picker and dashboard group, and it no longer inherits the app's
+  `oauth_callback_port`, so OAuth logins break. vibe reads the app name from
+  the main checkout and will tell you when the copy disagrees — but leave the
+  copy alone.
+- **Do not register a second app** with `vibe start <name> <port> -- <cmd>`.
+  That creates an unrelated route, not a worktree of the app.
+- **Do not pick a port**, and do not copy the parent's `port` — vibe assigns a
+  free one and injects `$PORT`.
+
+Only the subdomain is yours to choose, via `vibe start --as <name>` if the
+branch slug is unwieldy.
+
+A worktree inherits the parent app's OAuth callback bridge, and vibe copies the
+parent's untracked `.env*` files in if the worktree has none. Deleting the
+worktree removes the route automatically.
 
 ## Finding what's already running (don't guess the URL)
 
@@ -58,10 +82,16 @@ it hands you the URL directly.
 ## Full guide
 
 For framework-specific config (Vite/Next `allowedHosts`, Flask, Django, Rails,
-Jekyll), auto-port details, `reserve_ports` for multi-port apps, and OAuth
-localhost callbacks, read the authoritative guide from the running daemon —
-don't reproduce it from memory:
+Jekyll), auto-port details, `reserve_ports` for multi-port apps, worktree
+routes, and OAuth localhost callbacks, read the authoritative guide from the
+running daemon — don't reproduce it from memory:
 
 ```bash
-curl http://localhost:7999/setup.md
+curl -sS --max-time 5 http://localhost:7999/setup.md || curl -sS --max-time 5 http://local.vibe/setup.md
 ```
+
+The daemon's fixed port is tried first so the guide is reachable even when DNS
+or the privileged-port redirect is down. The `local.vibe` fallback covers the
+opposite case: a VPN kill-switch or firewall that filters direct connections to
+loopback high ports while the redirect still works. If both fail, run
+`vibe doctor`.
