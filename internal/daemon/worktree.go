@@ -142,6 +142,28 @@ func worktreeDirGone(r *Route) bool {
 	if r.Parent == "" || r.Dir == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(r.Dir, ".git"))
-	return os.IsNotExist(err)
+	return dirIsGoneWorktree(r.Dir)
+}
+
+// dirIsGoneWorktree reports whether dir is a worktree that no longer exists,
+// as opposed to one that is merely unreachable right now.
+//
+// "Gone" is a destructive verdict: it deregisters the route and SIGTERMs the
+// child. A bare os.IsNotExist on dir/.git can't tell a removed worktree from a
+// volume that isn't mounted yet — this repo lives on a file-sync mount and the
+// daemon starts at login, so a slow mount would silently deregister every
+// worktree route and kill its server on every reboot. The parent directory
+// disambiguates: a `git worktree remove` (or a leftover folder resurrected by
+// file-sync) leaves the PARENT in place, while an unmounted or still-syncing
+// volume takes the parent with it.
+func dirIsGoneWorktree(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
+		return false // present, or an error we shouldn't act on
+	}
+	// .git is absent. Only trust that if the containing directory is readable —
+	// otherwise the whole path is unavailable and this says nothing.
+	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
+		return false
+	}
+	return true
 }

@@ -64,13 +64,17 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 		// A child that survived the restart (managed children outlive the
 		// daemon on unix) must be killed here too — dropping the entry alone
 		// would orphan a running server nobody tracks.
-		if parent != "" && entry.Dir != "" {
-			if _, statErr := os.Stat(filepath.Join(entry.Dir, ".git")); os.IsNotExist(statErr) {
-				if entry.PID > 0 && processAlive(entry.PID) {
-					_ = killAdoptedProcess(entry.PID)
-				}
-				continue
+		if parent != "" && entry.Dir != "" && dirIsGoneWorktree(entry.Dir) {
+			// Only kill a PID we can still prove is ours. The daemon may have
+			// been down long enough for the OS to recycle it, and
+			// killAdoptedProcess signals a whole process group — anchoring on
+			// "this pid's group holds the port we registered" is the same
+			// check adoptOrphan uses before claiming a survivor, and is what
+			// keeps a stranger's process tree from being SIGTERM'd at startup.
+			if entry.PID > 0 && processAlive(entry.PID) && pidGroupHoldsPort(entry.PID, entry.Port) {
+				_ = killAdoptedProcess(entry.PID)
 			}
+			continue
 		}
 		rt := RouteSticky
 		if entry.Type != "" {
