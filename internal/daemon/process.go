@@ -83,8 +83,19 @@ func (pm *ProcessManager) fireExit(name string, pid int) {
 // The daemon has the process-group leader PID but no *exec.Cmd, so Stop kills
 // it via killAdoptedProcess (process-group SIGTERM) rather than through cmd.
 // Calling Start for the same route later supersedes the adoption.
+//
+// Re-adopting a (name, pid) that is already tracked is a no-op. Recovery runs
+// on every failed proxy round-trip, and a transient upstream error against a
+// perfectly healthy child lands here with the pid it already has. Spawning a
+// second watcher each time would leak a goroutine and a kqueue/pidfd fd that
+// only closes when the process finally dies — unbounded growth against
+// RLIMIT_NOFILE on a long-lived daemon with a flaky dev server.
 func (pm *ProcessManager) Adopt(name string, pid int) {
 	pm.mu.Lock()
+	if cur, ok := pm.adopted[name]; ok && cur == pid {
+		pm.mu.Unlock()
+		return
+	}
 	pm.adopted[name] = pid
 	pm.mu.Unlock()
 
@@ -316,16 +327,38 @@ func (pm *ProcessManager) IsRunning(name string) bool {
 // OwnsPID reports whether pid belongs to one of the daemon's managed children.
 // Used to prevent the "kill and retry" recovery flow from SIGTERM'ing our own
 // processes — the caller should stop the owning route instead.
+// It matches descendants, not just the process-group leader vibe spawned: the
+// leader is a login shell ($SHELL -lc "npm run dev"), so the process actually
+// holding the route's port is almost always a grandchild. lsof reports that
+// listener's pid, so a leader-only comparison misses it and the "kill the port
+// holder" paths would SIGTERM another route's live dev server.
 func (pm *ProcessManager) OwnsPID(pid int) bool {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	leaders := make([]int, 0, len(pm.procs)+len(pm.adopted))
 	for _, cmd := range pm.procs {
-		if cmd.Process != nil && cmd.Process.Pid == pid {
-			return true
+		if cmd.Process != nil {
+			leaders = append(leaders, cmd.Process.Pid)
 		}
 	}
 	for _, p := range pm.adopted {
-		if p == pid {
+		leaders = append(leaders, p)
+	}
+	pm.mu.Unlock()
+
+	for _, l := range leaders {
+		if l == pid {
+			return true
+		}
+	}
+	// Not a leader — check whether it belongs to a leader's process group.
+	// Done outside the lock: Getpgid is a syscall, and holding pm.mu across it
+	// would serialize every caller behind the kernel.
+	pgid, ok := processGroupOf(pid)
+	if !ok {
+		return false
+	}
+	for _, l := range leaders {
+		if pgid == l {
 			return true
 		}
 	}
