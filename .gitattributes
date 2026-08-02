@@ -1,0 +1,8 @@
+# Ship text files with LF regardless of the checkout platform. SKILL.md is
+# //go:embed-ed and installed verbatim into ~/.claude/skills, and a CRLF
+# checkout on Windows changes the embedded bytes — which broke the
+# frontmatter test and would make the embedded/marketplace copies differ
+# from what ships on other platforms.
+* text=auto eol=lf
+*.png binary
+*.ico binary

@@ -9,6 +9,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Cross-platform correctness on a current toolchain. Tracks "stable" rather
+  # than a pinned version on purpose: this job previously pinned Go 1.22, and
+  # when GitHub moved macos-latest to a newer image, dyld began rejecting the
+  # cgo-linked test binaries that toolchain produced ("missing LC_UUID load
+  # command"). A pin that the runner image outgrows fails for reasons that have
+  # nothing to do with our code, so the OS and the toolchain move together here.
+  # The floor that we actually promise is verified by the `minimum-go` job.
   test:
     strategy:
       fail-fast: false
@@ -19,7 +26,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: stable
       - run: go build ./...
       - run: go test ./...
       - run: go vet ./...
+
+  # go.mod declares the minimum Go this project supports, and people do build
+  # from source. Verify that claim instead of assuming it: without this, using
+  # a newer stdlib API would silently raise the real floor while go.mod kept
+  # advertising the old one. Linux only — the dyld issue above makes older
+  # toolchains unrunnable on current macOS images, and this job is about the
+  # language/stdlib floor, not platform behavior.
+  minimum-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go test ./...
