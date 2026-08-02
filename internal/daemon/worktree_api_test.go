@@ -7,8 +7,13 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +53,7 @@ func TestRegisterWorktreeOverrides(t *testing.T) {
 
 	// Port 3200 is what the copied vibe.json would claim; it must be ignored.
 	// reserve_ports keeps its name but must get a fresh value.
-	w := postRegister(t, s, `{"name":"feat.app","cmd":"sleep 30","port":3200,"dir":"`+t.TempDir()+`","reserve_ports":{"server":3201}}`)
+	w := postRegister(t, s, `{"name":"feat.app","cmd":"sleep 30","port":3200,"dir":"`+fakeWorktreeDir(t)+`","reserve_ports":{"server":3201}}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("register = %d: %s", w.Code, w.Body.String())
 	}
@@ -85,7 +90,7 @@ func TestRegisterWorktreeOverrides(t *testing.T) {
 	}
 
 	// An explicit idle_timeout wins over the worktree default.
-	w2 := postRegister(t, s, `{"name":"feat2.app","cmd":"sleep 30","idle_timeout":5}`)
+	w2 := postRegister(t, s, `{"name":"feat2.app","cmd":"sleep 30","dir":"`+fakeWorktreeDir(t)+`","idle_timeout":5}`)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("register feat2 = %d: %s", w2.Code, w2.Body.String())
 	}
@@ -179,13 +184,24 @@ func TestLoadPruneKillsSurvivingWorktreeChild(t *testing.T) {
 	s.ConfigDir = cfgDir
 
 	// Spawn a real child in its own process group via the ProcessManager,
-	// exactly like a managed route's child.
+	// exactly like a managed route's child. It must actually LISTEN on the
+	// route's port: that is the identity proof the load prune requires before
+	// signalling a pid it only knows from persisted state (across daemon
+	// downtime the OS can recycle pids, and the kill hits a whole process
+	// group). A child that isn't listening also isn't serving the stale
+	// content the prune exists to stop.
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 needed to bind a port in the child's process group")
+	}
 	dir := t.TempDir() // no .git link → gone under the worktree rule
-	wt := &Route{Name: "f.app", Parent: "app", Type: RouteManaged, Port: 3960, Cmd: "sleep 60", Dir: dir, RegisteredAt: time.Now()}
+	port := freeTCPPort(t)
+	wt := &Route{Name: "f.app", Parent: "app", Type: RouteManaged, Port: port,
+		Cmd: fmt.Sprintf("python3 -m http.server %d --bind 127.0.0.1", port), Dir: dir, RegisteredAt: time.Now()}
 	pid, err := s.procs.Start(wt)
 	if err != nil {
 		t.Fatalf("start child: %v", err)
 	}
+	waitPortListening(t, port)
 	wt.SetPID(pid)
 	wt.Running.Store(true)
 	table := NewRouteTable()
@@ -264,4 +280,72 @@ func TestAdoptWorktreeEndpoint(t *testing.T) {
 	if w2.Code != http.StatusNotFound {
 		t.Errorf("foreign path adopt = %d; want 404", w2.Code)
 	}
+}
+
+// waitPortListening blocks until something accepts on port.
+func waitPortListening(t *testing.T, port int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("port %d never began listening", port)
+}
+
+// TestLoadPruneSparesUnprovenPID is the safety half of the load-time prune: a
+// persisted PID that is alive but whose process group does NOT hold the
+// route's registered port cannot be proven to be ours. Across daemon downtime
+// the OS recycles pids, and killAdoptedProcess signals an entire process
+// group, so acting on an unproven pid can SIGTERM a stranger's whole tree.
+func TestLoadPruneSparesUnprovenPID(t *testing.T) {
+	s := testServer()
+	cfgDir := t.TempDir()
+	s.ConfigDir = cfgDir
+
+	// A live process that is NOT listening on the route's port — stands in for
+	// a recycled pid belonging to something unrelated.
+	dir := t.TempDir()
+	stranger := &Route{Name: "s.app", Parent: "app", Type: RouteManaged, Port: freeTCPPort(t),
+		Cmd: "sleep 60", Dir: dir, RegisteredAt: time.Now()}
+	pid, err := s.procs.Start(stranger)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.procs.Stop("s.app") })
+	stranger.SetPID(pid)
+	stranger.Running.Store(true)
+
+	table := NewRouteTable()
+	table.Add(stranger)
+	if err := saveStickyRoutes(table, cfgDir); err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewRouteTable()
+	if err := loadStickyRoutes(fresh, cfgDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fresh.Get("s.app"); ok {
+		t.Error("gone worktree should still be dropped from the table")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if !processAlive(pid) {
+		t.Fatalf("pid %d was killed without proof of ownership — a recycled pid "+
+			"would take an unrelated process group down with it", pid)
+	}
+}
+
+// fakeWorktreeDir returns a temp dir carrying the .git link file that marks a
+// linked git worktree, so it passes the register-path worktree check.
+func fakeWorktreeDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: /tmp/parent/.git/worktrees/wt\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

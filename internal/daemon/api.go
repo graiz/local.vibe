@@ -484,6 +484,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "oauth_callback_port is not supported on worktree routes — a fixed localhost port can't be shared across worktrees")
 			return
 		}
+		// A dotted name means every request to this route runs the worktree
+		// prune, which deregisters it and kills its child the moment Dir/.git
+		// is missing. Registering a non-worktree dir under a dotted name
+		// therefore "succeeds", spawns, and is destroyed on the first visit —
+		// so reject it up front with an error the caller can act on.
+		if req.Dir == "" {
+			writeJSONError(w, http.StatusBadRequest, "worktree routes (<worktree>.<app>) require a dir")
+			return
+		}
+		if _, err := os.Stat(filepath.Join(req.Dir, ".git")); err != nil {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("dir %q is not a git worktree (no .git entry) — worktree routes are only valid inside a linked worktree", req.Dir))
+			return
+		}
 		req.Port = 0 // always auto-assign
 	}
 	if req.URL != "" {
@@ -518,6 +531,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		for k := range reservePorts {
 			reservePorts[k] = 0
 		}
+	}
+	// The primary port needs the same vibe-internal collision check as the
+	// reserve ports. Without it a register whose port is already held by
+	// another running managed route skips straight to preflightPort →
+	// killPort, which SIGTERMs that route's server instead of reporting the
+	// conflict. handleStart and startManagedNow both check via
+	// checkVibePortCollisions; this path used to disagree with them.
+	if msg := s.vibePortClaim(req.Name, req.Port); msg != "" {
+		writeJSONError(w, http.StatusConflict, msg)
+		return
 	}
 	if msg := s.reservePortsClaim(req.Name, reservePorts); msg != "" {
 		writeJSONError(w, http.StatusConflict, msg)
@@ -672,6 +695,13 @@ func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name s
 		return
 	}
 	if route.Type == RouteManaged {
+		// Mark not-running BEFORE killing, like every other intentional stop.
+		// handleManagedExit distinguishes a crash from a deliberate stop purely
+		// by this flag, so skipping it makes a deregistered route's exit look
+		// unexpected and seeds a Failure (a log-file read) for a route that is
+		// about to disappear.
+		route.Running.Store(false)
+		route.Ready.Store(false)
 		// Stop handles both spawned and re-adopted children. Fall back to
 		// killing whatever holds the port (mirrors handleStop) so a route the
 		// daemon couldn't track cleanly still releases its port on removal.
@@ -706,6 +736,29 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	// every other validation has passed — otherwise a later early-return
 	// (bad URL, OAuth port collision, etc.) would leave the route removed
 	// from the table but never re-added under any name.
+	// Worktree routes carry invariants that register enforces and this handler
+	// historically did not, letting a PUT produce a route that behaves one way
+	// until the next daemon restart and differently after it (Parent is
+	// recomputed from the name at load, not stored).
+	if route.Parent != "" {
+		if req.Name != "" && req.Name != name {
+			// A single-label rename passes validName but strands Parent set,
+			// so the route keeps worktree pruning and OAuth-bridge inheritance
+			// until a restart silently recomputes Parent="" and changes its
+			// behavior. Renaming a worktree route has no meaning anyway — the
+			// name is derived from the branch.
+			writeJSONError(w, http.StatusBadRequest, "worktree routes cannot be renamed — the name is derived from the branch")
+			return
+		}
+		if req.URL != "" {
+			writeJSONError(w, http.StatusBadRequest, "worktree routes cannot be converted to bookmarks")
+			return
+		}
+		if req.OAuthCallbackPort != nil && *req.OAuthCallbackPort > 0 {
+			writeJSONError(w, http.StatusBadRequest, "oauth_callback_port is not supported on worktree routes — they inherit the parent's bridge")
+			return
+		}
+	}
 	renaming := false
 	if req.Name != "" && req.Name != name {
 		if !validName.MatchString(req.Name) {
@@ -855,16 +908,47 @@ func (s *Server) handleAdoptWorktree(w http.ResponseWriter, r *http.Request, nam
 		writeJSONError(w, http.StatusNotFound, "path is not an unregistered worktree of this app")
 		return
 	}
+	wtName := match.Slug + "." + parent.Name
+	// The slug came from a branch name, so it still has to clear the same
+	// validation a CLI-registered worktree does. Without this a branch called
+	// "local" (or anything else parseRouteName rejects) registers and runs
+	// fine, then vanishes on the next daemon restart when loadStickyRoutes
+	// re-parses the name — orphaning the child it left running.
+	if _, err := parseRouteName(wtName); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("worktree name %q is not usable as a route: %v", wtName, err))
+		return
+	}
+	// Inherit the parent's reserve-port NAMES with zeroed values; fresh ports
+	// are assigned below. The cmd is the parent's and references
+	// $PORT_<NAME>, so dropping these entirely (as this path used to) spawns
+	// the child with those variables empty — it then crashes or silently binds
+	// its built-in default, colliding with the parent's live reserve port.
+	reserve := make(map[string]int, len(parent.ReservePorts))
+	for k := range parent.ReservePorts {
+		reserve[k] = 0
+	}
 	route := &Route{
-		Name:         match.Slug + "." + parent.Name,
+		Name:         wtName,
 		Parent:       parent.Name,
 		Type:         RouteManaged,
 		Cmd:          parent.Cmd,
 		Dir:          match.Path,
+		ReservePorts: reserve,
 		IdleTimeout:  defaultWorktreeIdleMinutes,
 		RegisteredAt: time.Now(),
 	}
 	s.table.Add(route)
+	// Assign after Add so each findFreePort sees the values handed out so far
+	// and can't hand out a duplicate — same ordering the register path relies on.
+	for _, kv := range reservePortValuesSorted(route.ReservePorts) {
+		p, err := findFreePort(s.table)
+		if err != nil {
+			s.table.Remove(route.Name)
+			writeJSONError(w, http.StatusInternalServerError, "could not find a free reserve port")
+			return
+		}
+		route.ReservePorts[kv.Name] = p
+	}
 	if err := s.startManagedNow(route); err != nil {
 		s.table.Remove(route.Name)
 		writeJSONError(w, http.StatusConflict, err.Error())
