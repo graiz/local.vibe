@@ -367,6 +367,33 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 			route.TouchActivity()
 			target, _ := url.Parse(fmt.Sprintf("http://localhost:%d", route.Port))
 			proxy := httputil.NewSingleHostReverseProxy(target)
+			// Dev servers increasingly gate their hot-reload WebSocket on the
+			// request's Origin: Next.js 15.2+ (allowedDevOrigins) answers an
+			// upgrade carrying a foreign Origin with 200 HTML instead of 101.
+			// Behind vibe the Origin is always foreign — the browser sends
+			// https://<name>.vibe while the server believes it is
+			// localhost:<port> — so the socket never establishes, the dev
+			// client retries, and after three failures calls location.reload().
+			// That is a full page reload every ~20s that silently wipes client
+			// state, and it reads as an app bug rather than a proxy one.
+			//
+			// Present the upstream with its own origin so the handshake is
+			// same-origin from its point of view. Scoped to upgrades on
+			// purpose: rewriting Origin on ordinary requests would break
+			// apps that check it for CSRF (Auth.js compares Origin against
+			// AUTH_URL on POST), and those requests work today. The browser's
+			// real origin is preserved in X-Forwarded-Origin for anything
+			// that genuinely needs it.
+			baseDirector := proxy.Director
+			proxy.Director = func(req *http.Request) {
+				baseDirector(req)
+				if isWebSocketUpgrade(req) {
+					if orig := req.Header.Get("Origin"); orig != "" {
+						req.Header.Set("X-Forwarded-Origin", orig)
+					}
+					rewriteOriginHeader(req, target)
+				}
+			}
 			// The default reverse-proxy error path returns a bare 502 when the
 			// upstream fails. That happens when the registered port is dead, or
 			// when a squatter on a recycled port answers TCP but not HTTP (the
