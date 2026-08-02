@@ -11,22 +11,41 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// pfRDRRules are vibe's two redirect rules: 80→7999 (HTTP) and 443→7443 (TLS).
+const (
+	defaultPFHTTPPort = 7999
+	defaultPFTLSPort  = 7443
+)
+
+// pfHTTPPort/pfTLSPort are the redirect targets. They default to vibe's
+// standard ports and are overridden by `pf-apply --http-port/--tls-port`,
+// which the com.vibe.pf plist passes from the config that `vibe setup` read.
+// pf-apply runs as root, where config.Dir() would resolve to root's home
+// rather than the user's, so the ports are handed in rather than re-read.
+var (
+	pfHTTPPort = defaultPFHTTPPort
+	pfTLSPort  = defaultPFTLSPort
+)
+
+// pfRDRRules returns vibe's two redirect rules: 80→HTTP port and 443→TLS port.
 // They must be present in pf's active ruleset for *.vibe HTTP/HTTPS to reach the
-// (unprivileged) daemon, which can't bind low ports itself. This is the single
-// source of truth for the rules, applied by the network-change LaunchDaemon via
-// `vibe pf-apply`.
-const pfRDRRules = "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 7999\n" +
-	"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7443\n"
+// (unprivileged) daemon, which can't bind low ports itself.
+func pfRDRRules() string {
+	return fmt.Sprintf("rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port %d\n"+
+		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port %d\n",
+		pfHTTPPort, pfTLSPort)
+}
 
 // pfRedirectSentinelHTTP and pfRedirectSentinelHTTPS uniquely mark vibe's two
 // redirects in a dumped ruleset. Anchor on the full redirect target (not a bare
-// "port 7443") so an unrelated rule that merely mentions the port can't be
+// port number) so an unrelated rule that merely mentions the port can't be
 // mistaken for ours.
-const (
-	pfRedirectSentinelHTTP  = "-> 127.0.0.1 port 7999"
-	pfRedirectSentinelHTTPS = "-> 127.0.0.1 port 7443"
-)
+func pfRedirectSentinelHTTP() string {
+	return fmt.Sprintf("-> 127.0.0.1 port %d", pfHTTPPort)
+}
+
+func pfRedirectSentinelHTTPS() string {
+	return fmt.Sprintf("-> 127.0.0.1 port %d", pfTLSPort)
+}
 
 // vibeRDRPresent reports whether BOTH of vibe's redirects (:80→7999 and
 // :443→7443) are already in the given `pfctl -sn` (translation rules) dump.
@@ -41,8 +60,8 @@ const (
 // would see the sentinel and refuse to reload, leaving http://*.vibe broken with
 // no way out. Requiring both means a partial ruleset correctly triggers a merge.
 func vibeRDRPresent(natRules string) bool {
-	return strings.Contains(natRules, pfRedirectSentinelHTTP) &&
-		strings.Contains(natRules, pfRedirectSentinelHTTPS)
+	return strings.Contains(natRules, pfRedirectSentinelHTTP()) &&
+		strings.Contains(natRules, pfRedirectSentinelHTTPS())
 }
 
 // buildMergedRuleset assembles a complete pf ruleset that re-adds vibe's rdr
@@ -101,7 +120,7 @@ func buildMergedRuleset(currentNAT, currentFilter string) string {
 	emit(tables)
 	emit(opts)
 	emit(norm)
-	b.WriteString(pfRDRRules) // vibe's rdr leads the translation section
+	b.WriteString(pfRDRRules()) // vibe's rdr leads the translation section
 	emit(xlate)
 	emit(dummy)
 	emit(filt)
@@ -130,7 +149,7 @@ func reassertPFRules() error {
 		// DOES replace the main ruleset (the old clobbering behavior), so log it
 		// loudly: a recurring fallback means the merge needs attention.
 		fmt.Fprintf(os.Stderr, "vibe pf-apply: merge reload failed (%v); falling back to minimal ruleset — this may drop other tools' pf rules\n", err)
-		if ferr := pfctlLoad(pfRDRRules + "pass all\n"); ferr != nil {
+		if ferr := pfctlLoad(pfRDRRules() + "pass all\n"); ferr != nil {
 			return fmt.Errorf("pf reassert failed (merge: %v; fallback: %v)", err, ferr)
 		}
 	}
@@ -167,5 +186,7 @@ var pfApplyCmd = &cobra.Command{
 }
 
 func init() {
+	pfApplyCmd.Flags().IntVar(&pfHTTPPort, "http-port", defaultPFHTTPPort, "daemon HTTP port to redirect :80 to")
+	pfApplyCmd.Flags().IntVar(&pfTLSPort, "tls-port", defaultPFTLSPort, "daemon TLS port to redirect :443 to")
 	rootCmd.AddCommand(pfApplyCmd)
 }

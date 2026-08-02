@@ -256,9 +256,45 @@ func stagePFHelper(src string) (string, error) {
 	return dst, nil
 }
 
+// configuredDaemonPorts reads the daemon's HTTP and TLS ports from the REAL
+// user's config, falling back to vibe's defaults. Setup runs as root, so the
+// config has to be read from the invoking user's home — and the ports have to
+// be baked into the pf plist as arguments, because `vibe pf-apply` also runs
+// as root at boot and would otherwise look in root's home and silently use
+// the defaults. A user on a non-default port would then get a redirect
+// pointing at a dead port that `vibe doctor --fix` could never repair.
+func configuredDaemonPorts() (httpPort, tlsPort int) {
+	httpPort, tlsPort = 7999, 7443
+	home, err := realUserHome()
+	if err != nil {
+		return httpPort, tlsPort
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".vibe", "config.json"))
+	if err != nil {
+		return httpPort, tlsPort
+	}
+	var cfgMap map[string]interface{}
+	if json.Unmarshal(data, &cfgMap) != nil {
+		return httpPort, tlsPort
+	}
+	daemon, _ := cfgMap["daemon"].(map[string]interface{})
+	if daemon == nil {
+		return httpPort, tlsPort
+	}
+	if p, ok := daemon["port"].(float64); ok && int(p) > 0 {
+		httpPort = int(p)
+	}
+	if tls, ok := daemon["tls"].(map[string]interface{}); ok {
+		if p, ok := tls["port"].(float64); ok && int(p) > 0 {
+			tlsPort = int(p)
+		}
+	}
+	return httpPort, tlsPort
+}
+
 // installPFLaunchDaemon installs a root LaunchDaemon that applies pf rules
-// forwarding port 80 → 7999 and port 443 → 7443 at each boot. The daemon
-// itself runs as the user — no root required at runtime.
+// forwarding port 80 and 443 to the daemon's configured HTTP/TLS ports at each
+// boot. The daemon itself runs as the user — no root required at runtime.
 func installPFLaunchDaemon() error {
 	src, err := os.Executable()
 	if err != nil {
@@ -272,6 +308,7 @@ func installPFLaunchDaemon() error {
 	if err != nil {
 		return fmt.Errorf("stage pf helper: %w", err)
 	}
+	httpPort, tlsPort := configuredDaemonPorts()
 
 	// The daemon runs `vibe pf-apply` (which idempotently merges vibe's redirect
 	// into the live pf ruleset) at boot via RunAtLoad and on every network change
@@ -288,6 +325,10 @@ func installPFLaunchDaemon() error {
 	<array>
 		<string>%s</string>
 		<string>pf-apply</string>
+		<string>--http-port</string>
+		<string>%d</string>
+		<string>--tls-port</string>
+		<string>%d</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -302,7 +343,7 @@ func installPFLaunchDaemon() error {
 	<string>/var/log/vibe-pf.log</string>
 </dict>
 </plist>
-`, binary)
+`, binary, httpPort, tlsPort)
 
 	existing, _ := os.ReadFile(launchDaemonPlist)
 	if string(existing) != plist {
