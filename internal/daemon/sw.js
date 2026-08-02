@@ -68,16 +68,38 @@ const FALLBACK_HTML = `<!doctype html>
   // if it does not, the daemon itself is likely down. Loopback fetch from a
   // secure context is allowed (potentially-trustworthy origin); a blocked probe
   // just falls through to the generic message.
-  var up=false;
-  try{ await fetch('http://127.0.0.1:__PORT__/_api/health',{mode:'no-cors',cache:'no-store'}); up=true; }catch(e){}
-  if(up){
+  // Arm the retry FIRST. The probe below can hang indefinitely — a VPN
+  // kill-switch that accepts the connection and forwards nothing is exactly
+  // this page's reason to exist — and a retry armed only after the probe
+  // settles would never fire, freezing the page on "Checking what's wrong".
+  setTimeout(function(){location.reload();}, 6000);
+  // The daemon's plain-HTTP port is bound directly, independent of the
+  // redirect. Race the probe against a timeout so a hung connection is
+  // reported as "unknown" rather than stalling.
+  var up=null;
+  try{
+    var ctl=('AbortController' in self)?new AbortController():null;
+    var timer=setTimeout(function(){ if(ctl) ctl.abort(); }, 2000);
+    await Promise.race([
+      fetch('http://127.0.0.1:__PORT__/_api/health',
+            {mode:'no-cors',cache:'no-store',signal:ctl?ctl.signal:undefined}).then(function(){up=true;}),
+      new Promise(function(r){ setTimeout(r, 2000); })
+    ]);
+    clearTimeout(timer);
+  }catch(e){ up=false; }
+  if(up===true){
     msg.innerHTML='The daemon is running, but the <b>HTTPS redirect is down</b> &mdash; a VPN or firewall likely flushed it. Restore it with:';
     cmd.textContent='vibe doctor --fix';
   } else {
-    msg.innerHTML='The vibe <b>daemon is not reachable</b>. If <code>vibe doctor --fix</code> does not help, the daemon may be down &mdash; start it with:';
-    cmd.textContent='vibe daemon start';
+    // up===false (probe refused) or up===null (probe timed out, or the browser
+    // blocked the mixed-content loopback fetch — Safari does). Both mean the
+    // probe is inconclusive about WHICH layer failed, so lead with the repair
+    // that fixes the common case and mention the daemon as the fallback,
+    // rather than asserting the daemon is down.
+    msg.innerHTML='Could not reach vibe. The redirect is the usual cause &mdash; try this first. '+
+      'If it does not help, the daemon may be down: run <code>vibe daemon start</code>.';
+    cmd.textContent='vibe doctor --fix';
   }
-  setTimeout(function(){location.reload();}, 4000);
 })();
 </script>
 </body></html>`;
