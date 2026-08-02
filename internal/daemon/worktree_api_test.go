@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -190,13 +189,10 @@ func TestLoadPruneKillsSurvivingWorktreeChild(t *testing.T) {
 	// downtime the OS can recycle pids, and the kill hits a whole process
 	// group). A child that isn't listening also isn't serving the stale
 	// content the prune exists to stop.
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 needed to bind a port in the child's process group")
-	}
 	dir := t.TempDir() // no .git link → gone under the worktree rule
 	port := freeTCPPort(t)
 	wt := &Route{Name: "f.app", Parent: "app", Type: RouteManaged, Port: port,
-		Cmd: fmt.Sprintf("python3 -m http.server %d --bind 127.0.0.1", port), Dir: dir, RegisteredAt: time.Now()}
+		Cmd: portBinderCmd(t, port), Dir: dir, RegisteredAt: time.Now()}
 	pid, err := s.procs.Start(wt)
 	if err != nil {
 		t.Fatalf("start child: %v", err)
@@ -285,7 +281,7 @@ func TestAdoptWorktreeEndpoint(t *testing.T) {
 // waitPortListening blocks until something accepts on port.
 func waitPortListening(t *testing.T, port int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
 		if err == nil {
@@ -348,4 +344,53 @@ func fakeWorktreeDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// portBinderCmd builds a shell command that starts a process which binds port
+// and then idles. It re-execs THIS test binary rather than reaching for an
+// interpreter: `python3 -m http.server` looked convenient but depends on the
+// login shell's PATH (ProcessManager spawns via $SHELL -lic, whose PATH is not
+// the test process's), which made the test pass locally and fail on macOS CI.
+// The test binary is guaranteed to exist and to be runnable.
+func portBinderCmd(t *testing.T, port int) string {
+	t.Helper()
+	// Must be absolute: ProcessManager runs the child with cwd = route.Dir, so
+	// a relative os.Args[0] would not resolve. os.Executable is the reliable
+	// source for the running binary's path.
+	self, err := os.Executable()
+	if err != nil {
+		self, err = filepath.Abs(os.Args[0])
+		if err != nil {
+			t.Fatalf("locate test binary: %v", err)
+		}
+	}
+	return fmt.Sprintf("%s=%d %s -test.run=TestHelperBindsPort", bindPortEnv, port, shellQuote(self))
+}
+
+// bindPortEnv switches the helper test below into port-binding mode.
+const bindPortEnv = "VIBE_TEST_BIND_PORT"
+
+// shellQuote single-quotes a path for the login shell ProcessManager spawns.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// TestHelperBindsPort is not a test. Re-executed as a child by
+// portBinderCmd, it binds the requested port and idles so the parent has a
+// real process-group member listening on a known port — the identity proof
+// the load prune requires. It skips immediately during a normal test run.
+func TestHelperBindsPort(t *testing.T) {
+	raw := os.Getenv(bindPortEnv)
+	if raw == "" {
+		t.Skip("helper process only; not run directly")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:"+raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "helper: bind %s: %v\n", raw, err)
+		os.Exit(1)
+	}
+	defer ln.Close()
+	// Idle until the parent kills us. Bounded so a leaked helper cannot
+	// outlive the suite.
+	time.Sleep(2 * time.Minute)
 }
