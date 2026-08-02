@@ -17,6 +17,7 @@ macOS and Windows. Single Go binary. No external services.
 - **Dashboard** — start/stop managed apps, add bookmarks, pick icons, switch list/grid
 - **HTTPS built-in** — a local CA is trusted in your Keychain; per-route SANs hot-reload without restart
 - **Agent-friendly** — paste `curl http://localhost:7999/setup.md` into Claude Code / Cursor and it understands the setup
+- **Git worktrees** — `vibe start` in a worktree gets its own `branch.myapp.vibe` on its own port, no config
 - **Bookmark anything** — route `tailscale.vibe` → your Tailscale machine, `office.vibe` → Home Assistant
 - **Zero hidden deps** — single binary, Cobra + Go stdlib, no Node, no Docker
 
@@ -89,6 +90,29 @@ vibe start
 
 vibe picks a free port starting at 3000 and passes it to your app via `$PORT`. The daemon keeps it running; `vibe stop myapp` shuts it down. Visit `https://myapp.vibe` in any browser.
 
+## Git worktrees
+
+Run `vibe start` inside a linked git worktree and vibe registers
+`<branch-slug>.<app>.vibe` on its own auto-assigned port — worktrees never
+clobber the main checkout or each other:
+
+```bash
+cd ../myapp-worktrees/feature-auth
+vibe start
+# started: feature-auth.myapp → https://feature-auth.myapp.vibe (port 3241)
+```
+
+Leave the worktree's copied `vibe.json` `name` alone — the app name is read from
+the main checkout, and renaming it breaks the parent link (dashboard grouping and
+inherited OAuth). Worktree routes auto-stop after 60 idle minutes and restart on
+the next visit, and are removed automatically once the worktree is gone.
+
+Visiting a stopped app that has worktrees shows a **picker** listing them —
+including worktrees on disk that nobody has run `vibe start` in yet, which
+launch with the app's own `cmd` in one click. Worktrees also inherit the parent's
+`oauth_callback_port`, so a single provider registration covers every branch. See
+[setup.md](internal/daemon/setup.md#git-worktrees) for the details.
+
 ## Dashboard
 
 <p align="center">
@@ -116,6 +140,8 @@ vibe register myapp 3000             # Static mapping (no process management)
 vibe deregister myapp                # Remove a route
 vibe list                            # List all routes
 vibe status                          # Show daemon health
+vibe doctor                          # Diagnose DNS, listeners, redirect, certs
+vibe doctor --fix                    # Repair the privileged-port redirect
 vibe open myapp                      # Open in browser
 vibe dev                             # Rebuild + restart daemon (for contributors)
 ```
@@ -143,7 +169,7 @@ vibe dev                             # Rebuild + restart daemon (for contributor
 export default defineConfig({ server: { allowedHosts: ['.vibe'] } })
 ```
 
-**Next.js** — in `next.config.js`:
+**Next.js** — nothing required. Vibe presents the dev server with its own origin on WebSocket upgrades, so hot reload connects over `https://<name>.vibe` out of the box. (Before that, Next's `allowedDevOrigins` check refused the HMR socket, the dev client retried, and after three failures called `location.reload()` — a full page reload every ~20s that silently wiped client state.) If you want to silence Next's cross-origin dev warning for non-HMR requests, add:
 ```js
 module.exports = { allowedDevOrigins: ['*.vibe'] }
 ```
@@ -175,8 +201,11 @@ bin/rails server -p $PORT
 | Type | Created by | Lifecycle |
 |------|-----------|-----------|
 | **managed** | `vibe start` / dashboard | Daemon manages the process; start/stop controls |
-| **sticky** | `vibe register` | Persists across daemon restarts |
+| **worktree** | `vibe start` in a git worktree | `<branch>.<app>.vibe` on its own port; auto-stops after 60 idle min; removed with the worktree |
+| **sticky** | `vibe register` | Static mapping; persists across daemon restarts |
 | **bookmark** | Dashboard | Redirects (307) or reverse-proxies to an external URL |
+| **pid** | API only | Removed automatically when the tracked PID exits |
+| **ttl** | `--ttl` on `vibe register` | Expires after N seconds |
 
 ### HTTP API
 
@@ -197,6 +226,8 @@ curl -X PUT    /_api/preferences -d '{"view":"grid"}'
 ```
 
 Port conflicts return `409` with the occupied port. Immediate process crashes include the last few lines of `~/.vibe/{name}.log` in the error response. Auto-assigned ports come back as `"port": <number>`.
+
+The API is unauthenticated, so **state-changing calls are rejected when they come from another site** — a page on any website could otherwise POST a managed route, whose `cmd` runs as you. The CLI, `curl`, and scripts are unaffected (they send no `Origin`); the dashboard and a route's own vibe-served pages work normally; bookmark routes are deliberately *not* trusted. Blocked calls return `403`. See [setup.md](internal/daemon/setup.md#api-access-from-the-browser).
 
 ### Runtime files
 

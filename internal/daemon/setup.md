@@ -181,7 +181,9 @@ unrelated route, not a worktree of the app. Worktree
 routes auto-stop after 60 idle minutes (the next visit restarts them) and are
 removed automatically once the worktree itself is removed — the directory
 deleted, or `git worktree remove` run even if leftover files linger (vibe
-checks the worktree's `.git` link). A still-running server from a removed
+checks the worktree's `.git` link, and requires the containing directory to be
+readable so an unmounted or still-syncing volume is never mistaken for a
+deleted worktree). A still-running server from a removed
 worktree is stopped on its next request, and visiting a removed worktree's
 URL redirects to the parent app. Visiting the main app
 while it's stopped auto-starts it as usual — unless the app has worktrees, in
@@ -210,7 +212,17 @@ export default defineConfig({
 
 ### Next.js
 
-Add to `next.config.js`:
+**No configuration required.** Vibe presents the dev server with its own origin
+on WebSocket upgrades, so hot reload connects over `https://<name>.{{TLD}}` out
+of the box.
+
+(Next 15.2+ gates the HMR socket on `Origin` via `allowedDevOrigins`. Behind a
+friendly hostname that check refused the upgrade, the dev client retried, and
+after three failures called `location.reload()` — a full page reload every ~20s
+that silently wiped client state and read as an app bug. Note the socket path is
+`_next/webpack-hmr` even under Turbopack.)
+
+To silence Next's cross-origin dev warning for ordinary (non-HMR) requests, add:
 
 ```js
 module.exports = {
@@ -273,6 +285,10 @@ What this means in practice:
   drive the API.
 - Read-only calls (`/health`, `/routes`, `/ready`) stay open from anywhere;
   responses aren't readable cross-origin because vibe sends no CORS headers.
+- A trusted origin must also be on a port vibe itself answers on (the daemon's
+  HTTP/TLS port, or the standard :80/:443 the redirect forwards). Every
+  `*.{{TLD}}` name resolves to 127.0.0.1, so `http://local.{{TLD}}:9999` is
+  simply whatever other service holds that port — not vibe, and not trusted.
 
 A blocked call returns `403` with an explanatory message. If you are building a
 tool that talks to the API from a browser page, serve it from `local.{{TLD}}`
