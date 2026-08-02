@@ -70,16 +70,18 @@ func (s *Server) originTrusted(origin string) bool {
 	// redirect forwards to the daemon. Any other local port is some other dev
 	// server and is not trusted.
 	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-		switch port {
-		case "":
-			return true
-		case fmt.Sprint(s.cfg.Daemon.Port):
-			return true
-		case fmt.Sprint(s.cfg.Daemon.TLS.Port):
-			return s.cfg.Daemon.TLS.Enabled
-		default:
-			return false
-		}
+		return s.daemonPortTrusted(port)
+	}
+
+	// The .vibe hosts below must pass the SAME port test. Every *.<tld> name
+	// resolves to 127.0.0.1, so "http://local.<tld>:31337" reaches whatever
+	// unrelated service holds port 31337 — and that page is schemefully
+	// same-site with the dashboard, so Sec-Fetch-Site won't catch it either.
+	// Without this check, any loopback port that can be made to render
+	// attacker-controlled HTML becomes a trusted API origin, which is the
+	// drive-by RCE this file exists to prevent.
+	if !s.daemonPortTrusted(port) {
+		return false
 	}
 
 	if host == "local."+tld {
@@ -94,6 +96,22 @@ func (s *Server) originTrusted(origin string) bool {
 		}
 	}
 	return false
+}
+
+// daemonPortTrusted reports whether an origin's port is one the daemon itself
+// answers on. An empty port means :80/:443, which the privileged-port redirect
+// forwards to the daemon. Any other port is some other local server.
+func (s *Server) daemonPortTrusted(port string) bool {
+	switch port {
+	case "":
+		return true
+	case fmt.Sprint(s.cfg.Daemon.Port):
+		return true
+	case fmt.Sprint(s.cfg.Daemon.TLS.Port):
+		return s.cfg.Daemon.TLS.Enabled
+	default:
+		return false
+	}
 }
 
 // apiStateChanging reports whether an /_api/ request can alter daemon state,
