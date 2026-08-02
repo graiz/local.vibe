@@ -36,6 +36,18 @@ func (s *Server) recoverManagedRoute(w http.ResponseWriter, r *http.Request, rou
 		return true
 	}
 
+	// A concurrent request may already be spawning this route — and may have
+	// finished, having just set Running=true and a fresh PID. Blowing that away
+	// below would restart the whole recovery dance against a healthy child:
+	// re-entering beginAutoStart, spawning a second time, and (once the first
+	// child binds) letting preflightPort → killPort SIGTERM the server we just
+	// started. Let the in-flight starter own the route and show the polling
+	// page instead.
+	if s.isAutoStarting(route.Name) {
+		s.serveStartingPage(w, r, route)
+		return true
+	}
+
 	// Normalize stale state: a dead PID shouldn't linger on the route.
 	if pid, ok := route.PIDValue(); ok && !processAlive(pid) {
 		route.ClearPID()
@@ -75,8 +87,15 @@ func (s *Server) recoverManagedRoute(w http.ResponseWriter, r *http.Request, rou
 	// worktree list) and chooses — starting main is one click.
 	if s.cfg.Daemon.AutoStartEnabled() && route.Cmd != "" && route.LoadFailure() == nil && !s.hasWorktrees(route) {
 		if s.beginAutoStart(route.Name) {
-			err := s.startManagedNow(route)
-			s.endAutoStart(route.Name)
+			// Deferred release: net/http recovers handler panics, so a panic
+			// anywhere in startManagedNow would otherwise leave the flag set
+			// for the daemon's lifetime — beginAutoStart never succeeds again
+			// (no respawn) and isAutoStarting keeps /repair from ever offering
+			// "restartable", wedging the route on a polling page forever.
+			err := func() error {
+				defer s.endAutoStart(route.Name)
+				return s.startManagedNow(route)
+			}()
 			if err != nil {
 				// Failure already recorded on the route; show the start page so
 				// the user sees the tailed log + recovery hint.

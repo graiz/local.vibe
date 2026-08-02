@@ -53,10 +53,16 @@ func (s *Server) armTTL(name string, expires time.Time) {
 		// hook, but this guards the narrow window where the timer already fired
 		// concurrently with the re-registration. Remove() fires onRouteRemoved,
 		// which cleans up this timer entry.
-		if r, ok := s.table.Get(name); ok {
-			if r.Type != RouteTTL || r.ExpiresAt == nil || r.ExpiresAt.After(time.Now()) {
-				return
-			}
+		r, ok := s.table.Get(name)
+		if !ok {
+			// Already gone. Returning here rather than falling through to
+			// Remove matters: a name re-registered in the window between this
+			// lookup and the Remove would be deleted by a timer that never
+			// belonged to it.
+			return
+		}
+		if r.Type != RouteTTL || r.ExpiresAt == nil || r.ExpiresAt.After(time.Now()) {
+			return
 		}
 		s.table.Remove(name)
 	})
