@@ -33,7 +33,7 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 // failureFromError turns a Start() error into a Failure record, scanning the
 // log tail (if present) for an actionable recovery hint. cmd is the route's
 // current command line — used for cmd-rewrite suggestions like python→python3.
-func failureFromError(err error, cmd string) *Failure {
+func failureFromError(err error, cmd, dir string) *Failure {
 	if err == nil {
 		return nil
 	}
@@ -42,7 +42,7 @@ func failureFromError(err error, cmd string) *Failure {
 	if errors.As(err, &se) {
 		f.Message = se.Err.Error()
 		f.Log = se.Tail
-		f.Recovery = scanLogForRecovery(se.Tail, cmd)
+		f.Recovery = scanLogForRecovery(se.Tail, cmd, dir)
 	}
 	return f
 }
@@ -239,11 +239,11 @@ func writePortConflict(w http.ResponseWriter, port int, recovery *Recovery) {
 // writeStartFailure sends a managed-process start error with the log tail and
 // a recovery hint attached when one of the known patterns matches. The
 // dashboard surfaces the hint as a one-click "kill and retry" button.
-func writeStartFailure(w http.ResponseWriter, status int, err error, cmd string) {
+func writeStartFailure(w http.ResponseWriter, status int, err error, cmd, dir string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
-	f := failureFromError(err, cmd)
+	f := failureFromError(err, cmd, dir)
 	resp := map[string]any{"error": f.Message}
 	if f.Log != "" {
 		resp["log"] = f.Log
@@ -655,7 +655,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		pid, err := s.procs.Start(route)
 		if err != nil {
 			s.table.Remove(route.Name)
-			writeStartFailure(w, http.StatusInternalServerError, err, route.Cmd)
+			writeStartFailure(w, http.StatusInternalServerError, err, route.Cmd, route.Dir)
 			return
 		}
 		route.SetPID(pid)
@@ -1055,8 +1055,8 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 	if err != nil {
 		route.Running.Store(false)
 		route.Ready.Store(false)
-		route.SetFailure(failureFromError(err, route.Cmd))
-		writeStartFailure(w, http.StatusInternalServerError, err, route.Cmd)
+		route.SetFailure(failureFromError(err, route.Cmd, route.Dir))
+		writeStartFailure(w, http.StatusInternalServerError, err, route.Cmd, route.Dir)
 		return
 	}
 	route.SetPID(pid)
@@ -1262,7 +1262,7 @@ func (s *Server) waitForReady(route *Route) {
 					Message: fmt.Sprintf("Server started but never bound port %d within %s.", route.Port, timeout),
 					Log:     tail,
 				}
-				if rec := scanLogForRecovery(tail, route.Cmd); rec != nil {
+				if rec := scanLogForRecovery(tail, route.Cmd, route.Dir); rec != nil {
 					f.Recovery = rec
 				} else if pid, ok := route.PIDValue(); ok && processAlive(pid) {
 					f.Recovery = &Recovery{
@@ -1285,7 +1285,7 @@ func (s *Server) waitForReady(route *Route) {
 				// Scan the log tail for an actionable recovery hint (e.g.
 				// Next.js's "Another dev server running — PID: 23674") so
 				// whoever polls /ready can offer a one-click "kill and retry".
-				route.SetFailure(failureFromLog(route.Name, "process exited before becoming ready", route.Cmd))
+				route.SetFailure(failureFromLog(route.Name, "process exited before becoming ready", route.Cmd, route.Dir))
 				return
 			}
 			if !ok || !route.Running.Load() {
@@ -1308,12 +1308,12 @@ func (s *Server) waitForReady(route *Route) {
 // running the recovery-hint scanner over it. Used when a managed process
 // dies asynchronously (after Start() returned) — we don't have an error
 // value from Start, only what the process wrote to its log.
-func failureFromLog(routeName, message, cmd string) *Failure {
+func failureFromLog(routeName, message, cmd, dir string) *Failure {
 	logPath := filepath.Join(config.Dir(), routeName+".log")
 	tail := tailLogFile(logPath, 12)
 	f := &Failure{Message: message, Log: tail}
 	if tail != "" {
-		f.Recovery = scanLogForRecovery(tail, cmd)
+		f.Recovery = scanLogForRecovery(tail, cmd, dir)
 	}
 	return f
 }

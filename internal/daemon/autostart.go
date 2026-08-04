@@ -188,7 +188,7 @@ func (s *Server) startManagedNow(route *Route) error {
 	if err != nil {
 		route.Running.Store(false)
 		route.Ready.Store(false)
-		route.SetFailure(failureFromError(err, route.Cmd))
+		route.SetFailure(failureFromError(err, route.Cmd, route.Dir))
 		return err
 	}
 	route.SetPID(pid)

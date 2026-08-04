@@ -60,6 +60,19 @@ var recoveryPatterns = []recoveryPattern{
 	},
 }
 
+// execDeniedRe matches a shell refusing to execute a file. On macOS this is
+// almost always com.apple.quarantine — the kernel returns EPERM on exec of a
+// quarantined file, and the shell reports it as "operation not permitted".
+// Exit code 126 means "found but not executable", the same condition surfaced
+// by a runner rather than the shell.
+//
+// Examples:
+//
+//	zsh:1: operation not permitted: node_modules/.bin/concurrently
+//	/bin/bash: .../vite: /usr/bin/env: bad interpreter: Operation not permitted
+//	error: script "dev" exited with code 126
+var execDeniedRe = regexp.MustCompile(`(?i)(bad interpreter:\s*operation not permitted|operation not permitted:\s*\S+|exited with code 126\b)`)
+
 // pythonNotFoundRe matches shell errors from invoking a missing `python`
 // interpreter. macOS no longer ships /usr/bin/python — projects that hard-code
 // `python` in their command crash here while `python3` works fine.
@@ -116,7 +129,24 @@ func suggestPython3Cmd(cmd string) (string, bool) {
 // returns a recovery hint if one of the known patterns matches. The route's
 // current cmd is consulted for cmd-rewrite suggestions (e.g. python → python3);
 // pass an empty string when no cmd is available.
-func scanLogForRecovery(tail, cmd string) *Recovery {
+func scanLogForRecovery(tail, cmd, dir string) *Recovery {
+	// An exec-denied message names the cause directly. Ask the quarantine
+	// probe for specifics (how many files, which agent, what to run); fall
+	// back to a generic message if nothing is actually flagged, since the
+	// shell can report EPERM for other reasons (a noexec mount, say).
+	if execDeniedRe.MatchString(tail) {
+		if rec := scanQuarantinedExecutables(dir, cmd); rec != nil {
+			return rec
+		}
+		return &Recovery{
+			Action: "info",
+			Message: "The shell refused to execute part of this command " +
+				"(\"operation not permitted\"). On macOS this is usually the " +
+				"com.apple.quarantine flag, which anything downloaded, unzipped, " +
+				"AirDropped, or synced from a cloud provider carries. Clear it with " +
+				"`xattr -dr com.apple.quarantine <path>` and retry.",
+		}
+	}
 	if tail == "" {
 		return nil
 	}

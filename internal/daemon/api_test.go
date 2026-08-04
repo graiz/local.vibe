@@ -906,7 +906,7 @@ func TestWriteStartFailureIncludesRecoveryHint(t *testing.T) {
 		Tail: tail,
 	}
 	w := httptest.NewRecorder()
-	writeStartFailure(w, http.StatusInternalServerError, se, "")
+	writeStartFailure(w, http.StatusInternalServerError, se, "", "")
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d; want 500", w.Code)

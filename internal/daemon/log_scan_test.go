@@ -83,7 +83,7 @@ func TestScanLogForRecovery(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := scanLogForRecovery(tc.tail, tc.cmd)
+			got := scanLogForRecovery(tc.tail, tc.cmd, "")
 			if tc.wantAction == "" {
 				if got != nil {
 					t.Fatalf("expected no recovery, got %+v", got)

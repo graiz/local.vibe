@@ -27,7 +27,7 @@ func (s *Server) handleManagedExit(name string, pid int) {
 	route.Ready.Store(false)
 	route.ClearPID()
 	if wasRunning && route.LoadFailure() == nil {
-		route.SetFailure(failureFromLog(route.Name, "process exited after becoming ready", route.Cmd))
+		route.SetFailure(failureFromLog(route.Name, "process exited after becoming ready", route.Cmd, route.Dir))
 	}
 }
 

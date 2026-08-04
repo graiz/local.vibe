@@ -100,7 +100,7 @@ func (s *Server) startPageRecoveryInitJS(route *Route) string {
 		if tail == "" {
 			return ""
 		}
-		rec := scanLogForRecovery(tail, route.Cmd)
+		rec := scanLogForRecovery(tail, route.Cmd, route.Dir)
 		if rec == nil {
 			return ""
 		}
