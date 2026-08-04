@@ -65,6 +65,12 @@ type dashboardRoute struct {
 	Parent      string // worktree routes: the app this belongs to
 	IsWorktree  bool
 	GroupHeader string // non-empty on the first row of a parent-less worktree group
+	// Discovered marks a git worktree that exists on disk but has no route
+	// yet. Path is what POST /_api/routes/{parent}/worktrees expects. These
+	// rows have no port, PID, or age — nothing has run yet.
+	Discovered bool
+	Path       string
+	Branch     string
 }
 
 // iconPool — visually distinct emoji set. A new route with no user-chosen
@@ -178,6 +184,28 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 			Parent:      rt.Parent,
 			IsWorktree:  rt.Parent != "",
 		})
+	}
+
+	// Worktrees that exist on disk but were never started. Until now these
+	// were reachable only by stopping the parent app to get its picker, so a
+	// worktree created while its app was running stayed invisible.
+	for _, rt := range routes {
+		for _, d := range s.discoverUnregisteredWorktrees(rt) {
+			name := d.Slug + "." + rt.Name
+			data.Routes = append(data.Routes, dashboardRoute{
+				Name:       name,
+				VibeURL:    fmt.Sprintf("%s://%s.%s", s.vibeScheme(), name, s.cfg.Daemon.TLD),
+				URLDisplay: "not started · " + d.Branch,
+				Type:       "managed",
+				Icon:       "🌿",
+				IsStopped:  true,
+				Parent:     rt.Name,
+				IsWorktree: true,
+				Discovered: true,
+				Path:       d.Path,
+				Branch:     d.Branch,
+			})
+		}
 	}
 
 	// Group worktrees under their parent app: sort by group (the parent's

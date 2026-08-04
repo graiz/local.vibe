@@ -362,6 +362,8 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/repair"):
 		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/repair")
 		s.handleRepair(w, r, name)
+	case r.Method == http.MethodGet && path == "/worktrees":
+		s.handleListWorktrees(w, r)
 	case r.Method == http.MethodGet && path == "/routes":
 		s.handleListRoutes(w, r)
 	case r.Method == http.MethodPost && path == "/routes":
@@ -406,6 +408,8 @@ func isDaemonAPIPath(method, path string) bool {
 		return true
 	case method == http.MethodGet && path == "/routes":
 		return true
+	case method == http.MethodGet && path == "/worktrees":
+		return true
 	case method == http.MethodPost && path == "/routes":
 		return true
 	case method == http.MethodPut && strings.HasPrefix(path, "/routes/"):
@@ -431,6 +435,52 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"routes": len(s.table.List()),
 		"uptime": int(time.Since(s.startedAt).Seconds()),
 	})
+}
+
+// worktreeResponse is one on-disk worktree of a managed app that has no route
+// yet — the thing `vibe start` inside it, or a click in the dashboard, would
+// register.
+type worktreeResponse struct {
+	Parent string `json:"parent"`
+	Name   string `json:"name"`   // the route name it would get: <slug>.<app>
+	Slug   string `json:"slug"`
+	Branch string `json:"branch"`
+	Path   string `json:"path"`
+	URL    string `json:"url"`
+}
+
+// handleListWorktrees returns every discovered-but-unregistered worktree,
+// across all managed apps. It exists so worktree discovery is reachable
+// without stopping the parent: the picker only renders on the stopped-parent
+// recovery path, which left a worktree you had just created invisible while
+// its app was running.
+//
+// Deliberately its own endpoint rather than a field on GET /routes: discovery
+// touches the filesystem per app, and /routes is polled by the dashboard on a
+// timer. Callers opt in. gitwt.ListLinked short-circuits on a single stat for
+// repos with no worktrees, so the common case stays cheap.
+func (s *Server) handleListWorktrees(w http.ResponseWriter, _ *http.Request) {
+	out := []worktreeResponse{}
+	for _, route := range s.table.List() {
+		for _, d := range s.discoverUnregisteredWorktrees(route) {
+			name := d.Slug + "." + route.Name
+			out = append(out, worktreeResponse{
+				Parent: route.Name,
+				Name:   name,
+				Slug:   d.Slug,
+				Branch: d.Branch,
+				Path:   d.Path,
+				URL:    fmt.Sprintf("%s://%s.%s", s.vibeScheme(), name, s.cfg.Daemon.TLD),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Parent != out[j].Parent {
+			return out[i].Parent < out[j].Parent
+		}
+		return out[i].Name < out[j].Name
+	})
+	json.NewEncoder(w).Encode(out)
 }
 
 func (s *Server) handleListRoutes(w http.ResponseWriter, _ *http.Request) {

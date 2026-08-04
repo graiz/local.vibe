@@ -215,12 +215,13 @@ tr.wt-group-header td{padding:10px 4px 2px 8px;font-size:.72rem;text-transform:u
 <tr{{if .IsWorktree}} class="wt-tr"{{end}}>
   <td><div class="route-name-cell"><span class="{{if .IsStopped}}route-icon route-icon-stopped{{else}}route-icon{{end}}">{{iconHTML .Icon}}</span><div><a href="{{.VibeURL}}" target="_blank" class="route-name-link">{{.Name}}</a><span class="route-url">{{.URLDisplay}}</span></div></div></td>
   <td class="td-type">{{.Type}}</td>
-  <td class="td-port{{if .IsStopped}} td-stopped{{end}}">{{if eq .Type "bookmark"}}—{{else}}<a href="http://localhost:{{.Port}}" target="_blank">{{.Port}}</a>{{end}}</td>
+  <td class="td-port{{if .IsStopped}} td-stopped{{end}}">{{if or (eq .Type "bookmark") .Discovered}}—{{else}}<a href="http://localhost:{{.Port}}" target="_blank">{{.Port}}</a>{{end}}</td>
   <td class="td-age hide-mobile">{{.Age}}</td>
   <td><div class="td-actions">
-    {{if and (eq .Type "managed") .IsRunning}}<button class="btn" onclick="routeAction(this,'{{.Name}}','stop')">Stop</button>
-    {{else if eq .Type "managed"}}<button class="btn btn-primary" onclick="routeAction(this,'{{.Name}}','start')">Start</button>{{end}}
-    {{if eq .Type "managed"}}<button class="btn-icon" onclick="openManagedModal('{{.Name}}',{{.Idle}},'{{.UserIcon}}','{{.AutoIcon}}')" title="Settings">{{editSVG}}</button>
+    {{if .Discovered}}<button class="btn btn-primary" onclick="startDiscoveredWorktree(this,{{.Parent}},{{.Path}})">Start</button>{{end}}
+    {{if and (not .Discovered) (eq .Type "managed") .IsRunning}}<button class="btn" onclick="routeAction(this,'{{.Name}}','stop')">Stop</button>
+    {{else if and (not .Discovered) (eq .Type "managed")}}<button class="btn btn-primary" onclick="routeAction(this,'{{.Name}}','start')">Start</button>{{end}}
+    {{if and (not .Discovered) (eq .Type "managed")}}<button class="btn-icon" onclick="openManagedModal('{{.Name}}',{{.Idle}},'{{.UserIcon}}','{{.AutoIcon}}')" title="Settings">{{editSVG}}</button>
     {{else if eq .Type "sticky"}}<button class="btn-icon" onclick="openEditModal('{{.Name}}',{{.Port}},'{{.ExternalURL}}','local','{{.UserIcon}}','{{.AutoIcon}}',{{.Proxy}},{{.Insecure}})" title="Edit">{{editSVG}}</button>
     {{else if eq .Type "bookmark"}}<button class="btn-icon" onclick="openEditModal('{{.Name}}',{{.Port}},'{{.ExternalURL}}','bookmark','{{.UserIcon}}','{{.AutoIcon}}',{{.Proxy}},{{.Insecure}})" title="Edit">{{editSVG}}</button>{{end}}
   </div></td>
@@ -596,6 +597,28 @@ function routeAction(btn,name,action){
     .catch(function(e){
       btn.disabled=false;btn.textContent=origText;
       showToast(e.message||'Action failed');
+    });
+}
+// Register-and-start a worktree that exists on disk but has no route yet.
+// The daemon validates the path against what it discovers via git, so an
+// arbitrary directory can't be registered through this.
+function startDiscoveredWorktree(btn,parent,path){
+  var origText=btn.textContent;
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner"></span>';
+  fetch('/_api/routes/'+encodeURIComponent(parent)+'/worktrees',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Accept':'application/json'},
+    body:JSON.stringify({path:path})
+  })
+    .then(function(r){
+      if(!r.ok)return r.json().then(function(d){throw new Error(d.error||'Could not start worktree')});
+      return r.json();
+    })
+    .then(function(){location.reload()})
+    .catch(function(e){
+      btn.disabled=false;btn.textContent=origText;
+      showToast(e.message||'Could not start worktree');
     });
 }
 function pollStopped(name,n){

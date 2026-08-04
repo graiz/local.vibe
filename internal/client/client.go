@@ -106,6 +106,35 @@ type RouteInfo struct {
 	OAuthCallbackPort int        `json:"oauth_callback_port,omitempty"`
 }
 
+// WorktreeInfo is an on-disk git worktree of a managed app that has no route
+// yet. Surfaced so `vibe list` can show worktrees you have created but never
+// started — previously reachable only by stopping the parent app and visiting
+// its picker.
+type WorktreeInfo struct {
+	Parent string `json:"parent"`
+	Name   string `json:"name"`
+	Slug   string `json:"slug"`
+	Branch string `json:"branch"`
+	Path   string `json:"path"`
+	URL    string `json:"url"`
+}
+
+// Worktrees lists discovered-but-unregistered worktrees across all apps.
+// Best-effort: an older daemon has no such endpoint, so a non-200 yields an
+// empty list rather than an error — this decorates `vibe list`, it should
+// never break it.
+func (c *Client) Worktrees() []WorktreeInfo {
+	data, status, err := c.do("GET", "/_api/worktrees", nil)
+	if err != nil || status != http.StatusOK {
+		return nil
+	}
+	var wts []WorktreeInfo
+	if json.Unmarshal(data, &wts) != nil {
+		return nil
+	}
+	return wts
+}
+
 type HealthResponse struct {
 	Status string `json:"status"`
 	Routes int    `json:"routes"`
