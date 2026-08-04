@@ -6,9 +6,36 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
+)
+
+// vibe's redirect rules live in their own pf anchor, referenced from
+// /etc/pf.conf — never loaded as a replacement main ruleset.
+//
+// The old approach (`pfctl -ef -` with a hand-built ruleset) had two defects
+// that an anchor fixes structurally. It detached Apple's `com.apple/*` anchors
+// for as long as vibe's ruleset was loaded, silently disabling the Application
+// Firewall, AirDrop and Internet Sharing. And anything that reloaded
+// /etc/pf.conf — a VPN client, Internet Sharing / vmnet backing Docker Desktop
+// or a VM, a macOS update, the boot race with com.apple.pfctl — replaced the
+// whole ruleset and took vibe's redirect with it, with no way back short of an
+// obscure launchctl incantation.
+//
+// With the anchor, those same reloads *re-install* vibe's rules (pf.conf names
+// the anchor and loads it), and Apple's anchors are never touched. It also
+// removes the ruleset-merging machinery this file used to carry: there is no
+// longer any need to capture, bucket by section, and re-emit the live ruleset,
+// because vibe no longer owns the main ruleset at all.
+const (
+	pfAnchorName = "com.vibe"
+	pfAnchorFile = "/etc/pf.anchors/com.vibe"
+	pfConfPath   = "/etc/pf.conf"
+
+	pfRdrAnchorLine = `rdr-anchor "com.vibe"`
+	pfLoadLine      = `load anchor "com.vibe" from "/etc/pf.anchors/com.vibe"`
 )
 
 const (
@@ -26,147 +53,255 @@ var (
 	pfTLSPort  = defaultPFTLSPort
 )
 
-// pfRDRRules returns vibe's two redirect rules: 80→HTTP port and 443→TLS port.
-// They must be present in pf's active ruleset for *.vibe HTTP/HTTPS to reach the
-// (unprivileged) daemon, which can't bind low ports itself.
-func pfRDRRules() string {
+// pfAnchorRules returns the anchor's contents: vibe's two redirects, 80→HTTP
+// port and 443→TLS port. They must be active for *.vibe HTTP/HTTPS to reach
+// the (unprivileged) daemon, which can't bind low ports itself.
+//
+// Note there is no `pass all` here. The previous replacement ruleset carried
+// one — necessary only because replacing the main ruleset also replaced
+// everyone else's filter rules. An anchor adds rules without removing any, so
+// the blanket pass is both unnecessary and undesirable.
+func pfAnchorRules() string {
 	return fmt.Sprintf("rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port %d\n"+
 		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port %d\n",
 		pfHTTPPort, pfTLSPort)
 }
 
-// pfRedirectSentinelHTTP and pfRedirectSentinelHTTPS uniquely mark vibe's two
-// redirects in a dumped ruleset. Anchor on the full redirect target (not a bare
-// port number) so an unrelated rule that merely mentions the port can't be
-// mistaken for ours.
-func pfRedirectSentinelHTTP() string {
-	return fmt.Sprintf("-> 127.0.0.1 port %d", pfHTTPPort)
-}
-
-func pfRedirectSentinelHTTPS() string {
-	return fmt.Sprintf("-> 127.0.0.1 port %d", pfTLSPort)
-}
-
-// vibeRDRPresent reports whether BOTH of vibe's redirects (:80→7999 and
-// :443→7443) are already in the given `pfctl -sn` (translation rules) dump.
-// This is the idempotency guard: when the redirect is fully active we do NOT
-// reload pf, so we never needlessly disturb a coexisting tool's rules (e.g. a
-// VPN's kill-switch anchors).
-//
-// It requires both sentinels deliberately. If a coexisting tool reloads a
-// ruleset that preserved vibe's :443 rdr but dropped the :80 one, anchoring on
-// :443 alone would make pf-apply a permanent no-op — the redirect probe (doctor,
-// dashboard banner, warnIfRedirectDown) reports it down, but `vibe doctor --fix`
-// would see the sentinel and refuse to reload, leaving http://*.vibe broken with
-// no way out. Requiring both means a partial ruleset correctly triggers a merge.
-func vibeRDRPresent(natRules string) bool {
-	return strings.Contains(natRules, pfRedirectSentinelHTTP()) &&
-		strings.Contains(natRules, pfRedirectSentinelHTTPS())
-}
-
-// buildMergedRuleset assembles a complete pf ruleset that re-adds vibe's rdr
-// rules WITHOUT dropping whatever else is currently active, so a coexisting
-// tool's anchors (e.g. a VPN's, plus com.apple's) survive the reload instead of
-// being clobbered.
-//
-// pfctl enforces a fixed section order — tables, options, normalization (scrub),
-// queueing, translation (nat/rdr), dummynet, filtering — but the `-sn`
-// (translation) and `-sr` (normalization + filtering) dumps interleave sections:
-// macOS notably emits `scrub-anchor` (normalization) and `dummynet-anchor` in
-// the filter dump. A naïve concatenation lands `scrub-anchor` after our rdr and
-// pfctl rejects the whole ruleset ("Rules must be in order…"). So we bucket every
-// captured line by section and re-emit in the order pfctl accepts, with vibe's
-// rdr leading the translation section.
-//
-// Only ever called when vibeRDRPresent is false, so the captured translation
-// rules won't already contain vibe's rdr (no duplication).
-func buildMergedRuleset(currentNAT, currentFilter string) string {
-	var tables, opts, norm, xlate, dummy, filt []string
-	classify := func(block string) {
-		for _, raw := range strings.Split(block, "\n") {
-			ln := strings.TrimSpace(raw)
-			if ln == "" {
-				continue
-			}
-			switch {
-			case strings.HasPrefix(ln, "table"):
-				tables = append(tables, ln)
-			case strings.HasPrefix(ln, "set "):
-				opts = append(opts, ln)
-			case strings.HasPrefix(ln, "scrub"), strings.HasPrefix(ln, "no scrub"):
-				norm = append(norm, ln)
-			case strings.HasPrefix(ln, "nat"), strings.HasPrefix(ln, "no nat"),
-				strings.HasPrefix(ln, "rdr"), strings.HasPrefix(ln, "no rdr"),
-				strings.HasPrefix(ln, "binat"), strings.HasPrefix(ln, "no binat"):
-				xlate = append(xlate, ln)
-			case strings.HasPrefix(ln, "dummynet"):
-				dummy = append(dummy, ln)
-			default:
-				// pass / block / match / anchor / antispoof / load anchor
-				filt = append(filt, ln)
-			}
-		}
+// writePFAnchorFile writes the anchor's rules with the currently configured
+// ports. Rewritten on every pf-apply so a port change in config.json takes
+// effect without re-running setup.
+func writePFAnchorFile() error {
+	if err := os.MkdirAll(filepath.Dir(pfAnchorFile), 0755); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(pfAnchorFile), err)
 	}
-	classify(currentNAT)
-	classify(currentFilter)
-
-	var b strings.Builder
-	emit := func(lines []string) {
-		for _, ln := range lines {
-			b.WriteString(ln)
-			b.WriteString("\n")
-		}
+	if err := os.WriteFile(pfAnchorFile, []byte(pfAnchorRules()), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", pfAnchorFile, err)
 	}
-	emit(tables)
-	emit(opts)
-	emit(norm)
-	b.WriteString(pfRDRRules()) // vibe's rdr leads the translation section
-	emit(xlate)
-	emit(dummy)
-	emit(filt)
-	return b.String()
-}
-
-// reassertPFRules ensures vibe's redirect is active in pf, merging it into the
-// live ruleset rather than replacing the ruleset wholesale. Safe to run
-// repeatedly (idempotent) and designed to coexist with other pf users.
-func reassertPFRules() error {
-	// Idempotent fast path: redirect already active → touch nothing. This is
-	// what keeps the network-change trigger from fighting a VPN: we only
-	// reload pf when our rules have actually gone missing.
-	nat, _ := pfctlShow("-sn")
-	if vibeRDRPresent(nat) {
-		return nil
-	}
-
-	filter, _ := pfctlShow("-sr")
-	merged := buildMergedRuleset(nat, filter)
-
-	if err := pfctlLoad(merged); err != nil {
-		// The captured ruleset didn't round-trip (e.g. an unexpected section
-		// ordering). Fall back to a minimal ruleset so the redirect is at least
-		// restored — better a working .vibe than a broken one. This last resort
-		// DOES replace the main ruleset (the old clobbering behavior), so log it
-		// loudly: a recurring fallback means the merge needs attention.
-		fmt.Fprintf(os.Stderr, "vibe pf-apply: merge reload failed (%v); falling back to minimal ruleset — this may drop other tools' pf rules\n", err)
-		if ferr := pfctlLoad(pfRDRRules() + "pass all\n"); ferr != nil {
-			return fmt.Errorf("pf reassert failed (merge: %v; fallback: %v)", err, ferr)
-		}
-	}
-
-	// Ensure pf is enabled; ignore "already enabled".
-	_ = exec.Command("/sbin/pfctl", "-e").Run()
 	return nil
 }
 
-func pfctlShow(flag string) (string, error) {
-	out, err := exec.Command("/sbin/pfctl", flag).Output()
-	return string(out), err
+// containsPFLine reports whether conf has want as a whole (trimmed) line.
+func containsPFLine(conf, want string) bool {
+	for _, l := range strings.Split(conf, "\n") {
+		if strings.TrimSpace(l) == want {
+			return true
+		}
+	}
+	return false
 }
 
-func pfctlLoad(ruleset string) error {
-	cmd := exec.Command("/sbin/pfctl", "-f", "-")
-	cmd.Stdin = strings.NewReader(ruleset)
+// pfLineIsFilter reports whether a pf.conf line begins the filter section.
+// Once a filter rule appears, no translation rule (or rdr-anchor) may follow —
+// pfctl rejects the file with "Rules must be in order".
+func pfLineIsFilter(line string) bool {
+	t := strings.TrimSpace(line)
+	for _, p := range []string{"anchor", "pass", "block", "match", "antispoof"} {
+		if t == p || strings.HasPrefix(t, p+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// pfLineIsTranslation reports whether a line belongs to the translation
+// section, which is where our rdr-anchor has to live.
+func pfLineIsTranslation(line string) bool {
+	t := strings.TrimSpace(line)
+	for _, p := range []string{"rdr-anchor", "nat-anchor", "rdr", "nat", "binat", "binat-anchor", "no rdr", "no nat"} {
+		if t == p || strings.HasPrefix(t, p+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// patchPFConf inserts vibe's two lines into pf.conf content, preserving pf's
+// required section order. Returns the possibly-modified content and whether
+// anything changed.
+//
+// Placement rules, in order of preference:
+//   - after the last existing translation line (Apple's `rdr-anchor
+//     "com.apple/*"` on a stock file) — always correct, since translation
+//     rules are contiguous;
+//   - otherwise immediately before the first filter line, so we still land in
+//     the translation section of a custom pf.conf;
+//   - otherwise at the end, for a file with neither.
+//
+// The naive version of this appended at EOF whenever Apple's lines were
+// absent, which silently produced an invalid ordering on any custom pf.conf
+// that had filter rules. `load anchor` is a directive rather than a rule and
+// is safe at the end of the file, which is where Apple puts its own.
+func patchPFConf(conf string) (string, bool) {
+	hasRdr := containsPFLine(conf, pfRdrAnchorLine)
+	hasLoad := containsPFLine(conf, pfLoadLine)
+	if hasRdr && hasLoad {
+		return conf, false
+	}
+
+	lines := strings.Split(conf, "\n")
+	out := make([]string, 0, len(lines)+2)
+
+	if !hasRdr {
+		insertAt := -1
+		for i, l := range lines {
+			if pfLineIsTranslation(l) {
+				insertAt = i + 1 // keep scanning: we want the LAST one
+			}
+		}
+		if insertAt == -1 {
+			for i, l := range lines {
+				if pfLineIsFilter(l) {
+					insertAt = i
+					break
+				}
+			}
+		}
+		if insertAt == -1 {
+			insertAt = len(lines)
+		}
+		for i, l := range lines {
+			if i == insertAt {
+				out = append(out, pfRdrAnchorLine)
+			}
+			out = append(out, l)
+		}
+		if insertAt >= len(lines) {
+			out = append(out, pfRdrAnchorLine)
+		}
+		lines = out
+	}
+
+	if !hasLoad {
+		// Trailing blank line is conventional; keep the directive above it.
+		if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == "" {
+			lines = append(lines[:n-1], pfLoadLine, "")
+		} else {
+			lines = append(lines, pfLoadLine)
+		}
+	}
+	return strings.Join(lines, "\n"), true
+}
+
+// stripPFConf removes vibe's lines from pf.conf content.
+func stripPFConf(conf string) (string, bool) {
+	lines := strings.Split(conf, "\n")
+	out := make([]string, 0, len(lines))
+	changed := false
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == pfRdrAnchorLine || t == pfLoadLine {
+			changed = true
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n"), changed
+}
+
+// ensurePFConfReferencesAnchor patches /etc/pf.conf to name and load vibe's
+// anchor, validating the result before it replaces the live file. Reports
+// whether pf.conf was modified.
+//
+// This runs on every pf-apply, not just at setup, because /etc/pf.conf is a
+// system file: a macOS update can replace it wholesale and drop our two lines,
+// after which the anchor exists but nothing loads it. Re-patching here is what
+// makes `vibe doctor --fix` able to recover from that.
+func ensurePFConfReferencesAnchor() (changed bool, err error) {
+	conf, err := os.ReadFile(pfConfPath)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", pfConfPath, err)
+	}
+	patched, changed := patchPFConf(string(conf))
+	if !changed {
+		return false, nil
+	}
+	// Vet before swapping: a broken pf.conf would fail every future reload,
+	// including Apple's at boot. Write the candidate beside the real file so
+	// the rename is atomic (same filesystem).
+	tmp := pfConfPath + ".vibe.tmp"
+	if err := os.WriteFile(tmp, []byte(patched), 0644); err != nil {
+		return false, fmt.Errorf("write %s: %w", tmp, err)
+	}
+	defer os.Remove(tmp) // no-op once renamed
+	if out, err := exec.Command("/sbin/pfctl", "-n", "-f", tmp).CombinedOutput(); err != nil {
+		return false, fmt.Errorf("patched %s failed validation (left unchanged): %w — %s",
+			pfConfPath, err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Rename(tmp, pfConfPath); err != nil {
+		return false, fmt.Errorf("replace %s: %w", pfConfPath, err)
+	}
+	return true, nil
+}
+
+// pfEnabled reports whether pf is currently enabled.
+func pfEnabled() bool {
+	out, err := exec.Command("/sbin/pfctl", "-s", "info").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "Status: Enabled")
+}
+
+// anchorRulesLoaded reports whether the live anchor already holds both of
+// vibe's current redirects — the idempotency check that keeps the
+// network-change trigger from reloading pf when nothing is wrong.
+func anchorRulesLoaded() bool {
+	out, err := exec.Command("/sbin/pfctl", "-a", pfAnchorName, "-s", "nat").Output()
+	if err != nil {
+		return false
+	}
+	live := string(out)
+	return strings.Contains(live, fmt.Sprintf("-> 127.0.0.1 port %d", pfHTTPPort)) &&
+		strings.Contains(live, fmt.Sprintf("-> 127.0.0.1 port %d", pfTLSPort))
+}
+
+// reassertPFRules makes vibe's redirect active: anchor file current, pf.conf
+// referencing it, rules loaded, pf enabled. Idempotent and safe to run
+// repeatedly — it is invoked at boot and on every network change.
+//
+// Unlike the ruleset-merging version this replaces, a reload here touches only
+// vibe's own anchor, so it cannot disturb a coexisting pf user even when it
+// does run.
+func reassertPFRules() error {
+	if err := writePFAnchorFile(); err != nil {
+		return err
+	}
+
+	confChanged, err := ensurePFConfReferencesAnchor()
+	if err != nil {
+		// A custom pf.conf we can't safely patch shouldn't be a hard failure:
+		// say exactly what to add, and still try to load the anchor so the
+		// redirect works for this boot.
+		fmt.Fprintf(os.Stderr,
+			"vibe pf-apply: could not update %s (%v)\n"+
+				"  add these two lines manually — the first in the translation section, the second at the end:\n"+
+				"    %s\n    %s\n",
+			pfConfPath, err, pfRdrAnchorLine, pfLoadLine)
+	}
+
+	// Reload the whole file when we changed it (that's what attaches the
+	// anchor); otherwise load just our anchor, which never disturbs anyone.
+	if confChanged {
+		if err := pfctlRun("-f", pfConfPath); err != nil {
+			return fmt.Errorf("reload %s: %w", pfConfPath, err)
+		}
+	} else if !anchorRulesLoaded() {
+		if err := pfctlRun("-a", pfAnchorName, "-f", pfAnchorFile); err != nil {
+			return fmt.Errorf("load anchor %s: %w", pfAnchorName, err)
+		}
+	}
+
+	// Enable only when disabled. `pfctl -E` increments an enable reference
+	// count each time it runs; on a trigger that fires per network change that
+	// would climb indefinitely, so check first and use plain -e.
+	if !pfEnabled() {
+		_ = exec.Command("/sbin/pfctl", "-e").Run()
+	}
+	return nil
+}
+
+func pfctlRun(args ...string) error {
+	cmd := exec.Command("/sbin/pfctl", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/graiz/local.vibe/internal/cert"
 	"github.com/graiz/local.vibe/internal/vibeskill"
 )
 
@@ -37,6 +38,21 @@ func uninstallPlatform() error {
 	_ = os.RemoveAll(pfHelperDir)
 	fmt.Println("  pf LaunchDaemon removed")
 
+	// pf anchor: flush its live rules, drop the anchor file, strip our two
+	// lines from /etc/pf.conf, then reload so the running ruleset matches the
+	// file again. Order matters — reloading before stripping would just
+	// re-attach the anchor we are removing.
+	_ = exec.Command("/sbin/pfctl", "-a", pfAnchorName, "-F", "all").Run()
+	_ = os.Remove(pfAnchorFile)
+	if conf, err := os.ReadFile(pfConfPath); err == nil {
+		if stripped, changed := stripPFConf(string(conf)); changed {
+			if err := os.WriteFile(pfConfPath, []byte(stripped), 0644); err == nil {
+				_ = exec.Command("/sbin/pfctl", "-f", pfConfPath).Run()
+			}
+		}
+	}
+	fmt.Println("  pf anchor removed, /etc/pf.conf restored")
+
 	// /etc/resolver/vibe
 	_ = os.Remove("/etc/resolver/vibe")
 	fmt.Println("  /etc/resolver/vibe removed")
@@ -46,14 +62,23 @@ func uninstallPlatform() error {
 	// `address=/.vibe/127.0.0.1` lying around in dnsmasq.conf.
 	fmt.Println("  (dnsmasq.conf left intact — remove `address=/.vibe/127.0.0.1` manually if desired)")
 
-	// Trusted CA in Keychain
-	_ = exec.Command("security", "delete-certificate", "-c", "local.vibe CA",
-		"/Library/Keychains/System.keychain").Run()
-	fmt.Println("  Trusted CA removed from Keychain")
-
-	// Cert files in ~/.vibe/certs
+	// Trusted CA in Keychain. Match by SHA1 thumbprint while ca.pem is still
+	// on disk: a CN match (-c) deletes just one of possibly several certs
+	// named "local.vibe CA" — an uninstall/setup cycle regenerates the CA, so
+	// duplicates are normal — and could remove the wrong one. Fall back to CN
+	// only when the certs dir is already gone. Mirrors uninstall_windows.go,
+	// which has matched by thumbprint since certutil -delstore needed it.
 	if home, _ := realUserHome(); home != "" {
 		certsDir := filepath.Join(home, ".vibe", "certs")
+		if thumb, err := cert.CAThumbprint(certsDir); err == nil {
+			_ = exec.Command("security", "delete-certificate", "-Z", thumb,
+				"/Library/Keychains/System.keychain").Run()
+		} else {
+			_ = exec.Command("security", "delete-certificate", "-c", "local.vibe CA",
+				"/Library/Keychains/System.keychain").Run()
+		}
+		fmt.Println("  Trusted CA removed from Keychain")
+
 		_ = os.RemoveAll(certsDir)
 		fmt.Println("  ~/.vibe/certs removed")
 

@@ -292,10 +292,29 @@ func configuredDaemonPorts() (httpPort, tlsPort int) {
 	return httpPort, tlsPort
 }
 
-// installPFLaunchDaemon installs a root LaunchDaemon that applies pf rules
-// forwarding port 80 and 443 to the daemon's configured HTTP/TLS ports at each
-// boot. The daemon itself runs as the user — no root required at runtime.
+// installPFLaunchDaemon writes vibe's pf anchor, references it from
+// /etc/pf.conf, and installs a root LaunchDaemon that re-applies it at boot
+// and on every network change. Port 80 and 443 forward to the daemon's
+// configured HTTP/TLS ports. The daemon itself runs as the user — no root
+// required at runtime.
 func installPFLaunchDaemon() error {
+	// Seed the anchor and the pf.conf reference up front. pf-apply does this
+	// too (and re-does it if a macOS update rewrites pf.conf), but doing it
+	// here means setup surfaces a bad custom pf.conf immediately rather than
+	// leaving the user to discover a dead redirect later.
+	httpPort, tlsPort := configuredDaemonPorts()
+	pfHTTPPort, pfTLSPort = httpPort, tlsPort
+	if err := writePFAnchorFile(); err != nil {
+		return err
+	}
+	if _, err := ensurePFConfReferencesAnchor(); err != nil {
+		// Not fatal: the rest of setup is still worth completing, and the user
+		// can add two lines. Say exactly which.
+		fmt.Printf("  ⚠ could not update %s: %v\n", pfConfPath, err)
+		fmt.Printf("    add manually — first line in the translation section, second at the end:\n")
+		fmt.Printf("      %s\n      %s\n", pfRdrAnchorLine, pfLoadLine)
+	}
+
 	src, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("could not locate binary: %w", err)
@@ -308,7 +327,7 @@ func installPFLaunchDaemon() error {
 	if err != nil {
 		return fmt.Errorf("stage pf helper: %w", err)
 	}
-	httpPort, tlsPort := configuredDaemonPorts()
+	// ports already resolved above
 
 	// The daemon runs `vibe pf-apply` (which idempotently merges vibe's redirect
 	// into the live pf ruleset) at boot via RunAtLoad and on every network change

@@ -24,7 +24,7 @@ func warnIfRedirectDown() {
 	}
 	// Probe BOTH privileged ports. A coexisting pf user can reload a ruleset
 	// that preserves one of vibe's two rdr rules and drops the other — the
-	// same partial-flush case vibeRDRPresent guards against — so checking :80
+	// same partial-ruleset case the pf anchor guards against — so checking :80
 	// alone stays silent while every https://*.vibe is broken.
 	http80 := netprobe.PortOpen(80, 400*time.Millisecond)
 	https443 := netprobe.PortOpen(443, 400*time.Millisecond)

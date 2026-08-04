@@ -7,72 +7,184 @@ import (
 	"testing"
 )
 
-func TestPFVibeRDRPresent(t *testing.T) {
-	// Both redirects present → active.
-	withRules := "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 80 -> 127.0.0.1 port 7999\n" +
-		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 7443"
-	if !vibeRDRPresent(withRules) {
-		t.Error("expected vibe rdr to be detected as present when both redirects exist")
-	}
-	// Only the :443 redirect survived a coexisting tool's reload — must NOT be
-	// treated as present, or pf-apply would no-op forever and never restore :80.
-	onlyHTTPS := "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 7443"
-	if vibeRDRPresent(onlyHTTPS) {
-		t.Error("expected absence when only the :443 redirect is present (partial ruleset must trigger a reload)")
-	}
-	// Only the :80 redirect present — likewise partial.
-	onlyHTTP := "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 80 -> 127.0.0.1 port 7999"
-	if vibeRDRPresent(onlyHTTP) {
-		t.Error("expected absence when only the :80 redirect is present")
-	}
-	if vibeRDRPresent("rdr-anchor \"com.apple/*\" all\nnat-anchor \"xvpn\" all") {
-		t.Error("expected absence when only foreign anchors are present")
-	}
-	if vibeRDRPresent("") {
-		t.Error("empty ruleset should not report vibe rdr present")
-	}
-}
+// stockPFConf is macOS's shipped /etc/pf.conf, the file we patch.
+const stockPFConf = `#
+# Default PF configuration file.
+#
+# See pf.conf(5) for syntax.
+#
 
-func TestPFBuildMergedRulesetPreservesForeignRules(t *testing.T) {
-	// Simulate the real macOS post-flush dumps: -sn carries translation anchors,
-	// -sr interleaves normalization (scrub-anchor), dummynet, and filter rules.
-	// This is the exact shape that made a naïve concatenation fail with
-	// "Rules must be in order…".
-	currentNAT := "nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all"
-	currentFilter := "scrub-anchor \"com.apple/*\" all\ndummynet-anchor \"com.apple/*\" all\nanchor \"xvpn\" all\nanchor \"com.apple/*\" all\npass all flags S/SA keep state"
+#
+# com.apple anchor point
+#
+scrub-anchor "com.apple/*"
+nat-anchor "com.apple/*"
+rdr-anchor "com.apple/*"
+dummynet-anchor "com.apple/*"
+anchor "com.apple/*"
+load anchor "com.apple" from "/etc/pf.anchors/com.apple"
+`
 
-	out := buildMergedRuleset(currentNAT, currentFilter)
-
-	// vibe's redirect must be added...
-	if !strings.Contains(out, "port 7443") || !strings.Contains(out, "port 7999") {
-		t.Error("merged ruleset is missing vibe's rdr rules")
-	}
-	// ...without dropping the foreign anchors.
-	for _, want := range []string{"com.apple", "xvpn"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("merged ruleset dropped foreign rule %q", want)
+// lineIndex returns the index of the first line equal (trimmed) to want.
+func lineIndex(t *testing.T, content, want string) int {
+	t.Helper()
+	for i, l := range strings.Split(content, "\n") {
+		if strings.TrimSpace(l) == want {
+			return i
 		}
 	}
-	// Sections must be emitted in pfctl's required order:
-	//   normalization (scrub) < translation (rdr) < dummynet < filtering (pass/anchor)
-	scrubIdx := strings.Index(out, "scrub-anchor")
-	rdrIdx := strings.Index(out, "rdr pass on lo0")
-	dummyIdx := strings.Index(out, "dummynet-anchor")
-	passIdx := strings.Index(out, "pass all")
-	if !(scrubIdx >= 0 && scrubIdx < rdrIdx) {
-		t.Errorf("normalization (scrub) must precede translation (scrub=%d, rdr=%d)", scrubIdx, rdrIdx)
+	t.Fatalf("line %q not found in:\n%s", want, content)
+	return -1
+}
+
+// pf enforces a section order — translation rules must precede filter rules —
+// and rejects the whole file otherwise ("Rules must be in order"). Our
+// rdr-anchor therefore has to land in the translation section.
+func TestPatchPFConfStockFile(t *testing.T) {
+	patched, changed := patchPFConf(stockPFConf)
+	if !changed {
+		t.Fatal("expected patch to report a change")
 	}
-	if !(rdrIdx >= 0 && rdrIdx < dummyIdx) {
-		t.Errorf("translation must precede dummynet (rdr=%d, dummynet=%d)", rdrIdx, dummyIdx)
+
+	appleRdr := lineIndex(t, patched, `rdr-anchor "com.apple/*"`)
+	vibeRdr := lineIndex(t, patched, pfRdrAnchorLine)
+	appleFilter := lineIndex(t, patched, `anchor "com.apple/*"`)
+	vibeLoad := lineIndex(t, patched, pfLoadLine)
+	appleLoad := lineIndex(t, patched, `load anchor "com.apple" from "/etc/pf.anchors/com.apple"`)
+
+	if vibeRdr <= appleRdr {
+		t.Errorf("vibe rdr-anchor (line %d) should follow Apple's (line %d)", vibeRdr, appleRdr)
 	}
-	if !(dummyIdx >= 0 && dummyIdx < passIdx) {
-		t.Errorf("dummynet must precede filtering (dummynet=%d, pass=%d)", dummyIdx, passIdx)
+	if vibeRdr > appleFilter {
+		t.Errorf("vibe rdr-anchor (line %d) must precede the filter anchor (line %d)", vibeRdr, appleFilter)
+	}
+	if vibeLoad <= appleLoad {
+		t.Errorf("vibe load anchor (line %d) should follow Apple's (line %d)", vibeLoad, appleLoad)
 	}
 }
 
-func TestPFBuildMergedRulesetHandlesEmptyCurrent(t *testing.T) {
-	out := buildMergedRuleset("", "")
-	if !strings.Contains(out, "port 7443") || !strings.Contains(out, "port 7999") {
-		t.Error("merged ruleset must contain vibe's rdr even with no current rules")
+// Setup and pf-apply both patch, and pf-apply runs on every network change —
+// so a second pass must be a no-op rather than appending duplicates.
+func TestPatchPFConfIdempotent(t *testing.T) {
+	patched, _ := patchPFConf(stockPFConf)
+	again, changed := patchPFConf(patched)
+	if changed {
+		t.Fatal("second patch reported a change")
+	}
+	if again != patched {
+		t.Fatal("second patch modified content")
+	}
+	if strings.Count(again, pfRdrAnchorLine) != 1 || strings.Count(again, pfLoadLine) != 1 {
+		t.Fatal("vibe lines duplicated")
+	}
+}
+
+// A half-patched file must gain only what's missing.
+func TestPatchPFConfAddsOnlyMissingLine(t *testing.T) {
+	conf := strings.Replace(stockPFConf,
+		`rdr-anchor "com.apple/*"`,
+		`rdr-anchor "com.apple/*"`+"\n"+pfRdrAnchorLine, 1)
+	patched, changed := patchPFConf(conf)
+	if !changed {
+		t.Fatal("expected the missing load line to be added")
+	}
+	if strings.Count(patched, pfRdrAnchorLine) != 1 {
+		t.Errorf("rdr-anchor duplicated:\n%s", patched)
+	}
+	if strings.Count(patched, pfLoadLine) != 1 {
+		t.Errorf("load line not added exactly once:\n%s", patched)
+	}
+}
+
+// A custom pf.conf with no com.apple lines but with filter rules is the case
+// an "append at EOF" fallback gets wrong: the rdr-anchor lands after the
+// filter rules and pfctl rejects the file.
+func TestPatchPFConfCustomFileKeepsSectionOrder(t *testing.T) {
+	conf := "# custom\nset skip on lo0\nblock in all\npass out all\n"
+	patched, changed := patchPFConf(conf)
+	if !changed {
+		t.Fatal("expected a change")
+	}
+	vibeRdr := lineIndex(t, patched, pfRdrAnchorLine)
+	firstFilter := lineIndex(t, patched, "block in all")
+	if vibeRdr > firstFilter {
+		t.Errorf("rdr-anchor (line %d) must precede the first filter rule (line %d) — pfctl would reject this file:\n%s",
+			vibeRdr, firstFilter, patched)
+	}
+}
+
+// A file with translation rules but no anchors: insert after the last one.
+func TestPatchPFConfAfterLastTranslationRule(t *testing.T) {
+	conf := "nat on en0 from any to any -> (en0)\nrdr on en0 proto tcp to port 80 -> 127.0.0.1 port 8080\nblock in all\n"
+	patched, _ := patchPFConf(conf)
+	vibeRdr := lineIndex(t, patched, pfRdrAnchorLine)
+	lastXlate := lineIndex(t, patched, "rdr on en0 proto tcp to port 80 -> 127.0.0.1 port 8080")
+	firstFilter := lineIndex(t, patched, "block in all")
+	if vibeRdr < lastXlate || vibeRdr > firstFilter {
+		t.Errorf("rdr-anchor at %d should sit between the last translation rule (%d) and the first filter rule (%d):\n%s",
+			vibeRdr, lastXlate, firstFilter, patched)
+	}
+}
+
+// Uninstall must leave pf.conf exactly as it found it.
+func TestStripPFConfRoundTrip(t *testing.T) {
+	patched, _ := patchPFConf(stockPFConf)
+	stripped, changed := stripPFConf(patched)
+	if !changed {
+		t.Fatal("expected strip to report a change")
+	}
+	if stripped != stockPFConf {
+		t.Fatalf("strip did not restore the original:\n--- got ---\n%s\n--- want ---\n%s", stripped, stockPFConf)
+	}
+	if _, changed := stripPFConf(stockPFConf); changed {
+		t.Error("strip on an unpatched file reported a change")
+	}
+}
+
+// The anchor carries the CONFIGURED ports, not hardcoded ones — a
+// non-default daemon port otherwise yields a redirect to a dead port that
+// `vibe doctor --fix` can never repair.
+func TestPFAnchorRulesUseConfiguredPorts(t *testing.T) {
+	origHTTP, origTLS := pfHTTPPort, pfTLSPort
+	t.Cleanup(func() { pfHTTPPort, pfTLSPort = origHTTP, origTLS })
+
+	pfHTTPPort, pfTLSPort = 9100, 9143
+	rules := pfAnchorRules()
+	if !strings.Contains(rules, "port 80 -> 127.0.0.1 port 9100") {
+		t.Errorf("HTTP redirect does not use the configured port:\n%s", rules)
+	}
+	if !strings.Contains(rules, "port 443 -> 127.0.0.1 port 9143") {
+		t.Errorf("TLS redirect does not use the configured port:\n%s", rules)
+	}
+	// An anchor adds rules without replacing anyone's, so the blanket pass the
+	// old replacement ruleset needed must not reappear here.
+	if strings.Contains(rules, "pass all") {
+		t.Errorf("anchor must not contain a blanket `pass all`:\n%s", rules)
+	}
+}
+
+func TestPFLineClassification(t *testing.T) {
+	xlate := []string{`rdr-anchor "com.apple/*"`, `nat-anchor "com.apple/*"`,
+		"rdr on en0 proto tcp to port 80 -> 127.0.0.1 port 8080", "nat on en0 from any to any -> (en0)"}
+	for _, l := range xlate {
+		if !pfLineIsTranslation(l) {
+			t.Errorf("pfLineIsTranslation(%q) = false", l)
+		}
+		if pfLineIsFilter(l) {
+			t.Errorf("pfLineIsFilter(%q) = true", l)
+		}
+	}
+	filter := []string{`anchor "com.apple/*"`, "block in all", "pass out all", "antispoof for lo0"}
+	for _, l := range filter {
+		if !pfLineIsFilter(l) {
+			t.Errorf("pfLineIsFilter(%q) = false", l)
+		}
+		if pfLineIsTranslation(l) {
+			t.Errorf("pfLineIsTranslation(%q) = true", l)
+		}
+	}
+	// `load anchor` is a directive, neither section.
+	if pfLineIsFilter(pfLoadLine) || pfLineIsTranslation(pfLoadLine) {
+		t.Errorf("load anchor should classify as neither section")
 	}
 }
