@@ -255,6 +255,19 @@ func anchorRulesLoaded() bool {
 		strings.Contains(live, fmt.Sprintf("-> 127.0.0.1 port %d", pfTLSPort))
 }
 
+// anchorReferencedInMainRuleset reports whether the main pf ruleset contains
+// an rdr-anchor reference to com.vibe. The anchor can hold correct rules
+// while the main ruleset has no reference to it — pf never evaluates those
+// rules in that state. This happens when the main ruleset was loaded from a
+// version of pf.conf that predated vibe's patch (macOS update, VPN flush).
+func anchorReferencedInMainRuleset() bool {
+	out, err := exec.Command("/sbin/pfctl", "-s", "nat").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), `rdr-anchor "com.vibe"`)
+}
+
 // reassertPFRules makes vibe's redirect active: anchor file current, pf.conf
 // referencing it, rules loaded, pf enabled. Idempotent and safe to run
 // repeatedly — it is invoked at boot and on every network change.
@@ -279,13 +292,20 @@ func reassertPFRules() error {
 			pfConfPath, err, pfRdrAnchorLine, pfLoadLine)
 	}
 
-	// Reload the whole file when we changed it (that's what attaches the
-	// anchor); otherwise load just our anchor, which never disturbs anyone.
-	if confChanged {
+	// Two independent concerns: (1) the main ruleset must reference our
+	// anchor, and (2) the anchor must contain our current rdr rules.
+	//
+	// A full pf.conf reload handles both when the file has our lines (the
+	// `load anchor` directive populates the anchor). But when pf.conf
+	// can't be patched (custom file, permissions), the full reload won't
+	// install the reference — in that case, still load the anchor directly
+	// so the rules are ready once the user adds the reference manually.
+	if confChanged || !anchorReferencedInMainRuleset() {
 		if err := pfctlRun("-f", pfConfPath); err != nil {
 			return fmt.Errorf("reload %s: %w", pfConfPath, err)
 		}
-	} else if !anchorRulesLoaded() {
+	}
+	if !anchorRulesLoaded() {
 		if err := pfctlRun("-a", pfAnchorName, "-f", pfAnchorFile); err != nil {
 			return fmt.Errorf("load anchor %s: %w", pfAnchorName, err)
 		}
