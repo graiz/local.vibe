@@ -302,12 +302,24 @@ func anchorReferencedInMainRuleset() bool {
 // disturb a coexisting pf user. The third — reloading /etc/pf.conf — replaces
 // the whole main ruleset, and is unavoidable: an anchor *call* can only be
 // added by reloading the ruleset that contains it, so there is no way to
-// repair a flushed reference without it. That means a VPN which loaded its
-// own ruleset (rather than /etc/pf.conf) will have its rules replaced by the
-// system file the next time this runs. We accept that — the user asked for the
-// redirect, /etc/pf.conf is the canonical ruleset, and this is the same reload
-// macOS itself performs at boot — but it is reported on stderr so it is
-// visible in the com.vibe.pf log when someone debugs VPN interaction.
+// repair a flushed reference without it.
+//
+// The cost is concrete, and was observed rather than theorized. Services that
+// insert their own anchors into the main ruleset at runtime (ExpressVPN's
+// kill-switch installs an `xvpn` tree; /etc/pf.conf's own header warns that
+// system services do this) are named only in the *live* ruleset, never in the
+// file — so a reload drops their anchor calls, leaving their rules loaded but
+// unevaluated. On a test machine ExpressVPN's `xvpn` call vanished from the
+// filter section across one of these reloads, and its daemon re-installed it
+// unprompted moments later. That is the expected shape: we do disturb a
+// coexisting pf user, and a well-behaved one recovers on its own.
+//
+// We accept that — the user asked for the redirect, /etc/pf.conf is the
+// canonical ruleset, and this is the same reload macOS itself performs at boot
+// — but it is reported on stderr so it is visible in the com.vibe.pf log when
+// someone debugs VPN interaction. Note this cuts the other way too: a reload
+// re-executes *every* `load anchor` directive in pf.conf, including other
+// tools', so a stale third-party anchor file can come back to life.
 func reassertPFRules() error {
 	if err := writePFAnchorFile(); err != nil {
 		return err
