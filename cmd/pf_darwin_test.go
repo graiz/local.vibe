@@ -188,3 +188,43 @@ func TestPFLineClassification(t *testing.T) {
 		t.Errorf("load anchor should classify as neither section")
 	}
 }
+
+// Real `sudo pfctl -s nat` output on a stock macOS ruleset. The anchor is
+// *called* here — this is the healthy state.
+const natWithVibeAnchor = `nat-anchor "com.apple/*" all
+rdr-anchor "com.apple/*" all
+rdr-anchor "com.vibe" all
+`
+
+// The same ruleset after `pfctl -F all`, or after anything loads a ruleset
+// built from a pf.conf predating vibe's patch. Note this is indistinguishable
+// from healthy by every *other* check in this file: the anchor's own contents
+// survive a flush, so `pfctl -a com.vibe -s nat` still lists both rdr rules
+// and anchorRulesLoaded() still returns true. Only the missing call here says
+// the redirect is dead.
+const natWithoutVibeAnchor = `nat-anchor "com.apple/*" all
+rdr-anchor "com.apple/*" all
+`
+
+func TestNATRulesetReferencesAnchor(t *testing.T) {
+	if !natRulesetReferencesAnchor(natWithVibeAnchor) {
+		t.Error("healthy ruleset reported as missing the anchor call")
+	}
+	if natRulesetReferencesAnchor(natWithoutVibeAnchor) {
+		t.Error("flushed ruleset reported as still calling the anchor")
+	}
+	// pfctl emits an ALTQ preamble on stderr, but -s nat output can also carry
+	// leading whitespace; a trimmed prefix match must survive it.
+	if !natRulesetReferencesAnchor("   " + pfRdrAnchorLine + " all") {
+		t.Error("indented anchor call not recognized")
+	}
+	// Empty output (pf never loaded, or pfctl failed) is not a reference.
+	if natRulesetReferencesAnchor("") {
+		t.Error("empty ruleset reported as calling the anchor")
+	}
+	// A prefix match must not accept a *different* anchor whose name merely
+	// starts with ours — pf treats com.vibe and com.vibe.test as unrelated.
+	if natRulesetReferencesAnchor(`rdr-anchor "com.vibe.test" all`) {
+		t.Error("a differently-named anchor was accepted as ours")
+	}
+}

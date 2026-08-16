@@ -255,26 +255,59 @@ func anchorRulesLoaded() bool {
 		strings.Contains(live, fmt.Sprintf("-> 127.0.0.1 port %d", pfTLSPort))
 }
 
+// natRulesetReferencesAnchor reports whether `pfctl -s nat` output contains a
+// call to vibe's anchor. Split from the exec so the parsing is testable: this
+// is the one live-state check in this file whose answer decides whether we
+// touch the *main* ruleset, so it's worth pinning to a fixture.
+//
+// Matched per line rather than as a substring of the whole output. pfctl
+// prints anchor calls as `rdr-anchor "com.vibe" all`, so the whole line is
+// never an exact match — but a bare Contains would also accept the string
+// buried in some future prefixed form.
+func natRulesetReferencesAnchor(nat string) bool {
+	for _, l := range strings.Split(nat, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), pfRdrAnchorLine) {
+			return true
+		}
+	}
+	return false
+}
+
 // anchorReferencedInMainRuleset reports whether the main pf ruleset contains
 // an rdr-anchor reference to com.vibe. The anchor can hold correct rules
 // while the main ruleset has no reference to it — pf never evaluates those
-// rules in that state. This happens when the main ruleset was loaded from a
-// version of pf.conf that predated vibe's patch (macOS update, VPN flush).
+// rules in that state, so the redirect is dead even though every other check
+// passes.
+//
+// `pfctl -F all` produces exactly this: it flushes anchor *calls* out of the
+// main ruleset while the anchor's *contents* survive. So does anything that
+// loads a ruleset built from a pf.conf predating vibe's patch (a macOS update
+// that replaced /etc/pf.conf, a VPN loading its own file).
 func anchorReferencedInMainRuleset() bool {
 	out, err := exec.Command("/sbin/pfctl", "-s", "nat").Output()
 	if err != nil {
+		// Fail closed: assume the reference is missing. The caller only acts
+		// on that when pf.conf actually carries our lines, so the worst case
+		// is a redundant reload of the canonical system file.
 		return false
 	}
-	return strings.Contains(string(out), `rdr-anchor "com.vibe"`)
+	return natRulesetReferencesAnchor(string(out))
 }
 
 // reassertPFRules makes vibe's redirect active: anchor file current, pf.conf
 // referencing it, rules loaded, pf enabled. Idempotent and safe to run
 // repeatedly — it is invoked at boot and on every network change.
 //
-// Unlike the ruleset-merging version this replaces, a reload here touches only
-// vibe's own anchor, so it cannot disturb a coexisting pf user even when it
-// does run.
+// Two of the three repairs below touch only vibe's own anchor and cannot
+// disturb a coexisting pf user. The third — reloading /etc/pf.conf — replaces
+// the whole main ruleset, and is unavoidable: an anchor *call* can only be
+// added by reloading the ruleset that contains it, so there is no way to
+// repair a flushed reference without it. That means a VPN which loaded its
+// own ruleset (rather than /etc/pf.conf) will have its rules replaced by the
+// system file the next time this runs. We accept that — the user asked for the
+// redirect, /etc/pf.conf is the canonical ruleset, and this is the same reload
+// macOS itself performs at boot — but it is reported on stderr so it is
+// visible in the com.vibe.pf log when someone debugs VPN interaction.
 func reassertPFRules() error {
 	if err := writePFAnchorFile(); err != nil {
 		return err
@@ -291,20 +324,37 @@ func reassertPFRules() error {
 				"    %s\n    %s\n",
 			pfConfPath, err, pfRdrAnchorLine, pfLoadLine)
 	}
+	// err == nil is exactly "pf.conf on disk carries our two lines" — either it
+	// already did (changed=false) or we just patched it (changed=true).
+	confHasOurLines := err == nil
 
-	// Two independent concerns: (1) the main ruleset must reference our
-	// anchor, and (2) the anchor must contain our current rdr rules.
+	// Two independent concerns, checked independently: (1) the main ruleset
+	// must *call* our anchor, and (2) the anchor must *contain* our current
+	// rdr rules. Either can be broken without the other — `pfctl -F all`
+	// breaks only the first, a port change in config.json only the second —
+	// so neither check may be the else-branch of the other.
 	//
-	// A full pf.conf reload handles both when the file has our lines (the
-	// `load anchor` directive populates the anchor). But when pf.conf
-	// can't be patched (custom file, permissions), the full reload won't
-	// install the reference — in that case, still load the anchor directly
-	// so the rules are ready once the user adds the reference manually.
-	if confChanged || !anchorReferencedInMainRuleset() {
+	// (1) Reload the whole file, which is what attaches the anchor. Gated on
+	// the file actually having our lines: when pf.conf can't be patched, a
+	// reload cannot install the reference, so it would be a pure loss —
+	// replacing the live main ruleset on every network change, forever, and
+	// never reaching the state that would stop it.
+	if confHasOurLines && (confChanged || !anchorReferencedInMainRuleset()) {
 		if err := pfctlRun("-f", pfConfPath); err != nil {
-			return fmt.Errorf("reload %s: %w", pfConfPath, err)
+			// Not fatal: fall through to the anchor load below so a stale but
+			// still-referenced anchor gets refreshed, and so pf still gets
+			// enabled. Returning here would skip both.
+			fmt.Fprintf(os.Stderr, "vibe pf-apply: reload %s failed: %v\n", pfConfPath, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "vibe pf-apply: reloaded %s to reattach the %s anchor\n", pfConfPath, pfAnchorName)
 		}
 	}
+
+	// (2) Load just our anchor. Never disturbs anyone else's rules. Runs even
+	// after a reload above, which catches a reload that silently failed to
+	// populate the anchor — and is the only repair available when pf.conf
+	// can't be patched, so the rules are ready the moment the user adds the
+	// reference by hand.
 	if !anchorRulesLoaded() {
 		if err := pfctlRun("-a", pfAnchorName, "-f", pfAnchorFile); err != nil {
 			return fmt.Errorf("load anchor %s: %w", pfAnchorName, err)
