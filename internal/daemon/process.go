@@ -264,11 +264,13 @@ func tailLogFile(path string, n int) string {
 		return ""
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	// Filter out empty lines and ANSI-heavy shell banner noise.
+	// Drop escape sequences and pure decoration (see log_tail.go). Both are
+	// pure loss here: the window is only a dozen lines, and a login shell's
+	// banner would otherwise spend all of them without saying anything.
 	var meaningful []string
 	for _, l := range lines {
-		trimmed := strings.TrimSpace(l)
-		if trimmed == "" {
+		trimmed := strings.TrimSpace(stripANSI(l))
+		if isDecorationOnly(trimmed) {
 			continue
 		}
 		meaningful = append(meaningful, trimmed)
