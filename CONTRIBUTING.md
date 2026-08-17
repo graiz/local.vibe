@@ -13,7 +13,7 @@ git clone https://github.com/graiz/local.vibe.git
 cd local.vibe
 go build -o vibe .
 sudo ./vibe setup    # one-time: installs dnsmasq, pf rules, LaunchAgent
-./vibe install       # copies binary to /opt/homebrew/bin/vibe
+./vibe install       # copies binary to /opt/homebrew/bin/vibe (or /usr/local/bin/vibe on Intel)
 ```
 
 ## Development workflow
@@ -25,6 +25,8 @@ go vet ./...       # static analysis
 ```
 
 The daemon runs from a compiled binary — source changes aren't picked up until rebuilt. `vibe dev` handles the full cycle.
+
+One exception, macOS only: if you changed `pf-apply` (`cmd/pf_darwin.go`), also run `sudo vibe setup`. The root pf LaunchDaemon executes a staged copy of the binary at `/Library/Application Support/local.vibe/vibe-pf` — a deliberate guard so a root job never runs a user-writable file — and only `setup` refreshes that copy. `vibe dev` updates the CLI you invoke by hand but leaves the old code running at boot and on network changes, which looks exactly like your change having no effect.
 
 ## Code style
 
