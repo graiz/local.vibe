@@ -150,6 +150,67 @@ func TestScanLogForRecoveryExecDenied(t *testing.T) {
 	}
 }
 
+// The case this whole file exists for, and the one it used to miss: a package
+// runner execs a quarantined .bin shim, macOS returns EPERM, and the runner
+// exits non-zero having printed nothing. The log then holds only the login
+// shell's banner — there is no "operation not permitted" for execDeniedRe to
+// match — so gating the probe on that pattern made it unreachable in exactly
+// the scenario it was written for. It has to run as a fallback too.
+//
+// Observed on a real route: `bunx concurrently ...` on a file-sync mount,
+// exit status 1, and a log tail that was 100% zsh MOTD.
+func TestScanLogForRecoveryProbesQuarantineWhenLogNamesNoCause(t *testing.T) {
+	dir := t.TempDir()
+	p := writeBin(t, dir, ".", "concurrently")
+	markQuarantined(t, p)
+
+	// A decorated shell prompt and nothing else — no error text of any kind.
+	tail := strings.Join([]string{
+		"  .==================.",
+		"  | |   iMacNano   | |",
+		"[ERROR]: gitstatus failed to initialize.",
+	}, "\n")
+
+	rec := scanLogForRecovery(tail, `bunx concurrently "a" "b"`, dir)
+	if rec == nil {
+		t.Fatal("expected a quarantine hint when the log names no cause")
+	}
+	if !strings.Contains(rec.Message, "xattr -dr com.apple.quarantine") {
+		t.Errorf("hint should carry the fix command, got: %s", rec.Message)
+	}
+	if !strings.Contains(rec.Message, "TestSyncProvider") {
+		t.Errorf("hint should name the agent that set the flag, got: %s", rec.Message)
+	}
+}
+
+// An empty log is the most literal form of "the log yields nothing" — a
+// runner that printed absolutely nothing before dying. The probe is the only
+// thing that can explain that, so the empty-tail early return must not skip it.
+func TestScanLogForRecoveryProbesQuarantineWhenLogEmpty(t *testing.T) {
+	dir := t.TempDir()
+	p := writeBin(t, dir, ".", "concurrently")
+	markQuarantined(t, p)
+
+	rec := scanLogForRecovery("", `bunx concurrently "a" "b"`, dir)
+	if rec == nil {
+		t.Fatal("expected a quarantine hint for an empty log")
+	}
+	if !strings.Contains(rec.Message, "xattr -dr com.apple.quarantine") {
+		t.Errorf("hint should carry the fix command, got: %s", rec.Message)
+	}
+}
+
+// The fallback must not fire on unrelated failures: a clean tree still yields
+// no hint even when the log says nothing useful.
+func TestScanLogForRecoveryQuietWhenLogSilentAndTreeClean(t *testing.T) {
+	dir := t.TempDir()
+	writeBin(t, dir, ".", "concurrently")
+
+	if rec := scanLogForRecovery("some unremarkable output", "bunx concurrently", dir); rec != nil {
+		t.Errorf("expected no hint for a clean tree, got: %s", rec.Message)
+	}
+}
+
 // The cmd's leading token is often the same file that also appears in
 // node_modules/.bin, which previously counted one file as two.
 func TestScanQuarantinedExecutablesDoesNotDoubleCount(t *testing.T) {

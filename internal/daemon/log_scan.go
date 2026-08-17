@@ -148,7 +148,9 @@ func scanLogForRecovery(tail, cmd, dir string) *Recovery {
 		}
 	}
 	if tail == "" {
-		return nil
+		// Not a dead end: a runner that printed nothing at all before dying is
+		// the signature of a swallowed exec failure. Probe the files.
+		return scanQuarantinedExecutables(dir, cmd)
 	}
 
 	// Cmd-aware patterns first — they offer the most direct fix.
@@ -193,5 +195,14 @@ func scanLogForRecovery(tail, cmd, dir string) *Recovery {
 		}
 		return r
 	}
-	return nil
+
+	// No pattern matched. Before giving up, probe the files: a log that names
+	// no cause is itself the signature this exists for, because bunx and npx
+	// exec a .bin shim, get EPERM from a quarantined file, and exit non-zero
+	// having printed nothing — leaving a tail that is pure shell banner. That
+	// case never reaches the execDeniedRe branch above, so gating the probe
+	// solely on that pattern made it unreachable in its own headline scenario.
+	// Safe as a fallback: the probe returns nil unless something really is
+	// flagged, so it cannot add noise to unrelated failures.
+	return scanQuarantinedExecutables(dir, cmd)
 }
