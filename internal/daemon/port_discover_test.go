@@ -362,3 +362,50 @@ func TestHandleRepairNoCandidate(t *testing.T) {
 		t.Errorf("restartable = %v; want true for managed route without a live child", resp["restartable"])
 	}
 }
+
+// portFromLog reads through tailLogFile, which strips ANSI (log_tail.go).
+// That matters here and not only cosmetically: Vite colours the URL *and
+// bolds the port itself*, so an escape lands between the colon and the
+// digits — "http://localhost:<ESC>[1m5173<ESC>[22m/". Matching the raw bytes
+// misses the port entirely, and the log-tail fallback is what recovers a
+// managed route whose registered port went stale.
+func TestPortFromLogFindsPortInColouredViteOutput(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "vite.log")
+	line := "  \x1b[32m➜\x1b[39m  \x1b[1mLocal\x1b[22m:   " +
+		"\x1b[36mhttp://localhost:\x1b[1m5173\x1b[22m/\x1b[39m"
+	if err := os.WriteFile(p, []byte("VITE v5.0.0  ready in 300 ms\n"+line+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := portFromLog(p)
+	if !ok {
+		t.Fatal("no port found in coloured Vite output")
+	}
+	if got != 5173 {
+		t.Errorf("port = %d, want 5173", got)
+	}
+}
+
+// The decoration filter must never drop a line carrying a port: any such
+// line has digits, which disqualifies it as decoration. Guards the other
+// half of the tail filtering against the same recovery path.
+func TestPortFromLogSurvivesBannerHeavyLog(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "banner.log")
+	body := strings.Join([]string{
+		"  .==================.",
+		"  | |--.__.--.__.--| |",
+		"  ▀▀▀▀▀▀▀▀▀▀",
+		"listening on port 4321",
+		"  ╰─────────╯",
+	}, "\n")
+	if err := os.WriteFile(p, []byte(body+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := portFromLog(p)
+	if !ok || got != 4321 {
+		t.Errorf("portFromLog = (%d, %v), want (4321, true)", got, ok)
+	}
+}
