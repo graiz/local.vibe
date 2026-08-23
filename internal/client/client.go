@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -211,4 +212,110 @@ func (c *Client) Health() (*HealthResponse, error) {
 	}
 	var h HealthResponse
 	return &h, json.Unmarshal(data, &h)
+}
+
+// PeerRouteInfo is one route in a paired peer's cached route list.
+type PeerRouteInfo struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Running bool   `json:"running"`
+	Ready   bool   `json:"ready"`
+}
+
+// PeerInfo is one paired peer daemon with its sync health and routes.
+type PeerInfo struct {
+	Name        string          `json:"name"`
+	Host        string          `json:"host"`
+	Port        int             `json:"port"`
+	Fingerprint string          `json:"fingerprint"`
+	AddedAt     time.Time       `json:"added_at"`
+	Reachable   bool            `json:"reachable"`
+	LastError   string          `json:"last_error,omitempty"`
+	Routes      []PeerRouteInfo `json:"routes"`
+}
+
+type PeersResponse struct {
+	Enabled bool       `json:"enabled"`
+	Peers   []PeerInfo `json:"peers"`
+}
+
+type PeerInviteResponse struct {
+	Code      string    `json:"code"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Port      int       `json:"port"`
+}
+
+// Peers lists paired peers and their cached routes. Callers that only
+// decorate output (vibe list) should treat an error as "no peers" — like
+// Worktrees, this must never break the primary command.
+func (c *Client) Peers() (*PeersResponse, error) {
+	data, status, err := c.do("GET", "/_api/peers", nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, apiError(data, status)
+	}
+	var resp PeersResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// PeerInvite opens a one-time pairing window on this machine's daemon.
+func (c *Client) PeerInvite() (*PeerInviteResponse, error) {
+	data, status, err := c.do("POST", "/_api/peers/invite", nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, apiError(data, status)
+	}
+	var resp PeerInviteResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// PeerAdd pairs this machine's daemon with host using an invite code shown
+// by `vibe peer invite` on the other machine.
+func (c *Client) PeerAdd(host string, port int, code string) (*PeerInfo, error) {
+	body := map[string]any{"host": host, "port": port, "code": code}
+	data, status, err := c.do("POST", "/_api/peers", body)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, apiError(data, status)
+	}
+	var resp PeerInfo
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// PeerRemove unpairs a peer by name.
+func (c *Client) PeerRemove(name string) error {
+	data, status, err := c.do("DELETE", "/_api/peers/"+name, nil)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return apiError(data, status)
+	}
+	return nil
+}
+
+// apiError surfaces the daemon's JSON error message when present.
+func apiError(data []byte, status int) error {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(data, &e) == nil && e.Error != "" {
+		return errors.New(e.Error)
+	}
+	return fmt.Errorf("daemon returned %d", status)
 }
