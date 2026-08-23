@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -17,13 +18,17 @@ func TestEnsureIdentityCreatesAndReloads(t *testing.T) {
 	if len(fp1) != 64 {
 		t.Fatalf("fingerprint = %q, want 64 hex chars", fp1)
 	}
-	// Key must not be world-readable.
+	// Key must not be world-readable. POSIX-only: Windows has no permission
+	// bits (Go reports 0666 for any writable file) — same guard as
+	// internal/cert's key tests.
 	info, err := os.Stat(filepath.Join(dir, "peer-key.pem"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("peer-key.pem mode = %v, want 0600", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("peer-key.pem mode = %v, want 0600", info.Mode().Perm())
+		}
 	}
 	// Second call reloads the same identity, never regenerates.
 	id2, err := EnsureIdentity(dir)

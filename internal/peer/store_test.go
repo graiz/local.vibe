@@ -3,6 +3,7 @@ package peer
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -20,8 +21,12 @@ func TestPeersRoundTripPreservesOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("peers.json mode = %v, want 0600", info.Mode().Perm())
+	// POSIX-only: Windows has no permission bits — same guard as
+	// internal/cert's key tests.
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0600 {
+			t.Fatalf("peers.json mode = %v, want 0600", info.Mode().Perm())
+		}
 	}
 	out, err := LoadPeers(dir)
 	if err != nil {
