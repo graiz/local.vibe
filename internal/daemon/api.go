@@ -389,6 +389,14 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		s.handleAdoptWorktree(w, r, name)
 	case r.Method == http.MethodPut && path == "/preferences":
 		s.handleSetPreferences(w, r)
+	case r.Method == http.MethodGet && path == "/peers":
+		s.handlePeersList(w, r)
+	case r.Method == http.MethodPost && path == "/peers/invite":
+		s.handlePeerInvite(w, r)
+	case r.Method == http.MethodPost && path == "/peers":
+		s.handlePeerAdd(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/peers/"):
+		s.handlePeerRemove(w, r, strings.TrimPrefix(path, "/peers/"))
 	default:
 		if nonLocalVibeHost {
 			s.routeRequest(w, r)
@@ -423,6 +431,14 @@ func isDaemonAPIPath(method, path string) bool {
 	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/worktrees"):
 		return true
 	case method == http.MethodPut && path == "/preferences":
+		return true
+	case method == http.MethodGet && path == "/peers":
+		return true
+	case method == http.MethodPost && path == "/peers/invite":
+		return true
+	case method == http.MethodPost && path == "/peers":
+		return true
+	case method == http.MethodDelete && strings.HasPrefix(path, "/peers/"):
 		return true
 	default:
 		return false
