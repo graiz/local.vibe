@@ -22,6 +22,12 @@ type DaemonConfig struct {
 	PIDCheckInterval int       `json:"pid_check_interval"`
 	TLS              TLSConfig `json:"tls"`
 	DNS              DNSConfig `json:"dns"`
+	// Peers configures the EXPERIMENTAL cross-machine peer feature: paired
+	// vibe daemons on a LAN can browse each other's routes through an mTLS
+	// relay listener on Port. Off by default; an absent key means disabled —
+	// a plain bool is safe here because (unlike autostart) the zero value
+	// and the safe default agree.
+	Peers PeersConfig `json:"peers"`
 	// AutoStart controls on-demand recovery of managed routes. When true
 	// (default), visiting a stopped managed route's URL spawns its process
 	// and shows a "reconnecting" page instead of a manual Start button.
@@ -53,6 +59,14 @@ type DNSConfig struct {
 	Enabled  bool   `json:"enabled"`
 	Listen   string `json:"listen"`   // default 127.0.0.1:53
 	Upstream string `json:"upstream"` // default 8.8.8.8:53
+}
+
+// PeersConfig gates the experimental peer subsystem. When Enabled, the daemon
+// may start a LAN-facing mTLS listener on Port for paired-peer traffic only —
+// the loopback API/dashboard listeners are unaffected either way.
+type PeersConfig struct {
+	Enabled bool `json:"enabled"`
+	Port    int  `json:"port"`
 }
 
 type DashboardConfig struct {
@@ -89,6 +103,7 @@ func DefaultConfig() *Config {
 				Listen:   "127.0.0.1:53",
 				Upstream: "8.8.8.8:53",
 			},
+			Peers: PeersConfig{Enabled: false, Port: 7444},
 		},
 		Dashboard: DashboardConfig{
 			Enabled: true,

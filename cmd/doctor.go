@@ -31,6 +31,7 @@ fine. Run with --fix to re-apply the redirect.`,
 		}
 
 		redirectOK, allOK, warned := runDoctor(cfg)
+		printPeerStatus()
 
 		if allOK {
 			if warned {
@@ -60,6 +61,28 @@ fine. Run with --fix to re-apply the redirect.`,
 		os.Exit(1)
 		return nil
 	},
+}
+
+// printPeerStatus appends per-peer reachability when the experimental peer
+// feature is enabled. Informational only: a peer machine being asleep is not
+// a fault in this machine's request path, so it never affects the exit code.
+func printPeerStatus() {
+	resp, err := client.New().Peers()
+	if err != nil || !resp.Enabled || len(resp.Peers) == 0 {
+		return
+	}
+	fmt.Println()
+	for _, p := range resp.Peers {
+		if p.Reachable {
+			fmt.Printf("  ✓ peer %-24s ok (%d routes)\n", p.Name, len(p.Routes))
+		} else {
+			detail := p.LastError
+			if detail == "" {
+				detail = "no successful sync yet"
+			}
+			fmt.Printf("  ✗ peer %-24s unreachable — %s\n", p.Name, detail)
+		}
+	}
 }
 
 func init() {

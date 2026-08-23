@@ -50,6 +50,33 @@ var listCmd = &cobra.Command{
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				wt.Name, wt.URL, "—", "worktree", "not started", "—", "branch "+wt.Branch)
 		}
+		// Paired peers' routes (experimental). Best-effort like Worktrees —
+		// decoration must never break the listing. Shadowing is surfaced,
+		// never silent: a local route or an earlier peer claiming the same
+		// name wins, so this row's URL would reach the winner instead.
+		if peers, err := c.Peers(); err == nil && peers.Enabled {
+			localNames := make(map[string]bool, len(routes))
+			for _, r := range routes {
+				localNames[r.Name] = true
+			}
+			seenPeerNames := make(map[string]bool)
+			for _, p := range peers.Peers {
+				for _, pr := range p.Routes {
+					status := "stopped"
+					if pr.Ready {
+						status = "ready"
+					} else if pr.Running {
+						status = "starting"
+					}
+					if localNames[pr.Name] || seenPeerNames[pr.Name] {
+						status = "shadowed"
+					}
+					seenPeerNames[pr.Name] = true
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+						pr.Name, "https://"+pr.Name+".vibe", "—", "peer", status, "—", "on "+p.Name)
+				}
+			}
+		}
 		return w.Flush()
 	},
 }
