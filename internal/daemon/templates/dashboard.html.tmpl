@@ -246,6 +246,26 @@ tr.wt-group-header td{padding:10px 4px 2px 8px;font-size:.72rem;text-transform:u
 {{end}}
 </div></div>
 
+{{if .PeerGroups}}
+<section class="peer-section">
+  <h2 style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin:28px 0 10px">Peers <span style="opacity:.5;text-transform:none;letter-spacing:0">(experimental)</span></h2>
+  {{range .PeerGroups}}
+  <div class="peer-group" style="margin-bottom:14px">
+    <div style="font-size:12px;color:var(--text-muted);padding:6px 12px;border-bottom:1px solid var(--border-subtle)">on {{.Peer}}</div>
+    <table class="route-table"><tbody>
+    {{range .Routes}}
+    <tr>
+      <td><div class="route-name-cell"><span class="route-icon">{{iconHTML .Icon}}</span><div>{{if .ShadowedBy}}<span class="route-name-link" style="opacity:.5">{{.Name}}</span>{{else}}<a href="{{.VibeURL}}" target="_blank" class="route-name-link">{{.Name}}</a>{{end}}<span class="route-url">{{.Name}}.{{$.TLD}}</span></div></div></td>
+      <td class="td-type">peer</td>
+      <td style="text-align:right;padding-right:12px">{{if .ShadowedBy}}<span style="font-size:11px;color:var(--text-muted)">shadowed by {{.ShadowedBy}}</span>{{else if .Ready}}<span class="led led-green"></span>{{else}}<span class="led led-yellow"></span>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody></table>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
 <section class="get-started">
   <h2>Get Started</h2>
   <p>Paste this into Claude Code, Cursor, or any agentic IDE to configure a project with local.vibe.</p>
