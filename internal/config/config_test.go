@@ -52,3 +52,27 @@ func TestAutoStartJSONRoundTrip(t *testing.T) {
 		t.Errorf("autostart=false still reported enabled")
 	}
 }
+
+func TestPeersConfigDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Daemon.Peers.Enabled {
+		t.Fatal("peers must default to disabled")
+	}
+	if cfg.Daemon.Peers.Port != 7444 {
+		t.Fatalf("peers port default = %d, want 7444", cfg.Daemon.Peers.Port)
+	}
+}
+
+func TestPeersConfigAbsentKeyDisabled(t *testing.T) {
+	// A config.json written before this feature existed must not enable it.
+	cfg := DefaultConfig()
+	if err := json.Unmarshal([]byte(`{"daemon":{"port":7999}}`), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Daemon.Peers.Enabled {
+		t.Fatal("absent daemon.peers key must mean disabled")
+	}
+	if cfg.Daemon.Peers.Port != 7444 {
+		t.Fatalf("absent key must keep default port, got %d", cfg.Daemon.Peers.Port)
+	}
+}
