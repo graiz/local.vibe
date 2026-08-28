@@ -1,21 +1,14 @@
-# Future: Linux Support
+# Future Platform Work
 
-> Status (Windows): both the cross-platform refactor (Phase 1) and the
-> Windows implementation (Phase 2) have landed on
-> `feature/windows-implementation`. Process supervision uses Job Objects;
-> DNS uses an embedded stub on 127.0.0.1:53 plus `netsh interface ipv4 set
-> dnsservers static`; port forwarding uses `netsh interface portproxy`;
-> autostart uses a Scheduled Task on logon at the user's normal integrity
-> level (the daemon's runtime needs are all unprivileged on Windows; only
-> `vibe setup` itself requires admin); cert trust uses `certutil -addstore
-> Root`, with uninstall matching by SHA1 thumbprint to avoid clobbering
-> third-party certs that share the Subject CN. Adapter DNS introspection
-> uses `Get-DnsClientServerAddress` / `Get-NetAdapter` / `Get-NetIPInterface`
-> via PowerShell JSON, not netsh screen-scraping, so it works on
-> non-English Windows locales. `vibe uninstall` reverses every step.
-> Linux remains unimplemented — sections below describe its design.
+> **Status (May 2026):** macOS, Linux, and Windows are all implemented.
+> Linux setup uses systemd-resolved for DNS, an nftables redirect installed
+> via a one-shot `vibe-nft.service`, a user systemd unit (`vibe.service`)
+> for autostart, and CA trust into both the system store (probing
+> `update-ca-certificates` → `update-ca-trust` → p11-kit `trust`) and the
+> user NSS db via `certutil`. `vibe uninstall` reverses every step. See
+> `cmd/setup_linux.go`, `cmd/uninstall_linux.go`, and `internal/cert/cert_linux.go`.
 
-local.vibe is currently macOS- and Windows-supported. This document captures what would need to change to support Linux, and the design constraints that came out of reviewing PR #4 (first Linux attempt).
+This document originally captured the Linux design before it was implemented. Sections are kept as design notes and as a reference for future platform ports (BSD, illumos). The constraints that drove the implementation came from reviewing PR #4 (the first Linux attempt).
 
 ---
 

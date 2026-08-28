@@ -7,18 +7,50 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/config"
 )
 
-// tryPlatformDaemonStart on Linux is a no-op — there's no installed unit
-// (systemd user service) yet. Phase 2 of the Linux port will hook this up.
-func tryPlatformDaemonStart() (bool, error) { return false, nil }
+// tryPlatformDaemonStart starts the daemon via the user systemd unit when
+// installed. Returns handled=false (so the caller forks directly) before
+// `vibe setup` has run.
+func tryPlatformDaemonStart() (bool, error) {
+	if !linuxUserUnitInstalled() {
+		return false, nil
+	}
+	out, err := exec.Command("systemctl", "--user", "start", "vibe.service").CombinedOutput()
+	if err != nil {
+		return true, fmt.Errorf("systemctl --user start: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
 
-// tryPlatformDaemonStop on Linux is a no-op for the same reason.
-func tryPlatformDaemonStop() (bool, error) { return false, nil }
+// tryPlatformDaemonStop stops the daemon via the user systemd unit when
+// installed.
+func tryPlatformDaemonStop() (bool, error) {
+	if !linuxUserUnitInstalled() {
+		return false, nil
+	}
+	out, err := exec.Command("systemctl", "--user", "stop", "vibe.service").CombinedOutput()
+	if err != nil {
+		return true, fmt.Errorf("systemctl --user stop: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}
+
+// linuxUserUnitInstalled reports whether the user-level vibe.service exists.
+// Checked by file path so every `vibe daemon start` doesn't spawn systemctl.
+func linuxUserUnitInstalled() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".config", "systemd", "user", "vibe.service"))
+	return err == nil
+}
 
 // forkDaemon detaches via Setsid (works on all unix-like systems).
 func forkDaemon() error {
