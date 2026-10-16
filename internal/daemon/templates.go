@@ -11,9 +11,9 @@ import (
 var templateFS embed.FS
 
 var (
-	tmplDashboard  = mustParse("dashboard.html.tmpl")
-	tmplStartPage  = mustParse("startpage.html.tmpl")
-	tmplRepairPage = mustParse("repairpage.html.tmpl")
+	tmplDashboard  = template.Must(parse("dashboard.html.tmpl"))
+	tmplStartPage  = template.Must(parse("startpage.html.tmpl"))
+	tmplRepairPage = template.Must(parse("repairpage.html.tmpl"))
 )
 
 // templateFuncs are the helpers exposed to all dashboard/startpage/repair templates.
@@ -26,12 +26,8 @@ var templateFuncs = template.FuncMap{
 	},
 }
 
-func mustParse(name string) *template.Template {
-	t, err := template.New(name).Funcs(templateFuncs).ParseFS(templateFS, "templates/"+name)
-	if err != nil {
-		panic(fmt.Sprintf("daemon: parse %s: %v", name, err))
-	}
-	return t
+func parse(name string) (*template.Template, error) {
+	return template.New(name).Funcs(templateFuncs).ParseFS(templateFS, "templates/"+name)
 }
 
 // iconHTMLFn returns the dashboard icon as either a plain (escaped) emoji or
