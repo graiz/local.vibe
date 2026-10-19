@@ -318,6 +318,8 @@ type routeResponse struct {
 	Proxy              bool       `json:"proxy,omitempty"`
 	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"`
 	OAuthCallbackPort  int        `json:"oauth_callback_port,omitempty"`
+	Cmd                string     `json:"cmd,omitempty"`
+	Dir                string     `json:"dir,omitempty"`
 }
 
 // apiHandler routes /_api/* requests to the appropriate handler.
@@ -483,11 +485,16 @@ func (s *Server) handleListWorktrees(w http.ResponseWriter, _ *http.Request) {
 	json.NewEncoder(w).Encode(out)
 }
 
-func (s *Server) handleListRoutes(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleListRoutes(w http.ResponseWriter, r *http.Request) {
+	withLocal := s.localDetailsAllowed(r)
 	routes := s.table.List()
 	resp := make([]routeResponse, len(routes))
 	for i, r := range routes {
 		resp[i] = toResponse(r, s.cfg.Daemon.TLD, s.vibeScheme())
+		if withLocal {
+			resp[i].Cmd = s.table.ManagedCmd(r)
+			resp[i].Dir = r.Dir
+		}
 	}
 	json.NewEncoder(w).Encode(resp)
 }
@@ -861,7 +868,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	// Cmd is only meaningful on managed routes — silently ignore on others so
 	// generic clients can PUT a full route shape without surprises.
 	if req.Cmd != "" && route.Type == RouteManaged {
-		route.Cmd = req.Cmd
+		s.table.SetManagedCmd(route, req.Cmd)
 	}
 	if req.URL != "" {
 		route.ExternalURL = req.URL
