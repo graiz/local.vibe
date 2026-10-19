@@ -288,14 +288,36 @@ func (s *Server) peerServeRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 // servePeerStartingPage is the remote viewer's stand-in for the start /
-// reconnecting pages: a themed 503 that refreshes itself every 2s until the
-// route answers. No buttons — remote viewers cannot operate this daemon.
+// reconnecting pages: a themed 503. No buttons — remote viewers cannot
+// operate this daemon. It self-refreshes only while this machine is actually
+// bringing the route up; otherwise "Retrying automatically…" would be a
+// promise nothing here keeps (a sticky route has no process vibe can start,
+// and a managed route whose recovery gave up waits for someone at this
+// machine).
 func (s *Server) servePeerStartingPage(w http.ResponseWriter, route *Route) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	name := template.HTMLEscapeString(route.Name)
-	fmt.Fprintf(w, `<!doctype html><html><head>%s<meta http-equiv="refresh" content="2"><style>%s</style></head>
+	head := themeHead(name + "." + s.cfg.Daemon.TLD)
+	if s.peerRouteRecovering(route) {
+		fmt.Fprintf(w, `<!doctype html><html><head>%s<meta http-equiv="refresh" content="2"><style>%s</style></head>
 <body><div class="wrap"><h1>%s is starting</h1>
 <p>This route lives on another machine and its server isn't answering yet. Retrying automatically…</p>
-</div></body></html>`, themeHead(name+"."+s.cfg.Daemon.TLD), themeCSS, name)
+</div></body></html>`, head, themeCSS, name)
+		return
+	}
+	fmt.Fprintf(w, `<!doctype html><html><head>%s<style>%s</style></head>
+<body><div class="wrap"><h1>%s isn't running</h1>
+<p>This route lives on another machine and its server isn't running there. Start it on that machine, then reload this page.</p>
+</div></body></html>`, head, themeCSS, name)
+}
+
+// peerRouteRecovering reports whether this machine is bringing the route up
+// on its own: a managed route mid auto-start, or one whose process is alive
+// and has yet to bind its port.
+func (s *Server) peerRouteRecovering(route *Route) bool {
+	if route.Type != RouteManaged {
+		return false
+	}
+	return s.isAutoStarting(route.Name) || route.Running.Load()
 }

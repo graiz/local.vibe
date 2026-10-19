@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -142,32 +143,61 @@ func TestPeerSyncKeepsStaleCacheOnFailure(t *testing.T) {
 	}
 }
 
-func TestPeerServeRouteStoppedManagedServesStartingPage(t *testing.T) {
-	b := newBareServer(t)
-	a := newBareServer(t)
-	pairAB(t, a, b)
-	// A managed route with no live process and no cmd (nothing to spawn):
-	// remote viewers must get the static self-refreshing page, not the
-	// interactive start page and not a proxy attempt.
-	b.table.Add(&Route{Name: "app", Type: RouteManaged, Port: 1, RegisteredAt: time.Now()})
-
+// peerGetRoute requests host through a's pairing with b's peer listener.
+func peerGetRoute(t *testing.T, a, b *Server, host string) (int, string) {
+	t.Helper()
 	c := peerHTTPClient(mustClientIdentity(t, a), b.peerFP)
 	req, err := http.NewRequest("GET", "https://"+b.peerLn.Addr().String()+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Host = "app.vibe"
+	req.Host = host
 	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("stopped managed route: got %d, want 503", resp.StatusCode)
-	}
-	if !containsAll(string(body), `http-equiv="refresh"`, "app") {
-		t.Fatalf("starting page missing refresh/name: %q", body)
+	return resp.StatusCode, string(body)
+}
+
+// Remote viewers get a static 503 (never the interactive start page, never a
+// proxy attempt). It promises an automatic retry only while this machine is
+// actually bringing the route up.
+func TestPeerServeRouteRemotePages(t *testing.T) {
+	b := newBareServer(t)
+	a := newBareServer(t)
+	pairAB(t, a, b)
+
+	// Managed, no live process and no cmd: nothing will ever start it.
+	b.table.Add(&Route{Name: "app", Type: RouteManaged, Port: 1, RegisteredAt: time.Now()})
+	// Sticky on a dark port: vibe has no process to start.
+	b.table.Add(&Route{Name: "web", Type: RouteSticky, Port: 1, RegisteredAt: time.Now()})
+	// Managed, process alive but its port not bound yet: genuinely starting.
+	boot := &Route{Name: "boot", Type: RouteManaged, Port: 1, RegisteredAt: time.Now()}
+	boot.Running.Store(true)
+	boot.SetPID(os.Getpid()) // alive: the test process itself
+	b.table.Add(boot)
+
+	for _, c := range []struct {
+		host        string
+		wantRefresh bool
+		wantText    string
+	}{
+		{"app.vibe", false, "isn't running"},
+		{"web.vibe", false, "isn't running"},
+		{"boot.vibe", true, "is starting"},
+	} {
+		code, body := peerGetRoute(t, a, b, c.host)
+		if code != http.StatusServiceUnavailable {
+			t.Errorf("%s: got %d, want 503", c.host, code)
+		}
+		if got := strings.Contains(body, `http-equiv="refresh"`); got != c.wantRefresh {
+			t.Errorf("%s: auto-refresh=%v, want %v: %q", c.host, got, c.wantRefresh, body)
+		}
+		if !strings.Contains(body, c.wantText) {
+			t.Errorf("%s: missing %q: %q", c.host, c.wantText, body)
+		}
 	}
 }
 
