@@ -1258,6 +1258,7 @@ func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name strin
 	old := route.Port
 	s.table.UpdatePort(name, newPort)
 	route.Ready.Store(true)
+	route.SetFailure(nil) // it's serving again; a stale failure would mislabel it
 	if err := s.saveStickyRoutes(); err != nil {
 		fmt.Fprintf(os.Stderr, "vibe: failed to persist repaired port for %s: %v\n", name, err)
 	}

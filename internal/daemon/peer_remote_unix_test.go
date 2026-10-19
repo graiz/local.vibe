@@ -84,8 +84,10 @@ func TestPeerServeRouteRemoteRecovery(t *testing.T) {
 // A live managed child that rebound to another port is rediscovered on the
 // remote path too — remote viewers can't drive /repair themselves.
 func TestPeerServeRouteRepairsMovedPort(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not available")
+	for _, bin := range []string{"python3", "lsof"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not available", bin)
+		}
 	}
 	b := newBareServer(t)
 	a := newBareServer(t)
@@ -115,5 +117,34 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 	}
 	if moved.Port != newPort {
 		t.Errorf("route port = %d, want rediscovered %d", moved.Port, newPort)
+	}
+}
+
+// A failure recorded by a readiness probe that gave up before the server
+// bound late must not outlive the route answering: otherwise its next brief
+// restart would read "isn't running" with no retry.
+func TestPeerServeRouteClearsStaleFailure(t *testing.T) {
+	b := newBareServer(t)
+	a := newBareServer(t)
+	pairAB(t, a, b)
+
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	go http.Serve(up, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+
+	late := &Route{Name: "late", Type: RouteManaged, Port: up.Addr().(*net.TCPAddr).Port, RegisteredAt: time.Now()}
+	late.Running.Store(true)
+	late.SetPID(startGroupChild(t, "sleep", "60"))
+	late.SetFailure(&Failure{Message: "Server started but never bound port"})
+	b.table.Add(late)
+
+	if code, body := peerGetRoute(t, a, b, "late.vibe"); code != http.StatusOK {
+		t.Fatalf("late.vibe: got %d, want proxied 200: %q", code, body)
+	}
+	if late.LoadFailure() != nil {
+		t.Error("stale failure survived a successful proxy")
 	}
 }

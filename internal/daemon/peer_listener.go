@@ -279,9 +279,16 @@ func (s *Server) peerServeRoute(w http.ResponseWriter, r *http.Request) {
 			s.handleRepair(&discardWriter{}, r, route.Name)
 		}
 		if !s.isPortReady(route.Port) {
+			route.Ready.Store(false) // as routeRequest does locally
 			s.servePeerStartingPage(w, route)
 			return
 		}
+	}
+	// Answering now. A failure recorded earlier — the readiness probe giving
+	// up before a slow first compile bound late — is stale, and left in place
+	// it would label the next brief restart "isn't running" with no retry.
+	if route.Type == RouteManaged && route.LoadFailure() != nil {
+		route.SetFailure(nil)
 	}
 
 	route.TouchActivity()
