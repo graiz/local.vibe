@@ -38,8 +38,10 @@ type dashboardData struct {
 	GridBtnClass   string
 	ListDisplay    string
 	GridDisplay    string
-	RouteCount     int // includes the synthetic "local" daemon row
+	Year           int  // for the footer copyright
+	RouteCount     int  // includes the synthetic "local" daemon row
 	RedirectDown   bool // privileged-port redirect (pf/portproxy) isn't forwarding
+	ShowGetStarted bool // inline Get Started card: only until 2 routes exist; after that it's a footer link + modal
 	Routes         []dashboardRoute
 	PeerGroups     []dashboardPeerGroup // experimental: paired machines' routes, read-only
 }
@@ -68,24 +70,30 @@ type dashboardPeerRoute struct {
 // Resolving the icon and "stopped" flag once here keeps the template free
 // of business logic (e.g. the icon-pool fallback hash).
 type dashboardRoute struct {
-	Name        string
-	VibeURL     string
-	URLDisplay  string
-	Type        RouteType
-	Port        int
-	Age         string
-	IsStopped   bool
-	IsRunning   bool
-	Icon        string
-	UserIcon    string
-	AutoIcon    string
-	ExternalURL string
-	Idle        int
-	Proxy       bool
-	Insecure    bool
-	Parent      string // worktree routes: the app this belongs to
-	IsWorktree  bool
-	GroupHeader string // non-empty on the first row of a parent-less worktree group
+	Name       string
+	VibeURL    string
+	URLDisplay string
+	Type       RouteType
+	Port       int
+	Age        string
+	AgeSec     int // numeric sort key for the Age column (client-side sort)
+	IsStopped  bool
+	IsRunning  bool
+	Icon       string
+	UserIcon   string
+	AutoIcon   string
+	// FallbackIcon is what the route displays when the user-chosen icon is
+	// cleared: the auto-detected favicon, else the deterministic pool pick.
+	// The edit modal uses it so its preview always matches the row instead
+	// of showing "?" for routes that never chose an icon.
+	FallbackIcon string
+	ExternalURL  string
+	Idle         int
+	Proxy        bool
+	Insecure     bool
+	Parent       string // worktree routes: the app this belongs to
+	IsWorktree   bool
+	GroupHeader  string // non-empty on the first row of a parent-less worktree group
 	// Discovered marks a git worktree that exists on disk but has no route
 	// yet. Path is what POST /_api/routes/{parent}/worktrees expects. These
 	// rows have no port, PID, or age — nothing has run yet.
@@ -164,8 +172,10 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		GridBtnClass:   gridBtnClass,
 		ListDisplay:    listDisplay,
 		GridDisplay:    gridDisplay,
+		Year:           time.Now().Year(),
 		RouteCount:     len(routes) + 1,
 		RedirectDown:   redirectDown,
+		ShowGetStarted: len(routes) < 2,
 		Routes:         make([]dashboardRoute, 0, len(routes)),
 	}
 
@@ -178,32 +188,35 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Icon priority: user-chosen > auto-detected favicon > deterministic pool pick.
-		icon := iconPool[nameHash(rt.Name)%len(iconPool)]
+		fallbackIcon := iconPool[nameHash(rt.Name)%len(iconPool)]
 		if rt.AutoIcon != "" {
-			icon = rt.AutoIcon
+			fallbackIcon = rt.AutoIcon
 		}
+		icon := fallbackIcon
 		if rt.Icon != "" {
 			icon = rt.Icon
 		}
 
 		data.Routes = append(data.Routes, dashboardRoute{
-			Name:        rt.Name,
-			VibeURL:     fmt.Sprintf("%s://%s.%s", scheme, rt.Name, tld),
-			URLDisplay:  urlDisplay,
-			Type:        rt.Type,
-			Port:        rt.Port,
-			Age:         fmtDuration(time.Since(rt.RegisteredAt).Round(time.Second)),
-			IsStopped:   isStopped,
-			IsRunning:   rt.Running.Load(),
-			Icon:        icon,
-			UserIcon:    rt.Icon,
-			AutoIcon:    rt.AutoIcon,
-			ExternalURL: rt.ExternalURL,
-			Idle:        rt.IdleTimeout,
-			Proxy:       rt.Proxy,
-			Insecure:    rt.InsecureSkipVerify,
-			Parent:      rt.Parent,
-			IsWorktree:  rt.Parent != "",
+			Name:         rt.Name,
+			VibeURL:      fmt.Sprintf("%s://%s.%s", scheme, rt.Name, tld),
+			URLDisplay:   urlDisplay,
+			Type:         rt.Type,
+			Port:         rt.Port,
+			Age:          fmtDuration(time.Since(rt.RegisteredAt).Round(time.Second)),
+			AgeSec:       int(time.Since(rt.RegisteredAt).Seconds()),
+			IsStopped:    isStopped,
+			IsRunning:    rt.Running.Load(),
+			Icon:         icon,
+			UserIcon:     rt.Icon,
+			AutoIcon:     rt.AutoIcon,
+			FallbackIcon: fallbackIcon,
+			ExternalURL:  rt.ExternalURL,
+			Idle:         rt.IdleTimeout,
+			Proxy:        rt.Proxy,
+			Insecure:     rt.InsecureSkipVerify,
+			Parent:       rt.Parent,
+			IsWorktree:   rt.Parent != "",
 		})
 	}
 
@@ -211,6 +224,23 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	// computed here, not in the template: local names win, then earlier
 	// peers (peers.json order — the same precedence findPeerRoute applies).
 	if s.peersEnabled() {
+		// The peer cache is in-memory and the poll ticks every 30s, so a
+		// render can race an empty cache (right after a daemon restart) or a
+		// stale one. Kick a refresh — throttled and single-flighted, so this
+		// is at most one round-trip per 3s window — and, only when the cache
+		// is cold, give it a short bounded wait so the first page load after
+		// a restart still shows peers. The wait polls the cache state rather
+		// than our own call: the startup sync is usually already in flight,
+		// so our refreshAllPeers no-ops instantly on its single-flight guard
+		// and waiting on it would observe nothing. A dead peer costs 400ms
+		// here, never the full client timeout.
+		go s.refreshAllPeers(false)
+		if s.peerCacheCold() {
+			deadline := time.Now().Add(400 * time.Millisecond)
+			for s.peerCacheCold() && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
 		claimed := make(map[string]string) // route name → winning peer
 		s.peerMu.Lock()
 		for _, p := range s.peerList {

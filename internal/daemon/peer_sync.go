@@ -39,7 +39,11 @@ type peerState struct {
 }
 
 // peerSyncLoop polls every paired peer's route list until daemon shutdown.
+// The first refresh runs immediately: the cache is in-memory, so after a
+// daemon restart a ticker-only loop would leave the dashboard's peer section
+// empty for a full interval.
 func (s *Server) peerSyncLoop() {
+	s.refreshAllPeers(false)
 	ticker := time.NewTicker(peerSyncInterval)
 	defer ticker.Stop()
 	for {
@@ -199,6 +203,22 @@ func (s *Server) findPeerRoute(name string) (peer.Peer, peer.RouteSummary, bool)
 	}
 	s.refreshAllPeers(false)
 	return s.peerRouteFromCache(name)
+}
+
+// peerCacheCold reports whether any paired peer has never been fetched (no
+// success and no recorded failure). True only in the window right after
+// startup, before the first sync completes — the dashboard uses it to decide
+// whether a render is worth briefly waiting on the in-flight refresh.
+func (s *Server) peerCacheCold() bool {
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	for _, p := range s.peerList {
+		st, ok := s.peerStates[p.Name]
+		if !ok || (st.lastOK.IsZero() && st.lastErr == "") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) peerRouteFromCache(name string) (peer.Peer, peer.RouteSummary, bool) {

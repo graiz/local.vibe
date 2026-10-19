@@ -5,176 +5,15 @@
 <html lang="en">
 <head>
 {{.Head}}
-<style>{{.CSS}}
-
-/* Nav bar */
-.navbar{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:0 24px;height:52px;background:var(--surface);
-  border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100;
-}
-.navbar-left{display:flex;align-items:center;gap:16px}
-.brand{font-family:var(--font-display);font-size:1.15rem;color:var(--amber);letter-spacing:.5px;text-decoration:none}
-.status-pill{display:flex;align-items:center;gap:8px;font-size:.78rem;color:var(--text-secondary);letter-spacing:.04em;text-transform:uppercase}
-
-/* Main content */
-.main{max-width:960px;margin:0 auto;padding:28px 24px 60px}
-
-/* Toolbar */
-.toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
-.toolbar-left{display:flex;align-items:baseline;gap:10px}
-.toolbar-title{font-family:var(--font-display);font-size:1.1rem;color:var(--text);letter-spacing:.08em;text-transform:uppercase}
-.toolbar-count{font-size:.78rem;color:var(--text-muted);letter-spacing:.04em}
-.view-toggle{display:flex;background:var(--elevated);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-.view-toggle button{
-  font-family:var(--font-body);background:none;border:none;
-  color:var(--text-muted);padding:6px 12px;cursor:pointer;
-  display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s;
-}
-.view-toggle button:first-child{border-right:1px solid var(--border)}
-.view-toggle button.active{background:var(--hover);color:var(--amber)}
-.view-toggle button:hover:not(.active){color:var(--text-secondary)}
-.view-toggle svg{width:16px;height:16px}
-
-/* Warning banner */
-.warn{
-  display:flex;align-items:center;gap:8px;
-  padding:12px 16px;margin-bottom:20px;
-  font-size:.82rem;color:var(--yellow);
-  background:rgba(212,168,42,.06);
-  border:1px solid rgba(212,168,42,.2);border-radius:var(--radius);
-}
-
-/* Route table (list view) */
-.list-view{width:100%}
-.route-table{width:100%;border-collapse:collapse}
-tr.wt-tr td:first-child .route-name-cell{padding-left:26px}
-tr.wt-group-header td{padding:10px 4px 2px 8px;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:none}
-.route-table thead th{
-  font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;
-  color:var(--text-muted);font-weight:500;text-align:left;
-  padding:0 12px 10px;border-bottom:1px solid var(--border);
-}
-.route-table tbody tr{border-bottom:1px solid var(--border-subtle);transition:background .1s}
-.route-table tbody tr:hover{background:var(--elevated)}
-.route-table td{padding:11px 12px;vertical-align:middle}
-.route-name-cell{display:flex;align-items:center;gap:10px}
-.route-icon{
-  width:28px;height:28px;border-radius:7px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:15px;line-height:1;flex-shrink:0;
-  background:var(--elevated);border:1px solid var(--border-subtle);
-}
-.route-icon-stopped{opacity:.35}
-.route-name-link{color:var(--text);text-decoration:none;font-weight:600;font-size:.92rem;transition:color .15s}
-.route-name-link:hover{color:var(--amber)}
-.route-url{color:var(--text-muted);font-size:.75rem;margin-left:4px}
-.td-type{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;font-weight:500;color:var(--text-muted)}
-.td-port{font-variant-numeric:tabular-nums;font-size:.85rem}
-.td-port a{color:var(--text-secondary);text-decoration:none;transition:color .15s}
-.td-port a:hover{color:var(--amber)}
-.td-age{color:var(--text-muted);font-size:.8rem}
-.td-actions{display:flex;align-items:center;gap:6px;justify-content:flex-end}
-.td-stopped{opacity:.45}
-.hide-mobile{}
-
-/* Grid view */
-.grid-view{display:none}
-.grid-container{
-  display:grid;
-  grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
-  gap:16px;
-}
-.grid-tile{
-  background:var(--surface);border:1px solid var(--border-subtle);
-  border-radius:var(--radius-lg);padding:20px 12px 16px;
-  display:flex;flex-direction:column;align-items:center;text-align:center;
-  cursor:pointer;transition:background .15s,border-color .15s,box-shadow .2s;
-  position:relative;text-decoration:none;color:var(--text);
-}
-.grid-tile:hover{background:var(--elevated);border-color:var(--border);box-shadow:0 2px 16px rgba(0,0,0,.3)}
-.grid-tile:hover .tile-hover-action{opacity:1}
-.tile-icon{
-  width:64px;height:64px;border-radius:16px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:30px;margin-bottom:10px;
-  background:var(--elevated);border:1px solid var(--border);
-  flex-shrink:0;
-}
-.tile-stopped .tile-icon{opacity:.35}
-.tile-name{font-weight:600;font-size:.88rem;color:var(--text);margin-bottom:3px;letter-spacing:.02em}
-.tile-url{font-size:.7rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
-.tile-hover-action{position:absolute;top:8px;right:8px;opacity:0;transition:opacity .15s}
-.tile-hover-action .btn{font-size:.65rem;padding:3px 8px}
-
-/* Empty state */
-.empty{text-align:center;padding:48px 0;color:var(--text-muted);font-size:.88rem}
-
-/* Get Started section */
-.get-started{
-  margin-top:36px;background:var(--surface);
-  border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;
-}
-.get-started h2{
-  font-family:var(--font-display);font-size:.95rem;
-  letter-spacing:.1em;text-transform:uppercase;color:var(--amber);margin-bottom:6px;
-}
-.get-started p{font-size:.82rem;color:var(--text-secondary);margin-bottom:14px;line-height:1.5}
-.setup-box{position:relative}
-.setup-textarea{
-  width:100%;font-family:var(--font-body);font-size:.8rem;
-  background:var(--bg);color:var(--text-secondary);
-  border:1px solid var(--border);border-radius:var(--radius);
-  padding:14px;resize:none;line-height:1.6;
-}
-.btn-copy{
-  position:absolute;top:10px;right:10px;
-  font-family:var(--font-body);font-size:.7rem;font-weight:600;
-  text-transform:uppercase;letter-spacing:.06em;
-  background:var(--elevated);color:var(--text-secondary);
-  border:1px solid var(--border);padding:5px 12px;
-  border-radius:var(--radius);cursor:pointer;transition:all .15s;
-}
-.btn-copy:hover{color:var(--text);border-color:var(--text-muted)}
-
-/* Icon picker */
-.icon-picker{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.icon-pick{
-  width:36px;height:36px;border-radius:8px;border:1px solid var(--border);
-  background:var(--bg);display:flex;align-items:center;justify-content:center;
-  font-size:18px;cursor:pointer;transition:all .12s;
-}
-.icon-pick:hover{border-color:var(--amber);background:var(--elevated)}
-.icon-pick.selected{border-color:var(--amber);background:var(--elevated);box-shadow:0 0 8px var(--amber-glow)}
-
-/* Footer */
-.footer{
-  max-width:960px;margin:0 auto;padding:0 24px 32px;
-  display:flex;align-items:center;justify-content:center;
-  gap:20px;font-size:.72rem;color:var(--text-muted);
-}
-.footer a{color:var(--text-muted);text-decoration:none;transition:color .15s}
-.footer a:hover{color:var(--amber)}
-.footer-sep{opacity:.3}
-
-@media(max-width:700px){
-  .navbar{padding:0 16px}
-  .main{padding:20px 16px 48px}
-  .grid-container{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px}
-  .hide-mobile{display:none}
-}
-@media(max-width:480px){
-  .grid-container{grid-template-columns:repeat(2,1fr)}
-}
-</style>
+<style>{{.CSS}}</style>
 </head>
 <body>
 <nav class="navbar">
   <div class="navbar-left">
-    <a href="{{.Scheme}}://local.{{.TLD}}/" class="brand">local.vibe</a>
+    <a href="{{.Scheme}}://local.{{.TLD}}/" class="brand">local<span>.vibe</span></a>
     <div class="status-pill"><span class="led led-green"></span>Running &middot; {{.Uptime}}</div>
   </div>
-  <button class="btn-add" onclick="openAddModal()">+ Add Route</button>
+  <button class="btn-add" onclick="openAddModal()">Add Route</button>
 </nav>
 <main class="main">
 {{if .RedirectDown}}<div class="warn"><span class="led led-red"></span>HTTPS redirect is down — <code style="color:var(--text)">https://*.{{.TLD}}</code> won't connect. A VPN or firewall likely flushed it. Run <code style="color:var(--text)">vibe doctor --fix</code> to restore it.</div>{{end}}
@@ -184,27 +23,39 @@ tr.wt-group-header td{padding:10px 4px 2px 8px;font-size:.72rem;text-transform:u
     <span class="toolbar-title">Routes</span>
     <span class="toolbar-count">{{.RouteCount}} active</span>
   </div>
-  <div class="view-toggle">
-    <button id="btn-list" class="{{.ListBtnClass}}" onclick="setView('list',true)" title="List view">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="1" y1="3" x2="15" y2="3"/><line x1="1" y1="8" x2="15" y2="8"/><line x1="1" y1="13" x2="15" y2="13"/></svg>
-    </button>
-    <button id="btn-grid" class="{{.GridBtnClass}}" onclick="setView('grid',true)" title="Grid view">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="5.5" height="5.5" rx="1"/><rect x="9.5" y="1" width="5.5" height="5.5" rx="1"/><rect x="1" y="9.5" width="5.5" height="5.5" rx="1"/><rect x="9.5" y="9.5" width="5.5" height="5.5" rx="1"/></svg>
-    </button>
+  <div class="toolbar-right">
+    <div class="search-box">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="5"/><line x1="10.8" y1="10.8" x2="14.5" y2="14.5"/></svg>
+      <input id="search-input" type="text" placeholder="Find routes…" autocomplete="off" spellcheck="false" oninput="filterRoutes(this.value)" onkeydown="if(event.key==='Escape'){this.value='';filterRoutes('');this.blur();event.stopPropagation()}">
+      <kbd>/</kbd>
+    </div>
+    <div class="view-toggle">
+      <button id="btn-list" class="{{.ListBtnClass}}" onclick="setView('list',true)" title="List view">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="1" y1="3" x2="15" y2="3"/><line x1="1" y1="8" x2="15" y2="8"/><line x1="1" y1="13" x2="15" y2="13"/></svg>
+      </button>
+      <button id="btn-grid" class="{{.GridBtnClass}}" onclick="setView('grid',true)" title="Grid view">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="5.5" height="5.5" rx="1"/><rect x="9.5" y="1" width="5.5" height="5.5" rx="1"/><rect x="1" y="9.5" width="5.5" height="5.5" rx="1"/><rect x="9.5" y="9.5" width="5.5" height="5.5" rx="1"/></svg>
+      </button>
+    </div>
   </div>
 </div>
+{{- /* route-colgroup is the single source of column widths, shared by the
+       main routes table and every peer table so their columns cannot drift
+       apart. Widths live on the col-* classes in theme.css. */ -}}
+{{define "route-colgroup"}}<colgroup><col class="col-name"><col class="col-type"><col class="col-port"><col class="col-age"><col class="col-actions"></colgroup>{{end}}
 <div class="list-view" id="list-view" style="display:{{.ListDisplay}}">
 <table class="route-table">
+{{template "route-colgroup"}}
 <thead><tr>
-  <th style="width:38%">Name</th>
+  <th class="sortable" onclick="sortTable('name')">Name<span class="sort-arrow" id="arrow-name"></span></th>
   <th>Type</th>
-  <th>Port</th>
-  <th class="hide-mobile">Age</th>
+  <th class="sortable" onclick="sortTable('port')">Port<span class="sort-arrow" id="arrow-port"></span></th>
+  <th class="hide-mobile sortable" onclick="sortTable('age')">Age<span class="sort-arrow" id="arrow-age"></span></th>
   <th style="text-align:right">Actions</th>
 </tr></thead>
 <tbody>
-<tr>
-  <td><div class="route-name-cell"><span class="route-icon">&#127968;</span><div><a href="{{.Scheme}}://local.{{.TLD}}/" class="route-name-link">local</a><span class="route-url">local.{{.TLD}}</span></div></div></td>
+<tr id="row-local">
+  <td><a class="route-name-cell" href="{{.Scheme}}://local.{{.TLD}}/"><span class="led led-green row-led"></span><span class="route-icon">&#127968;</span><div><span class="route-name-link">local</span><span class="route-url">local.{{.TLD}}</span></div></a></td>
   <td class="td-type">daemon</td>
   <td class="td-port"><a href="http://localhost:{{.Port}}" target="_blank">{{.Port}}</a></td>
   <td class="td-age hide-mobile">{{.Uptime}}</td>
@@ -212,18 +63,22 @@ tr.wt-group-header td{padding:10px 4px 2px 8px;font-size:.72rem;text-transform:u
 </tr>
 {{range .Routes}}
 {{if .GroupHeader}}<tr class="wt-group-header"><td colspan="5">{{.GroupHeader}}</td></tr>{{end}}
-<tr{{if .IsWorktree}} class="wt-tr"{{end}}>
-  <td><div class="route-name-cell"><span class="{{if .IsStopped}}route-icon route-icon-stopped{{else}}route-icon{{end}}">{{iconHTML .Icon}}</span><div><a href="{{.VibeURL}}" target="_blank" class="route-name-link">{{.Name}}</a><span class="route-url">{{.URLDisplay}}</span></div></div></td>
+<tr{{if .IsWorktree}} class="wt-tr"{{end}} data-name="{{.Name}}" data-port="{{.Port}}" data-age="{{.AgeSec}}">
+  <td><a class="route-name-cell" href="{{.VibeURL}}" target="_blank"><span class="led row-led {{if ne .Type "managed"}}led-none{{else if .IsStopped}}led-gray{{else}}led-green{{end}}"></span><span class="{{if .IsStopped}}route-icon route-icon-stopped{{else}}route-icon{{end}}">{{iconHTML .Icon}}</span><div><span class="route-name-link">{{.Name}}</span><span class="route-url">{{.URLDisplay}}</span></div></a></td>
   <td class="td-type">{{.Type}}</td>
   <td class="td-port{{if .IsStopped}} td-stopped{{end}}">{{if or (eq .Type "bookmark") .Discovered}}—{{else}}<a href="http://localhost:{{.Port}}" target="_blank">{{.Port}}</a>{{end}}</td>
   <td class="td-age hide-mobile">{{.Age}}</td>
   <td><div class="td-actions">
-    {{if .Discovered}}<button class="btn btn-primary" onclick="startDiscoveredWorktree(this,{{.Parent}},{{.Path}})">Start</button>{{end}}
-    {{if and (not .Discovered) (eq .Type "managed") .IsRunning}}<button class="btn" onclick="routeAction(this,'{{.Name}}','stop')">Stop</button>
-    {{else if and (not .Discovered) (eq .Type "managed")}}<button class="btn btn-primary" onclick="routeAction(this,'{{.Name}}','start')">Start</button>{{end}}
-    {{if and (not .Discovered) (eq .Type "managed")}}<button class="btn-icon" onclick="openManagedModal('{{.Name}}',{{.Idle}},'{{.UserIcon}}','{{.AutoIcon}}')" title="Settings">{{editSVG}}</button>
-    {{else if eq .Type "sticky"}}<button class="btn-icon" onclick="openEditModal('{{.Name}}',{{.Port}},'{{.ExternalURL}}','local','{{.UserIcon}}','{{.AutoIcon}}',{{.Proxy}},{{.Insecure}})" title="Edit">{{editSVG}}</button>
-    {{else if eq .Type "bookmark"}}<button class="btn-icon" onclick="openEditModal('{{.Name}}',{{.Port}},'{{.ExternalURL}}','bookmark','{{.UserIcon}}','{{.AutoIcon}}',{{.Proxy}},{{.Insecure}})" title="Edit">{{editSVG}}</button>{{end}}
+    <span class="act-main">
+    {{- if .Discovered}}<button class="btn btn-primary" onclick="startDiscoveredWorktree(this,{{.Parent}},{{.Path}})">Start</button>
+    {{- else if and (eq .Type "managed") .IsRunning}}<button class="btn btn-stop" onclick="routeAction(this,'{{.Name}}','stop')">Stop</button>
+    {{- else if eq .Type "managed"}}<button class="btn btn-primary" onclick="routeAction(this,'{{.Name}}','start')">Start</button>{{end -}}
+    </span>
+    <span class="act-edit">
+    {{- if and (not .Discovered) (eq .Type "managed")}}<button class="btn-icon" onclick="openManagedModal('{{.Name}}',{{.Idle}},'{{.UserIcon}}','{{.FallbackIcon}}')" title="Settings">{{editSVG}}</button>
+    {{- else if eq .Type "sticky"}}<button class="btn-icon" onclick="openEditModal('{{.Name}}',{{.Port}},'{{.ExternalURL}}','local','{{.UserIcon}}','{{.FallbackIcon}}',{{.Proxy}},{{.Insecure}})" title="Edit">{{editSVG}}</button>
+    {{- else if eq .Type "bookmark"}}<button class="btn-icon" onclick="openEditModal('{{.Name}}',{{.Port}},'{{.ExternalURL}}','bookmark','{{.UserIcon}}','{{.FallbackIcon}}',{{.Proxy}},{{.Insecure}})" title="Edit">{{editSVG}}</button>{{end -}}
+    </span>
   </div></td>
 </tr>
 {{end}}
@@ -246,28 +101,60 @@ tr.wt-group-header td{padding:10px 4px 2px 8px;font-size:.72rem;text-transform:u
 {{end}}
 </div></div>
 
+<div class="empty" id="search-empty" style="display:none">No routes match &ldquo;<span id="search-empty-q"></span>&rdquo;</div>
+
 {{if .PeerGroups}}
-<section class="peer-section">
-  <h2 style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin:28px 0 10px">Peers <span style="opacity:.5;text-transform:none;letter-spacing:0">(experimental)</span></h2>
+<section class="peer-section" id="peer-list" style="display:{{.ListDisplay}}">
+  <h2>Peers<span class="tag">experimental</span></h2>
   {{range .PeerGroups}}
-  <div class="peer-group" style="margin-bottom:14px">
-    <div style="font-size:12px;color:var(--text-muted);padding:6px 12px;border-bottom:1px solid var(--border-subtle)">on {{.Peer}}</div>
-    <table class="route-table"><tbody>
+  <div class="peer-group">
+    <div class="peer-group-title">on {{.Peer}}</div>
+    <table class="route-table">
+    {{template "route-colgroup"}}
+    <tbody>
     {{range .Routes}}
     <tr>
-      <td><div class="route-name-cell"><span class="route-icon">{{iconHTML .Icon}}</span><div>{{if .ShadowedBy}}<span class="route-name-link" style="opacity:.5">{{.Name}}</span>{{else}}<a href="{{.VibeURL}}" target="_blank" class="route-name-link">{{.Name}}</a>{{end}}<span class="route-url">{{.Name}}.{{$.TLD}}</span></div></div></td>
+      <td>{{if .ShadowedBy}}<div class="route-name-cell"><span class="led row-led led-gray"></span><span class="route-icon">{{iconHTML .Icon}}</span><div><span class="route-name-link" style="opacity:.5">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></div>{{else}}<a class="route-name-cell" href="{{.VibeURL}}" target="_blank"><span class="led row-led {{if .Ready}}led-green{{else}}led-yellow{{end}}"></span><span class="route-icon">{{iconHTML .Icon}}</span><div><span class="route-name-link">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></a>{{end}}</td>
       <td class="td-type">peer</td>
-      <td style="text-align:right;padding-right:12px">{{if .ShadowedBy}}<span style="font-size:11px;color:var(--text-muted)">shadowed by {{.ShadowedBy}}</span>{{else if .Ready}}<span class="led led-green"></span>{{else}}<span class="led led-yellow"></span>{{end}}</td>
+      <td class="td-port">&mdash;</td>
+      <td class="td-age hide-mobile">&mdash;</td>
+      <td>{{if .ShadowedBy}}<div class="td-actions"><span class="peer-shadow">shadowed by {{.ShadowedBy}}</span></div>{{end}}</td>
     </tr>
     {{end}}
     </tbody></table>
   </div>
   {{end}}
 </section>
+<section class="peer-section" id="peer-grid" style="display:{{.GridDisplay}}">
+  <h2>Peers<span class="tag">experimental</span></h2>
+  {{range .PeerGroups}}
+  <div class="peer-grid-group">
+    <div class="peer-grid-title">on {{.Peer}}</div>
+    <div class="grid-container">
+    {{range .Routes}}
+    {{if .ShadowedBy}}
+    <div class="grid-tile tile-stopped" title="shadowed by {{.ShadowedBy}}">
+      <div class="tile-icon">{{iconHTML .Icon}}</div>
+      <div class="tile-name">{{.Name}}</div>
+      <div class="tile-url">shadowed by {{.ShadowedBy}}</div>
+    </div>
+    {{else}}
+    <a href="{{.VibeURL}}" target="_blank" class="{{if .Ready}}grid-tile{{else}}grid-tile tile-stopped{{end}}">
+      <div class="tile-icon">{{iconHTML .Icon}}</div>
+      <div class="tile-name">{{.Name}}</div>
+      <div class="tile-url">{{.Name}}.{{$.TLD}}</div>
+    </a>
+    {{end}}
+    {{end}}
+    </div>
+  </div>
+  {{end}}
+</section>
 {{end}}
 
+{{if .ShowGetStarted}}
 <section class="get-started">
-  <h2>Get Started</h2>
+  <h2>Get started</h2>
   <p>Paste this into Claude Code, Cursor, or any agentic IDE to configure a project with local.vibe.</p>
   <div class="setup-box">
     <textarea id="setup-text" class="setup-textarea" rows="5" readonly>This machine is running local.vibe, a local DNS tool that gives dev servers friendly .{{.TLD}} names instead of hard-to-remember port numbers.
@@ -277,10 +164,43 @@ Read the full setup instructions:
   curl http://localhost:7999/setup.md
 
 Or open in a browser: {{.Scheme}}://local.{{.TLD}}/setup.md</textarea>
-    <button class="btn-copy" id="copy-btn" onclick="copyText()">Copy</button>
+    <button class="btn-copy" id="copy-btn" onclick="copyText('setup-text','copy-btn')">Copy</button>
   </div>
 </section>
+{{end}}
 </main>
+
+<!-- Get Started Modal — reachable from the footer once the inline card retires -->
+<div class="modal-overlay" id="getstarted-overlay" onclick="if(event.target===this)closeGetStarted()">
+<div class="modal">
+  <div class="modal-header">
+    <div class="modal-header-text">
+      <div class="modal-eyebrow">Setup</div>
+      <h3>Get started</h3>
+      <div class="modal-sub">Configure a project to use local.vibe.</div>
+    </div>
+  </div>
+  <div class="modal-body">
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">Paste this into Claude Code, Cursor, or any agentic IDE to configure a project with local.vibe.</p>
+    <div class="setup-box">
+      <textarea id="setup-text-modal" class="setup-textarea" rows="7" readonly>This machine is running local.vibe, a local DNS tool that gives dev servers friendly .{{.TLD}} names instead of hard-to-remember port numbers.
+
+Read the full setup instructions:
+
+  curl http://localhost:7999/setup.md
+
+Or open in a browser: {{.Scheme}}://local.{{.TLD}}/setup.md</textarea>
+      <button class="btn-copy" id="copy-btn-modal" onclick="copyText('setup-text-modal','copy-btn-modal')">Copy</button>
+    </div>
+  </div>
+  <div class="modal-actions">
+    <button class="btn" onclick="closeGetStarted()">Close</button>
+  </div>
+</div>
+</div>
+
+<!-- Right-click context menu for list rows -->
+<div class="ctx-menu" id="ctx-menu"></div>
 
 <!-- Add/Edit Modal -->
 <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
@@ -387,7 +307,211 @@ function setView(mode,save){
   var bl=document.getElementById('btn-list'),bg=document.getElementById('btn-grid');
   if(mode==='grid'){l.style.display='none';g.style.display='block';bl.classList.remove('active');bg.classList.add('active')}
   else{l.style.display='block';g.style.display='none';bl.classList.add('active');bg.classList.remove('active')}
+  var pl=document.getElementById('peer-list'),pg=document.getElementById('peer-grid');
+  if(pl){pl.style.display=mode==='grid'?'none':'block';pg.style.display=mode==='grid'?'block':'none'}
   if(save)fetch('/_api/preferences',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({view:mode})});
+}
+
+// --- Search filter -----------------------------------------------------
+// Pure client-side: hides non-matching rows/tiles/peer rows. Matches on the
+// visible text of the name cell (name + url + type), case-insensitive.
+function rowMatches(el,q){
+  return !q||(el.textContent||'').toLowerCase().indexOf(q)!==-1;
+}
+function filterRoutes(raw){
+  var q=raw.trim().toLowerCase();
+  var matches=0;
+  var rows=Array.prototype.slice.call(document.querySelectorAll('#list-view tbody tr'));
+  rows.forEach(function(tr){
+    if(tr.classList.contains('wt-group-header'))return;
+    var m=rowMatches(tr.cells[0],q)||rowMatches(tr.cells[1],q);
+    tr.style.display=m?'':'none';
+    if(m)matches++;
+  });
+  // A worktree group header stays visible while any row of its group is.
+  rows.forEach(function(tr,i){
+    if(!tr.classList.contains('wt-group-header'))return;
+    var vis=false;
+    for(var j=i+1;j<rows.length;j++){
+      if(rows[j].classList.contains('wt-group-header'))break;
+      if(!rows[j].classList.contains('wt-tr'))break;
+      if(rows[j].style.display!=='none'){vis=true;break}
+    }
+    tr.style.display=vis?'':'none';
+  });
+  Array.prototype.slice.call(document.querySelectorAll('#grid-view .grid-tile')).forEach(function(tile){
+    tile.style.display=rowMatches(tile,q)?'':'none';
+  });
+  // Peer groups (both renderings mirror the same data): hide rows/tiles,
+  // then groups with nothing left, then the sections. Sections toggle via a
+  // class so the list/grid view's inline display is left alone.
+  var peerMatches=0;
+  Array.prototype.slice.call(document.querySelectorAll('.peer-group')).forEach(function(g){
+    var any=false;
+    Array.prototype.slice.call(g.querySelectorAll('tbody tr')).forEach(function(tr){
+      var m=rowMatches(tr,q);
+      tr.style.display=m?'':'none';
+      if(m){any=true;peerMatches++}
+    });
+    g.classList.toggle('filter-hide',!any);
+  });
+  Array.prototype.slice.call(document.querySelectorAll('.peer-grid-group')).forEach(function(g){
+    var any=false;
+    Array.prototype.slice.call(g.querySelectorAll('.grid-tile')).forEach(function(tile){
+      var m=rowMatches(tile,q);
+      tile.style.display=m?'':'none';
+      if(m)any=true;
+    });
+    g.classList.toggle('filter-hide',!any);
+  });
+  Array.prototype.slice.call(document.querySelectorAll('.peer-section')).forEach(function(sec){
+    sec.classList.toggle('filter-hide',!!q&&peerMatches===0);
+  });
+  var empty=document.getElementById('search-empty');
+  var show=q&&matches===0&&peerMatches===0;
+  document.getElementById('search-empty-q').textContent=raw.trim();
+  empty.style.display=show?'':'none';
+}
+document.addEventListener('keydown',function(e){
+  if(e.key==='/'&&!e.metaKey&&!e.ctrlKey&&!e.altKey){
+    var t=e.target.tagName;
+    if(t!=='INPUT'&&t!=='TEXTAREA'&&t!=='SELECT'){
+      e.preventDefault();
+      document.getElementById('search-input').focus();
+    }
+  }
+});
+
+// --- Column sort (list view) -------------------------------------------
+// Sorts worktree groups as units so children stay under their parent; the
+// daemon's own "local" row stays pinned to the top. Keys come from data-*
+// attributes rendered server-side (age as seconds, not the display string).
+var sortState={key:'',dir:1};
+function sortTable(key){
+  if(sortState.key===key){sortState.dir=-sortState.dir}else{sortState={key:key,dir:1}}
+  var tbody=document.querySelector('#list-view tbody');
+  var rows=Array.prototype.slice.call(tbody.rows);
+  var pinned=document.getElementById('row-local');
+  rows=rows.filter(function(tr){return tr!==pinned});
+  var blocks=[],cur=null;
+  rows.forEach(function(tr){
+    if(tr.classList.contains('wt-group-header')){cur={head:tr,main:null,kids:[]};blocks.push(cur);return}
+    if(tr.classList.contains('wt-tr')&&cur){cur.kids.push(tr);return}
+    cur={head:null,main:tr,kids:[]};blocks.push(cur);
+  });
+  function rowKey(tr){
+    if(!tr)return null;
+    if(key==='name')return (tr.getAttribute('data-name')||'').toLowerCase();
+    var v=parseInt(tr.getAttribute('data-'+key),10);
+    return isNaN(v)?-1:v;
+  }
+  function blockKey(b){
+    var k=rowKey(b.main||b.kids[0]);
+    if(k===null)k=(key==='name')?'':-1;
+    return k;
+  }
+  function cmp(a,b){return a<b?-sortState.dir:a>b?sortState.dir:0}
+  blocks.sort(function(a,b){return cmp(blockKey(a),blockKey(b))});
+  blocks.forEach(function(b){b.kids.sort(function(x,y){return cmp(rowKey(x),rowKey(y))})});
+  if(pinned)tbody.appendChild(pinned);
+  blocks.forEach(function(b){
+    if(b.head)tbody.appendChild(b.head);
+    if(b.main)tbody.appendChild(b.main);
+    b.kids.forEach(function(k){tbody.appendChild(k)});
+  });
+  ['name','port','age'].forEach(function(k){
+    var a=document.getElementById('arrow-'+k);
+    if(a)a.textContent=(k===key)?(sortState.dir===1?'↑':'↓'):'';
+  });
+}
+
+// --- Row context menu (list view) ----------------------------------------
+// Start/Stop/Edit proxy the row's own controls so behavior (spinners, polling,
+// error toasts) is identical to clicking the buttons. Rename edits in place.
+var ctxRow=null;
+document.addEventListener('contextmenu',function(e){
+  closeCtxMenu();
+  var tr=e.target.closest('#list-view tbody tr');
+  if(!tr||!tr.getAttribute('data-name'))return;
+  if(tr.querySelector('.rename-input'))return;
+  var items=[];
+  var mainBtn=tr.querySelector('.act-main .btn');
+  var editBtn=tr.querySelector('.act-edit .btn-icon');
+  if(mainBtn&&!mainBtn.disabled)items.push({label:mainBtn.textContent.trim(),act:function(){mainBtn.click()}});
+  var running=mainBtn&&mainBtn.textContent.trim()==='Stop';
+  if(!tr.classList.contains('wt-tr')&&!running)items.push({label:'Rename',act:function(){startRename(tr)}});
+  if(editBtn)items.push({label:'Edit…',act:function(){editBtn.click()}});
+  if(!items.length)return;
+  e.preventDefault();
+  ctxRow=tr;
+  var menu=document.getElementById('ctx-menu');
+  menu.innerHTML='';
+  items.forEach(function(it){
+    var b=document.createElement('button');
+    b.type='button';b.textContent=it.label;
+    b.onclick=function(){closeCtxMenu();it.act()};
+    menu.appendChild(b);
+  });
+  menu.classList.add('active');
+  var mw=menu.offsetWidth,mh=menu.offsetHeight;
+  menu.style.left=Math.min(e.clientX,window.innerWidth-mw-8)+'px';
+  menu.style.top=Math.min(e.clientY,window.innerHeight-mh-8)+'px';
+});
+function closeCtxMenu(){
+  document.getElementById('ctx-menu').classList.remove('active');
+  ctxRow=null;
+}
+document.addEventListener('click',function(){closeCtxMenu()});
+window.addEventListener('scroll',closeCtxMenu,true);
+window.addEventListener('resize',closeCtxMenu);
+
+// Inline rename: swaps the row's name for an input. Enter saves (PUT with just
+// the new name — the API merges), Escape or clicking away cancels.
+function startRename(tr){
+  var cell=tr.querySelector('.route-name-cell');
+  var nameSpan=tr.querySelector('.route-name-link');
+  var urlSpan=tr.querySelector('.route-url');
+  var old=tr.getAttribute('data-name');
+  if(!cell||!nameSpan)return;
+  var inp=document.createElement('input');
+  inp.className='rename-input';
+  inp.value=old;inp.spellcheck=false;inp.autocomplete='off';
+  inp.title='Enter to save · Esc to cancel';
+  nameSpan.style.display='none';
+  if(urlSpan)urlSpan.style.display='none';
+  nameSpan.parentNode.insertBefore(inp,nameSpan);
+  // The cell is a link; disarm navigation while the input is live.
+  var savedHref=null;
+  if(cell.tagName==='A'){savedHref=cell.getAttribute('href');cell.removeAttribute('href')}
+  function finish(){
+    inp.remove();
+    nameSpan.style.display='';
+    if(urlSpan)urlSpan.style.display='';
+    if(savedHref!==null)cell.setAttribute('href',savedHref);
+  }
+  inp.onclick=function(e){e.stopPropagation();e.preventDefault()};
+  inp.onblur=function(){if(!inp.disabled)finish()};
+  inp.onkeydown=function(e){
+    e.stopPropagation();
+    if(e.key==='Escape'){finish();return}
+    if(e.key!=='Enter')return;
+    var nn=inp.value.trim().toLowerCase();
+    if(nn===old){finish();return}
+    if(!/^[a-z0-9-]+$/.test(nn)){showToast('Names are lowercase letters, digits, and hyphens');return}
+    inp.disabled=true;
+    fetch('/_api/routes/'+encodeURIComponent(old),{
+      method:'PUT',
+      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body:JSON.stringify({name:nn})
+    }).then(function(r){
+      if(!r.ok)return r.json().then(function(d){throw new Error(d.error||'Rename failed')});
+      location.reload();
+    }).catch(function(err){
+      inp.disabled=false;inp.focus();
+      showToast(err.message||'Rename failed');
+    });
+  };
+  inp.focus();inp.select();
 }
 
 var modalMode='add';
@@ -501,9 +625,11 @@ function deleteRoute(){
   if(!editingName)return;
   fetch('/_api/routes/'+encodeURIComponent(editingName),{method:'DELETE',headers:{'Accept':'application/json'}}).then(function(){location.reload()});
 }
-function copyText(){
-  var ta=document.getElementById('setup-text');
-  var btn=document.getElementById('copy-btn');
+function openGetStarted(){document.getElementById('getstarted-overlay').classList.add('active')}
+function closeGetStarted(){document.getElementById('getstarted-overlay').classList.remove('active')}
+function copyText(taId,btnId){
+  var ta=document.getElementById(taId);
+  var btn=document.getElementById(btnId);
   if(navigator.clipboard&&window.isSecureContext){
     navigator.clipboard.writeText(ta.value).then(function(){
       btn.textContent='Copied';setTimeout(function(){btn.textContent='Copy'},1500);
@@ -668,15 +794,29 @@ function showToast(msg){
   setTimeout(function(){el.classList.add('show')},10);
   setTimeout(function(){el.classList.remove('show');setTimeout(function(){el.remove()},300)},4000);
 }
-document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeModal();closeManagedModal()}});
-document.addEventListener('visibilitychange',function(){if(!document.hidden){location.reload()}});
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Escape')return;
+  if(document.querySelector('.modal-overlay.active')){closeModal();closeManagedModal();closeGetStarted();return}
+  var si=document.getElementById('search-input');
+  if(si&&si.value){si.value='';filterRoutes('')}
+});
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden)return;
+  // Don't wipe in-progress state: a live inline rename or an active filter.
+  if(document.querySelector('.rename-input'))return;
+  var si=document.getElementById('search-input');
+  if(si&&si.value)return;
+  location.reload();
+});
 </script>
 <footer class="footer">
-  <span>daemon :{{.Port}}</span>
+  <span>&copy; {{.Year}} local.vibe</span>
   <span class="footer-sep">|</span>
-  <a href="/_api/routes">API</a>
+  <a href="https://github.com/graiz/local.vibe" target="_blank" rel="noopener">GitHub</a>
   <span class="footer-sep">|</span>
-  <a href="/_api/health">Health</a>
+  <a href="/setup.md">Setup guide</a>
+  {{if not .ShowGetStarted}}<span class="footer-sep">|</span>
+  <a href="#" onclick="openGetStarted();return false">Get started</a>{{end}}
 </footer>
 <script>
 // Register the offline fallback worker so a flushed redirect / down daemon shows

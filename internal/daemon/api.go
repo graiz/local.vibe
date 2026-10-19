@@ -842,6 +842,15 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 			writeJSONError(w, http.StatusConflict, "'local' is reserved for the dashboard")
 			return
 		}
+		// ProcessManager tracks managed children by route name, and so does
+		// the exit watcher spawned at start. Renaming a running route would
+		// strand both: Stop on the new name reports "not running" while the
+		// child keeps serving, and its eventual exit flips nothing. Require
+		// a stop first rather than re-keying state under a live process.
+		if route.Type == RouteManaged && route.Running.Load() {
+			writeJSONError(w, http.StatusConflict, "stop the route before renaming it — the running process is tracked by name")
+			return
+		}
 		if _, exists := s.table.Get(req.Name); exists {
 			writeJSONError(w, http.StatusConflict, "a route with that name already exists")
 			return

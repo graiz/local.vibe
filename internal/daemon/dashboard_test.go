@@ -61,9 +61,11 @@ func TestDashboardShowsPeerRoutesReadOnly(t *testing.T) {
 	}
 	// The shadowed clash row must not be a link to clash.vibe inside the
 	// peers section — it renders as plain text. The local clash row's link
-	// exists, so count: exactly one clash anchor.
-	if n := strings.Count(body, `>clash</a>`); n != 1 {
-		t.Fatalf("want exactly 1 clash anchor (the local route), got %d", n)
+	// exists in both views — the list row's name cell and the grid tile are
+	// each an anchor — so count: exactly two clash.vibe links, neither of
+	// them in the peers section.
+	if n := strings.Count(body, `href="http://clash.vibe"`) + strings.Count(body, `href="https://clash.vibe"`); n != 2 {
+		t.Fatalf("want exactly 2 clash.vibe links (local route: list row + grid tile), got %d", n)
 	}
 	// No start/stop controls target peer routes.
 	if strings.Contains(body, `routeAction(this,'face'`) {

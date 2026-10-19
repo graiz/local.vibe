@@ -95,3 +95,36 @@ func TestRegisterRejectsPrimaryPortHeldByAnotherRoute(t *testing.T) {
 		t.Errorf("conflict message should name the owning route, got: %s", w.Body.String())
 	}
 }
+
+// TestUpdateRejectsRenamingRunningManagedRoute: ProcessManager and the exit
+// watcher track a managed child by route name, so renaming a running route
+// would strand both (Stop reports "not running" while the child keeps
+// serving; its eventual exit flips nothing). The API requires a stop first.
+func TestUpdateRejectsRenamingRunningManagedRoute(t *testing.T) {
+	s := testServer()
+	s.ConfigDir = t.TempDir()
+	rt := &Route{
+		Name: "app", Type: RouteManaged,
+		Port: 3301, Cmd: "sleep 30", RegisteredAt: time.Now(),
+	}
+	rt.Running.Store(true)
+	s.table.Add(rt)
+
+	w := putRoute(t, s, "app", `{"name":"app2"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("rename of running managed route = %d, want 409 (body: %s)", w.Code, w.Body.String())
+	}
+	if _, ok := s.table.Get("app"); !ok {
+		t.Fatal("route disappeared after rejected rename")
+	}
+
+	// Stopped routes rename fine.
+	rt.Running.Store(false)
+	w = putRoute(t, s, "app", `{"name":"app2"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("rename of stopped managed route = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	if _, ok := s.table.Get("app2"); !ok {
+		t.Fatal("renamed route not present under new name")
+	}
+}

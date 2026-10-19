@@ -45,14 +45,14 @@ const FALLBACK_HTML = `<!doctype html>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>local.__TLD__ unreachable</title>
 <style>
-  body{margin:0;font:15px/1.6 -apple-system,system-ui,sans-serif;background:#111113;color:#e8e4de;display:grid;place-items:center;min-height:100vh}
+  body{margin:0;font:15px/1.6 -apple-system,system-ui,sans-serif;background:#0a0a0a;color:#ededed;display:grid;place-items:center;min-height:100vh}
   .card{max-width:560px;padding:32px;text-align:center}
-  h1{font-size:18px;margin:0 0 14px;font-weight:600}
-  .led{display:inline-block;width:9px;height:9px;border-radius:50%;background:#e54545;box-shadow:0 0 8px #e54545;margin-right:9px;vertical-align:middle}
-  p{color:#b8b2a8;margin:10px 0}
-  code{color:#e8943a}
-  pre{background:#19191d;border:1px solid #2e2e38;border-radius:8px;padding:12px 18px;color:#e8943a;display:inline-block;margin:16px 0;font-size:14px}
-  .dim{color:#605c54;font-size:13px}
+  h1{font-size:17px;margin:0 0 14px;font-weight:600;letter-spacing:-.01em}
+  .led{display:inline-block;width:8px;height:8px;border-radius:50%;background:#f2555a;margin-right:9px;vertical-align:middle}
+  p{color:#a0a0a0;margin:10px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:#ededed}
+  pre{background:#101010;border:1px solid #262626;border-radius:8px;padding:12px 18px;color:#ededed;display:inline-block;margin:16px 0;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .dim{color:#707070;font-size:13px}
 </style></head>
 <body><div class=card>
   <h1><span class=led></span>can't reach local.__TLD__</h1>
