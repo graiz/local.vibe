@@ -41,6 +41,27 @@ type dashboardData struct {
 	RouteCount     int // includes the synthetic "local" daemon row
 	RedirectDown   bool // privileged-port redirect (pf/portproxy) isn't forwarding
 	Routes         []dashboardRoute
+	PeerGroups     []dashboardPeerGroup // experimental: paired machines' routes, read-only
+}
+
+// dashboardPeerGroup is one paired machine's cached routes, rendered as a
+// read-only section — no start/stop/edit controls, those act on the daemon
+// that owns the route.
+type dashboardPeerGroup struct {
+	Peer   string
+	Routes []dashboardPeerRoute
+}
+
+// dashboardPeerRoute is one peer route row. ShadowedBy is non-empty when a
+// local route or an earlier-paired peer claims the same name: that name
+// resolves to the winner, so the row renders inert (no link) with a badge
+// instead of pretending to be reachable.
+type dashboardPeerRoute struct {
+	Name       string
+	VibeURL    string
+	Icon       string
+	Ready      bool
+	ShadowedBy string
 }
 
 // dashboardRoute is a single row in the dashboard, derived from a *Route.
@@ -184,6 +205,44 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 			Parent:      rt.Parent,
 			IsWorktree:  rt.Parent != "",
 		})
+	}
+
+	// Paired peers' routes (experimental), grouped per machine. Shadowing is
+	// computed here, not in the template: local names win, then earlier
+	// peers (peers.json order — the same precedence findPeerRoute applies).
+	if s.peersEnabled() {
+		claimed := make(map[string]string) // route name → winning peer
+		s.peerMu.Lock()
+		for _, p := range s.peerList {
+			st, ok := s.peerStates[p.Name]
+			if !ok || len(st.routes) == 0 {
+				continue
+			}
+			group := dashboardPeerGroup{Peer: p.Name}
+			for _, sum := range st.routes {
+				icon := iconPool[nameHash(sum.Name)%len(iconPool)]
+				if sum.Icon != "" {
+					icon = sum.Icon
+				}
+				shadowedBy := ""
+				if _, isLocal := s.table.Get(sum.Name); isLocal {
+					shadowedBy = "this machine"
+				} else if winner, taken := claimed[sum.Name]; taken {
+					shadowedBy = winner
+				} else {
+					claimed[sum.Name] = p.Name
+				}
+				group.Routes = append(group.Routes, dashboardPeerRoute{
+					Name:       sum.Name,
+					VibeURL:    fmt.Sprintf("%s://%s.%s", scheme, sum.Name, tld),
+					Icon:       icon,
+					Ready:      sum.Ready,
+					ShadowedBy: shadowedBy,
+				})
+			}
+			data.PeerGroups = append(data.PeerGroups, group)
+		}
+		s.peerMu.Unlock()
 	}
 
 	// Worktrees that exist on disk but were never started. Until now these

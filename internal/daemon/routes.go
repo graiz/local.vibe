@@ -219,6 +219,21 @@ func (t *RouteTable) UpdateManagedConfig(name, cmd string, oauthCallbackPort int
 	return true
 }
 
+// ManagedCmd reads r.Cmd under the table lock; UpdateManagedConfig rewrites
+// it on every Start when vibe.json changed.
+func (t *RouteTable) ManagedCmd(r *Route) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return r.Cmd
+}
+
+// SetManagedCmd writes r.Cmd under the table lock, pairing with ManagedCmd.
+func (t *RouteTable) SetManagedCmd(r *Route, cmd string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r.Cmd = cmd
+}
+
 // UpdatePort rewrites an existing route's Port field under the table lock.
 // Returns false if the route is unknown. Used by the self-healing repair
 // flow when a managed app rebinds itself to a different port.

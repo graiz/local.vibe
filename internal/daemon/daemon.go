@@ -21,6 +21,7 @@ import (
 	"github.com/graiz/local.vibe/internal/cert"
 	"github.com/graiz/local.vibe/internal/config"
 	vdns "github.com/graiz/local.vibe/internal/dns"
+	"github.com/graiz/local.vibe/internal/peer"
 )
 
 // Server is the vibe daemon. It listens on a TCP port and a Unix socket,
@@ -58,6 +59,20 @@ type Server struct {
 	timersMu   sync.Mutex
 	ttlTimers  map[string]*time.Timer
 	idleTimers map[string]*time.Timer
+
+	// Experimental peer subsystem (cfg.Daemon.Peers): identity, pinned peer
+	// list, invite state, the LAN mTLS listener, and per-peer route caches.
+	// All guarded by peerMu except where a field doc says otherwise.
+	// See peer_listener.go / peer_sync.go.
+	peerMu            sync.Mutex
+	peerIdentity      *tls.Certificate
+	peerFP            string
+	peerList          []peer.Peer
+	peerInviteCode    string
+	peerInviteExpires time.Time
+	peerSrv           *http.Server
+	peerLn            net.Listener
+	peerStates        map[string]*peerState
 }
 
 // NewServer creates a daemon server with the given configuration.
@@ -71,6 +86,7 @@ func NewServer(cfg *config.Config) *Server {
 		oauthBridgeListeners: make(map[int]net.Listener),
 		ttlTimers:            make(map[string]*time.Timer),
 		idleTimers:           make(map[string]*time.Timer),
+		peerStates:           make(map[string]*peerState),
 	}
 }
 
@@ -147,6 +163,10 @@ func (s *Server) Start() error {
 		}
 	}
 
+	if s.peersEnabled() {
+		s.loadPeerSubsystem()
+	}
+
 	fmt.Printf("vibe daemon listening on 127.0.0.1:%d\n", s.cfg.Daemon.Port)
 
 	if err := s.httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -168,6 +188,14 @@ func (s *Server) Stop() {
 	if s.dnsServer != nil {
 		s.dnsServer.Stop()
 	}
+	s.peerMu.Lock()
+	if s.peerSrv != nil {
+		_ = s.peerSrv.Close()
+	}
+	if s.peerLn != nil {
+		_ = s.peerLn.Close()
+	}
+	s.peerMu.Unlock()
 	_ = os.Remove(s.cfg.Daemon.Socket)
 	_ = os.Remove(fmt.Sprintf("%s/daemon.pid", config.Dir()))
 }
@@ -236,8 +264,19 @@ func (s *Server) tlsHostnames() []string {
 	names := s.table.Names()
 	hostnames := make([]string, 0, len(names)+2)
 	hostnames = append(hostnames, "local."+tld) // dashboard always
+	seen := make(map[string]bool, len(names))
 	for _, name := range names {
+		seen[name] = true
 		hostnames = append(hostnames, name+"."+tld)
+	}
+	// Peer routes are browsed through this daemon's TLS listener too, so
+	// their names need SANs exactly like local routes (Chrome rejects
+	// *.vibe wildcards). Deduped: a local name shadowing a peer's appears
+	// once.
+	for _, name := range s.peerRouteNames() {
+		if !seen[name] {
+			hostnames = append(hostnames, name+"."+tld)
+		}
 	}
 	return hostnames
 }
@@ -449,6 +488,18 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 			}
 			proxy.ServeHTTP(w, r)
 			return
+		}
+
+		// Peer routes: a name we don't serve locally may live on a paired
+		// machine. Local routes always win (a table hit returned above);
+		// among peers, peers.json order breaks ties inside findPeerRoute.
+		// Placed before the worktree-parent redirect because an exact peer
+		// match beats a heuristic parent fallback.
+		if s.peersEnabled() {
+			if p, _, ok := s.findPeerRoute(name); ok {
+				s.proxyToPeer(w, r, p, name)
+				return
+			}
 		}
 
 		// A worktree host whose route is missing — never registered, or just

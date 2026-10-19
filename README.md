@@ -125,6 +125,46 @@ When a managed route's process rebinds to a different port or exits, the daemon 
 
 ---
 
+## Peers (experimental)
+
+Two machines running vibe on the same network can browse each other's routes:
+type `face.vibe` on your laptop and reach the app running on your desktop.
+Off by default — enable it on **both** machines by adding to `~/.vibe/config.json`
+(then restart the daemon):
+
+```json
+{ "daemon": { "peers": { "enabled": true } } }
+```
+
+Pair once, with a code you read off the other machine's screen:
+
+```bash
+# on the machine that has the routes
+vibe peer invite
+# invite code: 481923 (valid 5 minutes)
+
+# on the other machine (host can be a .local name, LAN IP, or Tailscale MagicDNS name)
+vibe peer add desktop.local --code 481923
+```
+
+That's it — the peer's routes now resolve in your browser, show up in
+`vibe list` and the dashboard (read-only, grouped under the peer's name), and
+`vibe doctor` reports peer reachability. Local routes always win a name clash;
+shadowed peer routes are marked, never silently hidden.
+
+Security model, in one breath: pairing pins each machine's key SSH-style
+(the invite code authenticates that one exchange), all peer traffic is mutual-TLS
+between the two daemons on port 7444, an unpaired machine on your network gets a
+TLS handshake failure and nothing else, and a paired peer can only *read your
+route names and browse your routes* — never start, stop, register, or otherwise
+operate your daemon, whose API stays loopback-only. Browser certificates never
+leave either machine.
+
+Unpair anytime with `vibe peer remove <name>`. If a peer was reinstalled and its
+key changed, vibe refuses to reconnect until you remove and re-pair — by design.
+
+---
+
 ## Reference
 
 ### CLI
@@ -143,6 +183,10 @@ vibe status                          # Show daemon health
 vibe doctor                          # Diagnose DNS, listeners, redirect, certs
 vibe doctor --fix                    # Repair the privileged-port redirect
 vibe open myapp                      # Open in browser
+vibe peers                           # List paired machines + their routes (experimental)
+vibe peer invite                     # Open a one-time pairing window (experimental)
+vibe peer add <host> --code NNNNNN   # Pair with another machine (experimental)
+vibe peer remove <name>              # Unpair (experimental)
 vibe dev                             # Rebuild + restart daemon (for contributors)
 ```
 

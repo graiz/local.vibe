@@ -318,6 +318,8 @@ type routeResponse struct {
 	Proxy              bool       `json:"proxy,omitempty"`
 	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"`
 	OAuthCallbackPort  int        `json:"oauth_callback_port,omitempty"`
+	Cmd                string     `json:"cmd,omitempty"`
+	Dir                string     `json:"dir,omitempty"`
 }
 
 // apiHandler routes /_api/* requests to the appropriate handler.
@@ -389,6 +391,14 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 		s.handleAdoptWorktree(w, r, name)
 	case r.Method == http.MethodPut && path == "/preferences":
 		s.handleSetPreferences(w, r)
+	case r.Method == http.MethodGet && path == "/peers":
+		s.handlePeersList(w, r)
+	case r.Method == http.MethodPost && path == "/peers/invite":
+		s.handlePeerInvite(w, r)
+	case r.Method == http.MethodPost && path == "/peers":
+		s.handlePeerAdd(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/peers/"):
+		s.handlePeerRemove(w, r, strings.TrimPrefix(path, "/peers/"))
 	default:
 		if nonLocalVibeHost {
 			s.routeRequest(w, r)
@@ -423,6 +433,14 @@ func isDaemonAPIPath(method, path string) bool {
 	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/worktrees"):
 		return true
 	case method == http.MethodPut && path == "/preferences":
+		return true
+	case method == http.MethodGet && path == "/peers":
+		return true
+	case method == http.MethodPost && path == "/peers/invite":
+		return true
+	case method == http.MethodPost && path == "/peers":
+		return true
+	case method == http.MethodDelete && strings.HasPrefix(path, "/peers/"):
 		return true
 	default:
 		return false
@@ -483,11 +501,16 @@ func (s *Server) handleListWorktrees(w http.ResponseWriter, _ *http.Request) {
 	json.NewEncoder(w).Encode(out)
 }
 
-func (s *Server) handleListRoutes(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleListRoutes(w http.ResponseWriter, r *http.Request) {
+	withLocal := s.localDetailsAllowed(r)
 	routes := s.table.List()
 	resp := make([]routeResponse, len(routes))
 	for i, r := range routes {
 		resp[i] = toResponse(r, s.cfg.Daemon.TLD, s.vibeScheme())
+		if withLocal {
+			resp[i].Cmd = s.table.ManagedCmd(r)
+			resp[i].Dir = r.Dir
+		}
 	}
 	json.NewEncoder(w).Encode(resp)
 }
@@ -861,7 +884,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	// Cmd is only meaningful on managed routes — silently ignore on others so
 	// generic clients can PUT a full route shape without surprises.
 	if req.Cmd != "" && route.Type == RouteManaged {
-		route.Cmd = req.Cmd
+		s.table.SetManagedCmd(route, req.Cmd)
 	}
 	if req.URL != "" {
 		route.ExternalURL = req.URL
@@ -1235,6 +1258,7 @@ func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name strin
 	old := route.Port
 	s.table.UpdatePort(name, newPort)
 	route.Ready.Store(true)
+	route.SetFailure(nil) // it's serving again; a stale failure would mislabel it
 	if err := s.saveStickyRoutes(); err != nil {
 		fmt.Fprintf(os.Stderr, "vibe: failed to persist repaired port for %s: %v\n", name, err)
 	}
