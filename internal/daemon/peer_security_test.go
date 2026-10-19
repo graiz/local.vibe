@@ -95,3 +95,26 @@ func TestPeerAPICrossSiteBlocked(t *testing.T) {
 		t.Fatalf("unexpected body: %q", rec.Body.String())
 	}
 }
+
+// A route's directory and command line (which can carry inline secrets) are
+// served to the local CLI by /_api/routes; they must never reach a peer.
+func TestPeerRoutesNeverCarryDirOrCmd(t *testing.T) {
+	s, clientID, addr := newPeerTestServer(t)
+	s.table.Add(&Route{Name: "app", Type: RouteManaged, Port: 12346, Cmd: "DATABASE_URL=s3cret npm run dev", Dir: "/Users/someone/private/app", RegisteredAt: time.Now()})
+	c := peerHTTPClient(clientID, s.peerFP)
+
+	resp, err := c.Get("https://" + addr + "/peer/routes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/peer/routes: got %d", resp.StatusCode)
+	}
+	for _, leak := range []string{"s3cret", "/Users/someone", `"cmd"`, `"dir"`} {
+		if strings.Contains(string(body), leak) {
+			t.Errorf("/peer/routes leaked %q: %s", leak, body)
+		}
+	}
+}

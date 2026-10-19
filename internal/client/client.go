@@ -105,6 +105,8 @@ type RouteInfo struct {
 	Ready             bool       `json:"ready"`
 	URL               string     `json:"url"`
 	OAuthCallbackPort int        `json:"oauth_callback_port,omitempty"`
+	Cmd               string     `json:"cmd,omitempty"`
+	Dir               string     `json:"dir,omitempty"`
 }
 
 // WorktreeInfo is an on-disk git worktree of a managed app that has no route

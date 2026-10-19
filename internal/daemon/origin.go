@@ -22,6 +22,7 @@ package daemon
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -122,4 +123,28 @@ func apiStateChanging(method, path string) bool {
 		return true
 	}
 	return strings.HasSuffix(path, "/repair")
+}
+
+// localDetailsAllowed reports whether a read may include machine-local detail
+// (a route's directory and command line) that route names and ports don't
+// reveal. GET /_api/routes is answered on every .vibe host, so without this a
+// proxy bookmark's third-party JavaScript could fetch it same-origin, and a
+// DNS-rebound name could read it from the TCP listener. Allowed: the unix
+// socket (the CLI), and Hosts that are the daemon itself — loopback or
+// local.<tld>, on a daemon port. Route hosts are refused too: one app's page
+// has no business reading every other app's paths.
+func (s *Server) localDetailsAllowed(r *http.Request) bool {
+	// TCP connections always carry "ip:port"; a unix-socket peer never does.
+	if _, _, err := net.SplitHostPort(r.RemoteAddr); err != nil {
+		return true
+	}
+	host, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host, port = r.Host, ""
+	}
+	switch host {
+	case "localhost", "127.0.0.1", "::1", "local." + s.cfg.Daemon.TLD:
+		return s.daemonPortTrusted(port)
+	}
+	return false
 }
