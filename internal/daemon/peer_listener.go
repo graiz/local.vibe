@@ -172,11 +172,21 @@ func (s *Server) handlePeerRoutes(w http.ResponseWriter, r *http.Request) {
 		if rt.Type == RouteBookmark {
 			continue
 		}
+		running, ready := rt.Running.Load(), rt.Ready.Load()
+		if rt.Type != RouteManaged {
+			// Only managed routes have a lifecycle that keeps these flags
+			// honest (exit watchers, the readiness probe). A sticky route's
+			// flags are set once at register and never cleared, so a dark
+			// port would read "ready" on the browsing machine while the relay
+			// — which dials live — fails. Ask the port instead.
+			ready = s.isPortReady(rt.Port)
+			running = ready
+		}
 		summaries = append(summaries, peer.RouteSummary{
 			Name:    rt.Name,
 			Type:    string(rt.Type),
-			Running: rt.Running.Load(),
-			Ready:   rt.Ready.Load(),
+			Running: running,
+			Ready:   ready,
 			Icon:    rt.Icon,
 		})
 	}

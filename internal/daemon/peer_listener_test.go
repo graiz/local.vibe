@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -127,5 +128,50 @@ func TestPeerListenerOffByDefault(t *testing.T) {
 	s.loadPeerSubsystem()
 	if s.peerLn != nil {
 		t.Fatal("peer listener started with the flag off")
+	}
+}
+
+// A sticky route's stored flags never change after register; /peer/routes
+// must report its port's live state so the browsing machine doesn't show a
+// dark route as ready.
+func TestPeerRoutesStickyReadinessIsLive(t *testing.T) {
+	s, clientID, addr := newPeerTestServer(t)
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	darkL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	darkPort := darkL.Addr().(*net.TCPAddr).Port
+	darkL.Close()
+
+	for name, port := range map[string]int{"up": up.Addr().(*net.TCPAddr).Port, "dark": darkPort} {
+		rt := &Route{Name: name, Type: RouteSticky, Port: port, RegisteredAt: time.Now()}
+		rt.Running.Store(true)
+		rt.Ready.Store(true) // as register leaves it
+		s.table.Add(rt)
+	}
+	c := peerHTTPClient(clientID, s.peerFP)
+	resp, err := c.Get("https://" + addr + "/peer/routes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var routes []peer.RouteSummary
+	if err := json.NewDecoder(resp.Body).Decode(&routes); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]peer.RouteSummary{}
+	for _, r := range routes {
+		got[r.Name] = r
+	}
+	if r := got["up"]; !r.Ready || !r.Running {
+		t.Errorf("up: %+v; want running and ready", r)
+	}
+	if r := got["dark"]; r.Ready || r.Running {
+		t.Errorf("dark: %+v; want neither running nor ready (would read as \"starting\")", r)
 	}
 }
