@@ -22,6 +22,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/peer"
@@ -168,28 +169,42 @@ func (s *Server) peerHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePeerRoutes(w http.ResponseWriter, r *http.Request) {
 	routes := s.table.List()
 	summaries := make([]peer.RouteSummary, 0, len(routes))
+	var live []int // indices into summaries, paired with livePorts
+	var livePorts []int
 	for _, rt := range routes {
 		if rt.Type == RouteBookmark {
 			continue
 		}
-		running, ready := rt.Running.Load(), rt.Ready.Load()
 		if rt.Type != RouteManaged {
 			// Only managed routes have a lifecycle that keeps these flags
 			// honest (exit watchers, the readiness probe). A sticky route's
 			// flags are set once at register and never cleared, so a dark
 			// port would read "ready" on the browsing machine while the relay
-			// — which dials live — fails. Ask the port instead.
-			ready = s.isPortReady(rt.Port)
-			running = ready
+			// — which dials live — fails. Ask the port instead, below.
+			live = append(live, len(summaries))
+			livePorts = append(livePorts, rt.Port)
 		}
 		summaries = append(summaries, peer.RouteSummary{
 			Name:    rt.Name,
 			Type:    string(rt.Type),
-			Running: running,
-			Ready:   ready,
+			Running: rt.Running.Load(),
+			Ready:   rt.Ready.Load(),
 			Icon:    rt.Icon,
 		})
 	}
+	// Concurrently: a dark port can cost the full dial timeout (always on
+	// Windows, which retries refused loopback connects), and peers poll this
+	// with a 3s client timeout. Each goroutine writes only its own element.
+	var wg sync.WaitGroup
+	for k, i := range live {
+		wg.Add(1)
+		go func(sum *peer.RouteSummary, port int) {
+			defer wg.Done()
+			sum.Ready = s.isPortReady(port)
+			sum.Running = sum.Ready
+		}(&summaries[i], livePorts[k])
+	}
+	wg.Wait()
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i].Name < summaries[j].Name })
 	body, err := json.Marshal(summaries)
 	if err != nil {
@@ -256,8 +271,17 @@ func (s *Server) peerServeRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !s.isPortReady(route.Port) {
-		s.servePeerStartingPage(w, route)
-		return
+		// A live managed child that rebound to another port: locally the
+		// reconnecting page drives /repair to rediscover it, but remote
+		// viewers can't reach /_api/, so run the same repair here (its
+		// response discarded, like recovery above) and proxy if it found one.
+		if route.Type == RouteManaged && route.Running.Load() {
+			s.handleRepair(&discardWriter{}, r, route.Name)
+		}
+		if !s.isPortReady(route.Port) {
+			s.servePeerStartingPage(w, route)
+			return
+		}
 	}
 
 	route.TouchActivity()
@@ -314,10 +338,15 @@ func (s *Server) servePeerStartingPage(w http.ResponseWriter, route *Route) {
 
 // peerRouteRecovering reports whether this machine is bringing the route up
 // on its own: a managed route mid auto-start, or one whose process is alive
-// and has yet to bind its port.
+// and has yet to bind its port (or is having it rediscovered).
 func (s *Server) peerRouteRecovering(route *Route) bool {
 	if route.Type != RouteManaged {
 		return false
 	}
-	return s.isAutoStarting(route.Name) || route.Running.Load()
+	if s.isAutoStarting(route.Name) {
+		return true
+	}
+	// A recorded failure means recovery stopped trying: e.g. the readiness
+	// probe gave up ("never bound port N") while the process lives on.
+	return route.Running.Load() && route.LoadFailure() == nil
 }

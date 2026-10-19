@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -173,11 +172,7 @@ func TestPeerServeRouteRemotePages(t *testing.T) {
 	b.table.Add(&Route{Name: "app", Type: RouteManaged, Port: 1, RegisteredAt: time.Now()})
 	// Sticky on a dark port: vibe has no process to start.
 	b.table.Add(&Route{Name: "web", Type: RouteSticky, Port: 1, RegisteredAt: time.Now()})
-	// Managed, process alive but its port not bound yet: genuinely starting.
-	boot := &Route{Name: "boot", Type: RouteManaged, Port: 1, RegisteredAt: time.Now()}
-	boot.Running.Store(true)
-	boot.SetPID(os.Getpid()) // alive: the test process itself
-	b.table.Add(boot)
+	// Cases needing a live managed child are in peer_remote_unix_test.go.
 
 	for _, c := range []struct {
 		host        string
@@ -186,7 +181,6 @@ func TestPeerServeRouteRemotePages(t *testing.T) {
 	}{
 		{"app.vibe", false, "isn't running"},
 		{"web.vibe", false, "isn't running"},
-		{"boot.vibe", true, "is starting"},
 	} {
 		code, body := peerGetRoute(t, a, b, c.host)
 		if code != http.StatusServiceUnavailable {
