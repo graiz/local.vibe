@@ -103,14 +103,17 @@ func writeRouteTable(out io.Writer, routes []client.RouteInfo, worktrees []clien
 		claimedBy := make(map[string]string) // route name → winning peer
 		for _, p := range peers.Peers {
 			for _, pr := range p.Routes {
-				// The status column is always the peer's own view of the
-				// route; shadowing goes in the note, so a shadowed row still
-				// says whether it runs over there.
+				// A shadowed row's status says it lost, not the peer's own run
+				// state: "stopped" beside a running local route of the same
+				// name read as that route being down, and the name never
+				// reaches the peer's copy anyway.
 				status := peer.Status(pr.Running, pr.Ready, p.Reachable)
 				note := "on " + p.Name
 				if localNames[pr.Name] {
+					status = peer.StatusShadowed
 					note += ", shadowed by this machine"
 				} else if winner, taken := claimedBy[pr.Name]; taken {
+					status = peer.StatusShadowed
 					note += ", shadowed by " + winner
 				} else {
 					claimedBy[pr.Name] = p.Name
@@ -128,8 +131,8 @@ func writeRouteTable(out io.Writer, routes []client.RouteInfo, worktrees []clien
 }
 
 // displayPath abbreviates home to "~", as shells do. Only a whole leading
-// path component matches, so /Users/greg is not abbreviated inside
-// /Users/gregory.
+// path component matches, so /Users/al is not abbreviated inside
+// /Users/alice.
 func displayPath(p, home string) string {
 	if p == "" || home == "" {
 		return p

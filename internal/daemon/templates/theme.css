@@ -469,6 +469,15 @@ a.route-name-cell:hover .route-name-link{text-decoration:underline;text-underlin
 
 /* Peers section */
 .peer-section h2{font-size:13px;font-weight:600;letter-spacing:-.01em;color:var(--text-secondary);margin:32px 0 10px}
+.peer-section h2{display:flex;align-items:center}
+.peer-add-btn{margin-left:auto;align-self:center;height:auto;padding:3px 11px}
+.peer-empty{font-size:12.5px;color:var(--text-muted);margin:0 0 8px}
+.peer-invite{margin-top:16px;padding-top:14px;border-top:1px solid var(--border-subtle);display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.peer-invite-text{font-size:12.5px;color:var(--text-muted)}
+.peer-invite-code{flex-basis:100%;font-size:12.5px;color:var(--text-secondary);line-height:1.5}
+.peer-invite-code code{font-family:var(--font-mono);font-size:15px;letter-spacing:.12em;color:var(--text);background:var(--elevated);border:1px solid var(--border-subtle);border-radius:5px;padding:2px 8px}
+.peer-msg{margin-top:12px;font-size:12.5px;color:var(--text-secondary)}
+.peer-msg-err{color:var(--red)}
 .peer-section h2 .tag{font-size:11px;font-weight:500;color:var(--text-muted);border:1px solid var(--border);border-radius:99px;padding:1px 8px;margin-left:6px;vertical-align:1px}
 .peer-group{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:12px}
 .peer-group-title{font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:500;color:var(--text-muted);padding:9px 16px;border-bottom:1px solid var(--border-subtle);background:var(--bg)}

@@ -105,9 +105,10 @@ func between(s, start, end string) string {
 	return s[i : i+j]
 }
 
-// Every peer row says whether the route runs on the peer — including a
-// shadowed row, whose name resolves locally but whose peer-side state is
-// still worth showing. A stopped route must not read as "starting" (the old
+// Every unshadowed peer row says whether the route runs on the peer. A
+// shadowed row says only that it lost: its peer-side state is irrelevant (the
+// name resolves locally) and "stopped" beside a running local route read as
+// that route being down. A stopped route must not read as "starting" (the old
 // yellow dot did).
 func TestDashboardPeerRouteStatus(t *testing.T) {
 	s := newBareServer(t)
@@ -121,7 +122,7 @@ func TestDashboardPeerRouteStatus(t *testing.T) {
 	s.table.Add(&Route{Name: "tasks", Type: RouteManaged, Port: 4000, RegisteredAt: time.Now()})
 
 	body, got := peerRowStatuses(t, s)
-	want := map[string]string{"up": "ready", "booting": "starting", "down": "stopped", "tasks": "ready"}
+	want := map[string]string{"up": "ready", "booting": "starting", "down": "stopped", "tasks": ""}
 	for name, w := range want {
 		if got[name] != w {
 			t.Errorf("peer row %q status = %q, want %q (all: %v)", name, got[name], w, got)
@@ -150,5 +151,37 @@ func TestDashboardPeerRouteStatusStalePeer(t *testing.T) {
 	_, got := peerRowStatuses(t, s)
 	if got["up"] != "unreachable" {
 		t.Errorf("stale peer row status = %q, want unreachable", got["up"])
+	}
+}
+
+// With peers enabled, the dashboard proper always shows the Peers section
+// with an "Add peer" control — even before anything is paired, which is when
+// it's needed. A dashboard render on another Host (the unknown-route
+// fallback) gets no admin control: the gate would refuse its POSTs anyway.
+func TestDashboardAddPeerControl(t *testing.T) {
+	render := func(s *Server, host string) string {
+		req := httptest.NewRequest("GET", "http://"+host+"/", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		s.serveDashboard(rec, req)
+		return rec.Body.String()
+	}
+
+	s := newBareServer(t) // peers enabled, nothing paired
+	body := render(s, "local.vibe")
+	if !strings.Contains(body, `onclick="openPeerModal()"`) || !strings.Contains(body, `id="peer-overlay"`) {
+		t.Fatal("peers enabled: dashboard has no Add peer control")
+	}
+	if !strings.Contains(body, "No machines paired yet") {
+		t.Error("empty Peers section should say nothing is paired")
+	}
+	if other := render(s, "someapp.vibe"); strings.Contains(other, `onclick="openPeerModal()"`) {
+		t.Error("Add peer control rendered on a non-dashboard host")
+	}
+
+	off := newBareServer(t)
+	off.cfg.Daemon.Peers.Enabled = false
+	if body := render(off, "local.vibe"); strings.Contains(body, `onclick="openPeerModal()"`) || strings.Contains(body, `id="peer-list"`) {
+		t.Error("peers disabled: no Peers section or Add peer control expected")
 	}
 }

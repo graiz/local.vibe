@@ -42,6 +42,10 @@ type dashboardData struct {
 	ShowGetStarted bool // inline Get Started card: only until 2 routes exist; after that it's a footer link + modal
 	Routes         []dashboardRoute
 	PeerGroups     []dashboardPeerGroup // experimental: paired machines' routes, read-only
+	// PeerAdmin shows the Peers section's "Add peer" control: peers are
+	// enabled and this is the dashboard proper (local.<tld> on a daemon
+	// port), the only origin whose POSTs to /_api/peers the gate accepts.
+	PeerAdmin bool
 }
 
 // dashboardPeerGroup is one paired machine's cached routes, rendered as a
@@ -230,6 +234,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	// Paired peers' routes (experimental), grouped per machine. Shadowing is
 	// computed here, not in the template: local names win, then earlier
 	// peers (peers.json order — the same precedence findPeerRoute applies).
+	data.PeerAdmin = s.peersEnabled() && s.localDetailsAllowed(r)
 	if s.peersEnabled() {
 		// The peer cache is in-memory and the poll ticks every 30s, so a
 		// render can race an empty cache (right after a daemon restart) or a
@@ -270,11 +275,15 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 				} else {
 					claimed[sum.Name] = p.Name
 				}
+				status := peer.Status(sum.Running, sum.Ready, reachable)
+				if shadowedBy != "" {
+					status = peer.StatusShadowed
+				}
 				group.Routes = append(group.Routes, dashboardPeerRoute{
 					Name:       sum.Name,
 					VibeURL:    s.routeURL(sum.Name),
 					Icon:       icon,
-					Status:     peer.Status(sum.Running, sum.Ready, reachable),
+					Status:     status,
 					ShadowedBy: shadowedBy,
 				})
 			}

@@ -23,6 +23,11 @@ const (
 	StatusStarting    = "starting"
 	StatusStopped     = "stopped"
 	StatusUnreachable = "unreachable"
+	// StatusShadowed is a peer route whose name a local route (or an
+	// earlier-paired peer) already serves. Its own run state on the peer is
+	// irrelevant here — the name never reaches it — and showing it ("stopped"
+	// beside a local route that is running) read as the route being down.
+	StatusShadowed = "shadowed"
 )
 
 // Status reports a peer route's liveness as one word. reachable is whether
