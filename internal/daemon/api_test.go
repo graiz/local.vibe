@@ -557,7 +557,7 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 	t.Logf("got expected error+recovery: status=%d error=%q recovery=%v", w.Code, errMsg, rec)
 }
 
-// TestHandleStartPortOccupiedAttachesRecovery is the screener.vibe regression:
+// TestHandleStartPortOccupiedAttachesRecovery is a real-world regression:
 // a stale dev-server process holds the route's port, the user clicks Start
 // from the not-running page, the daemon can't free the port, and we MUST
 // surface a recovery hint with the offending PID so the startpage can offer
@@ -607,7 +607,7 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 	// matches the state after a daemon restart with persisted routes, before
 	// the user clicks Start.
 	route := &Route{
-		Name:         "screener-repro",
+		Name:         "billing-repro",
 		Port:         port,
 		Type:         RouteManaged,
 		Cmd:          "sleep 60",
@@ -766,14 +766,14 @@ func equalIntMaps(a, b map[string]int) bool {
 }
 
 // TestFindFreePortSkipsReservePorts is the core invariant that prevents the
-// screener.vibe / task-tracker collision from happening at config time:
+// two-apps-one-port collision from happening at config time:
 // when route A reserves port 3001 via reserve_ports, the auto-assigner must
 // not hand 3001 to route B.
 func TestFindFreePortSkipsReservePorts(t *testing.T) {
 	t.Parallel()
 	table := NewRouteTable()
 	table.Add(&Route{
-		Name:         "screener",
+		Name:         "billing",
 		Port:         3012,
 		Type:         RouteManaged,
 		ReservePorts: map[string]int{"server": 3001, "metrics": 3002, "admin": 3000},
@@ -791,9 +791,9 @@ func TestFindFreePortSkipsReservePorts(t *testing.T) {
 	}
 }
 
-// TestHandleStartReservePortConflictAttachesRecovery is the screener.vibe
+// TestHandleStartReservePortConflictAttachesRecovery is the real-world
 // regression for the multi-port case: a stale process (e.g. another app's
-// NextAuth) holds one of the route's reserve_ports. Without this, screener's
+// NextAuth) holds one of the route's reserve_ports. Without this, the app's
 // bun server silently fails to bind its named "server" port and Vite's
 // proxy bleeds traffic into the wrong app. With this, the user gets a
 // clear "Kill PID X (node) and retry" recovery — same UX as the primary
@@ -847,7 +847,7 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 	}
 
 	route := &Route{
-		Name:         "screener-multi",
+		Name:         "billing-multi",
 		Port:         primary,
 		ReservePorts: map[string]int{"server": reservePort},
 		Type:         RouteManaged,
@@ -1087,7 +1087,7 @@ func TestHandleStopBrowserFormStillRedirects(t *testing.T) {
 
 // TestHandleStartSyncsVibeJSON verifies that an edit to vibe.json (adding
 // oauth_callback_port) takes effect on the next vibe start <name> without
-// requiring deregister + re-register. This was the screener.vibe bug:
+// requiring deregister + re-register. This was a real-world bug:
 // `startExisting` used to bypass the register flow entirely, so fields the
 // user added to vibe.json after first registration never made it onto the
 // route.

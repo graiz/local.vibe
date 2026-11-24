@@ -62,8 +62,18 @@ func New() *Client {
 		http: &http.Client{
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		baseURL: fmt.Sprintf("http://127.0.0.1:%d", config.DefaultPort),
+		baseURL: fmt.Sprintf("http://127.0.0.1:%d", tcpPort()),
 	}
+}
+
+// tcpPort is the daemon's HTTP port as configured in ~/.vibe/config.json,
+// falling back to the default. TCP is the only transport on Windows, so a
+// hardcoded default would cut the CLI off from a daemon on a custom port.
+func tcpPort() int {
+	if cfg, err := config.Load(); err == nil && cfg.Daemon.Port > 0 {
+		return cfg.Daemon.Port
+	}
+	return config.DefaultPort
 }
 
 func (c *Client) do(method, path string, body any) ([]byte, int, error) {
@@ -270,6 +280,15 @@ type PeerInfo struct {
 	Reachable   bool            `json:"reachable"`
 	LastError   string          `json:"last_error,omitempty"`
 	Routes      []PeerRouteInfo `json:"routes"`
+	// OAuthBridges are localhost ports this machine holds for the peer's
+	// OAuth callbacks.
+	OAuthBridges []PeerBridgeInfo `json:"oauth_bridges,omitempty"`
+}
+
+type PeerBridgeInfo struct {
+	Port  int    `json:"port"`
+	Route string `json:"route"`
+	Bound bool   `json:"bound"`
 }
 
 type PeersResponse struct {

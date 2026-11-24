@@ -167,7 +167,7 @@ func TestScanLogForRecoveryProbesQuarantineWhenLogNamesNoCause(t *testing.T) {
 	// A decorated shell prompt and nothing else — no error text of any kind.
 	tail := strings.Join([]string{
 		"  .==================.",
-		"  | |   iMacNano   | |",
+		"  | |   DevBox   | |",
 		"[ERROR]: gitstatus failed to initialize.",
 	}, "\n")
 

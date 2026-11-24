@@ -201,19 +201,33 @@ func (s *Server) startManagedNow(route *Route) error {
 // Failure and returned as a *startFailure. Three hand-copied variants of this
 // sequence (register, start, recovery) had drifted; one of them is how a
 // register whose port another route held reached killPort against that route.
+// prepareManagedStart is the engine's first step — re-read vibe.json (when
+// syncConfig) and require a launch command — split out so handleStart can
+// run it BEFORE its destructive kill_pid/kill_port recovery: a start that is
+// going to fail on config anyway must not kill anything first. Failures are
+// recorded on the route like every other engine failure.
+func (s *Server) prepareManagedStart(route *Route, syncConfig bool) error {
+	if syncConfig {
+		if err := s.syncRouteFromVibeJSON(route); err != nil {
+			route.SetFailure(&Failure{Message: err.Error()})
+			return &startFailure{status: http.StatusConflict, message: err.Error()}
+		}
+	}
+	if route.Cmd == "" {
+		msg := "route has no launch command"
+		route.SetFailure(&Failure{Message: msg})
+		return &startFailure{status: http.StatusBadRequest, message: msg}
+	}
+	return nil
+}
+
 func (s *Server) startManaged(route *Route, syncConfig bool) error {
 	fail := func(f *startFailure, failure *Failure) error {
 		route.SetFailure(failure)
 		return f
 	}
-	if syncConfig {
-		if err := s.syncRouteFromVibeJSON(route); err != nil {
-			return fail(&startFailure{status: http.StatusConflict, message: err.Error()}, &Failure{Message: err.Error()})
-		}
-	}
-	if route.Cmd == "" {
-		msg := "route has no launch command"
-		return fail(&startFailure{status: http.StatusBadRequest, message: msg}, &Failure{Message: msg})
+	if err := s.prepareManagedStart(route, syncConfig); err != nil {
+		return err
 	}
 	if route.Port == 0 {
 		port, err := findFreePort(s.table)

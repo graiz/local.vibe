@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -248,5 +250,72 @@ func TestStateFilesArePrivate(t *testing.T) {
 	logPath := filepath.Join(config.Dir(), "logperm.log")
 	if info, err := os.Stat(logPath); err != nil || info.Mode().Perm() != 0600 {
 		t.Errorf("%s mode = %v, err %v; want 0600", logPath, info.Mode().Perm(), err)
+	}
+}
+
+// The cap must hold against requests already in flight: a handler that
+// snapshotted the invite on entry and verified after a slow body used to check
+// its guess even after the cap closed the invite, so K parked connections
+// bought K guesses. Here every request is parked on its body before any guess
+// is checked; once the attempts are spent, even the correct proof is refused.
+func TestPairingCapHoldsForConcurrentRequests(t *testing.T) {
+	b := newBareServer(t)
+	if err := b.ensurePeerIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	const clientFP = "deadbeef"
+
+	pair := func(body io.Reader) int {
+		req := httptest.NewRequest(http.MethodPost, "/peer/pair", body)
+		req.RemoteAddr = "192.168.1.9:4000"
+		w := httptest.NewRecorder()
+		b.handlePeerPair(w, req, clientFP)
+		return w.Code
+	}
+	proofBody := func(code string) string {
+		return fmt.Sprintf(`{"proof":%q,"name":"x","port":7444}`, peer.Proof(code, clientFP, b.peerFP))
+	}
+
+	// Control: with attempts to spare, the correct proof pairs.
+	code, _, err := b.openPeerInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pair(strings.NewReader(proofBody(code))); got != http.StatusOK {
+		t.Fatalf("control: correct proof = %d; want 200", got)
+	}
+	b.peerMu.Lock()
+	b.peerList = nil // forget the control pin
+	b.peerMu.Unlock()
+
+	code, _, err = b.openPeerInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const parked = peerPairMaxAttempts * 3
+	writers := make([]*io.PipeWriter, parked)
+	results := make([]chan int, parked)
+	for i := range writers {
+		pr, pw := io.Pipe()
+		writers[i] = pw
+		results[i] = make(chan int, 1)
+		go func(i int, body io.Reader) { results[i] <- pair(body) }(i, pr)
+	}
+	time.Sleep(100 * time.Millisecond) // every handler is past its entry check
+	for i := 0; i < parked-1; i++ {
+		io.WriteString(writers[i], `{"proof":"nope","name":"x"}`)
+		writers[i].Close()
+		if got := <-results[i]; got != http.StatusForbidden {
+			t.Fatalf("wrong guess %d = %d; want 403", i, got)
+		}
+	}
+	last := parked - 1
+	io.WriteString(writers[last], proofBody(code))
+	writers[last].Close()
+	if got := <-results[last]; got != http.StatusForbidden {
+		t.Fatalf("correct proof after %d parked wrong guesses = %d; want 403 (cap bypassed)", parked-1, got)
+	}
+	if b.peerByFingerprint(clientFP) != nil {
+		t.Fatal("parked request pinned a peer after the invite's attempts were spent")
 	}
 }

@@ -86,6 +86,12 @@ func (s *Server) reconcileOAuthBridgeListeners() error {
 			continue
 		}
 		delete(s.oauthPeerBindFailed, port)
+		if !local {
+			// Say so where a confused user will look: a local server that
+			// later wants this port gets EADDRINUSE from *this* listener.
+			b := peerPorts[port]
+			fmt.Fprintf(os.Stderr, "vibe: holding localhost:%d for %s's OAuth callback (route on peer %s); see `vibe peers`\n", port, b.route, b.peer.Name)
+		}
 		srv := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			s.handleOAuthCallbackBridge(w, r, port)
 		}))

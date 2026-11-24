@@ -30,7 +30,7 @@ func stripANSI(s string) string {
 // isDecorationOnly reports whether a line carries no information: no letters
 // and no digits, i.e. box-drawing, rules, and ASCII art. Deliberately narrow —
 // it must not eat real output. A banner line that names something ("node ·
-// iMacNano") has letters and is kept; only the frame around it is dropped.
+// DevBox") has letters and is kept; only the frame around it is dropped.
 // Blank lines qualify, which is how empty-line filtering folds in here.
 func isDecorationOnly(s string) bool {
 	for _, r := range s {

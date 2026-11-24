@@ -83,13 +83,17 @@ func setupPlatform() error {
 	fmt.Println("Setting up local.vibe on macOS...")
 	fmt.Println()
 
+	// Label with the ports pf will actually forward to (installPFLaunchDaemon
+	// reads the real user's config), not the defaults.
+	labelHome, _ := realUserHome()
+	httpPort, tlsPort := configuredDaemonPortsIn(labelHome)
 	steps := []setupStep{
 		{"Checking for Homebrew", checkHomebrew},
 		{"Installing dnsmasq", installDNSMasq},
 		{"Configuring dnsmasq (*.vibe → 127.0.0.1)", configureDNSMasq},
 		{"Creating /etc/resolver/vibe", createResolver},
 		{"Starting dnsmasq as system service", startDNSMasq},
-		{fmt.Sprintf("Installing pf forwarding rules (80→%d, 443→%d)", config.DefaultPort, config.DefaultTLSPort), installPFLaunchDaemon},
+		{fmt.Sprintf("Installing pf forwarding rules (80→%d, 443→%d)", httpPort, tlsPort), installPFLaunchDaemon},
 		{"Generating TLS certificates (*.vibe)", generateCerts},
 		{"Trusting CA in macOS Keychain", trustCA},
 		{"Enabling TLS in daemon config", enableTLSConfig},
@@ -488,7 +492,7 @@ func enableTLSConfig() error {
 	home, _ := realUserHome()
 	cfgPath := filepath.Join(home, ".vibe", "config.json")
 	if err := updateConfigJSON(cfgPath, func(daemon map[string]any) {
-		daemon["tls"] = tlsConfigFor(home)
+		daemon["tls"] = tlsConfigFor(home, daemon["tls"])
 	}); err != nil {
 		return err
 	}

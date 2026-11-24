@@ -308,7 +308,7 @@ func enableTLSAndDNSWindows() error {
 	snap, _ := loadDNSBackup()
 	upstream := pickUpstreamResolver(snap)
 	return updateConfigJSON(filepath.Join(home, ".vibe", "config.json"), func(daemon map[string]any) {
-		daemon["tls"] = tlsConfigFor(home)
+		daemon["tls"] = tlsConfigFor(home, daemon["tls"])
 		daemon["dns"] = map[string]any{
 			"enabled":  true,
 			"listen":   "127.0.0.1:53",

@@ -54,7 +54,27 @@ var peersCmd = &cobra.Command{
 			}
 			fmt.Fprintf(w, "%s\t%s:%d\t%s\t%s\n", p.Name, p.Host, p.Port, status, routes)
 		}
-		return w.Flush()
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		// Ports held on this machine for peers' OAuth callbacks. Listed
+		// because a local dev server that wants one of them gets "address in
+		// use" from vibe's listener, with nothing else pointing here.
+		printedHeader := false
+		for _, p := range resp.Peers {
+			for _, b := range p.OAuthBridges {
+				if !printedHeader {
+					fmt.Println("\nOAuth callback bridges on this machine:")
+					printedHeader = true
+				}
+				state := "held by vibe"
+				if !b.Bound {
+					state = "NOT bound — another process holds it; sign-ins to this route will fail here"
+				}
+				fmt.Printf("  localhost:%d → %s on %s (%s)\n", b.Port, b.Route, p.Name, state)
+			}
+		}
+		return nil
 	},
 }
 

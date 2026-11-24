@@ -134,8 +134,7 @@ func (s *Server) daemonPortTrusted(port string) bool {
 // this reason: a GET arrives with no Origin from a same-origin fetch or an
 // <img src>, and Sec-Fetch-Site reads same-site for every .vibe page, so a
 // GET could never be guarded.
-func apiStateChanging(method, path string) bool {
-	_ = path
+func apiStateChanging(method string) bool {
 	return method != http.MethodGet
 }
 

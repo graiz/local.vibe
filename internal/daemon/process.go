@@ -35,6 +35,10 @@ type ProcessManager struct {
 	mu      sync.Mutex
 	procs   map[string]*exec.Cmd // keyed by route name; spawned by this daemon
 	adopted map[string]int       // keyed by route name; pid of a child re-adopted after a daemon restart (no *exec.Cmd)
+	// stopping holds a channel per route name whose Stop is in flight,
+	// closed once the old tree is gone. Start waits on it so a restart
+	// never races the process it is replacing.
+	stopping map[string]chan struct{}
 
 	// onExit is invoked (event-based, no polling) when a managed child exits
 	// after having started running — from cmd.Wait for spawned children, and
@@ -69,6 +73,7 @@ func NewProcessManager() *ProcessManager {
 	return &ProcessManager{
 		procs:       make(map[string]*exec.Cmd),
 		adopted:     make(map[string]int),
+		stopping:    make(map[string]chan struct{}),
 		stopGrace:   defaultStopGrace,
 		maxLogBytes: defaultMaxLogBytes,
 	}
@@ -141,6 +146,15 @@ func (pm *ProcessManager) Adopt(name string, pid int) {
 // It returns the PID of the child process.
 func (pm *ProcessManager) Start(route *Route) (int, error) {
 	pm.mu.Lock()
+	for {
+		ch, ok := pm.stopping[route.Name]
+		if !ok {
+			break
+		}
+		pm.mu.Unlock()
+		<-ch
+		pm.mu.Lock()
+	}
 
 	if cmd, ok := pm.procs[route.Name]; ok && cmd.Process != nil {
 		if processAlive(cmd.Process.Pid) {
@@ -358,51 +372,99 @@ func readTail(path string, max int64) ([]byte, error) {
 // is already immediate). It returns once the process is gone, so callers can
 // rely on the port being released.
 //
-// Tracking is dropped up front, under the lock, and the kill runs outside it:
-// a 3s grace period must not serialize every other ProcessManager caller.
+// The kill runs outside the lock — a 3s grace period must not serialize every
+// other ProcessManager caller — but the child stays tracked until it is gone,
+// with an entry in pm.stopping that a concurrent Start (or Stop) waits on.
 func (pm *ProcessManager) Stop(name string) error {
 	pm.mu.Lock()
-	cmd, hasCmd := pm.procs[name]
-	adoptedPID, hasAdopted := pm.adopted[name]
-	delete(pm.procs, name)
-	delete(pm.adopted, name)
-	pm.mu.Unlock()
-
-	switch {
-	case hasCmd && cmd.Process != nil:
-		_ = killProcessTree(name, cmd)
-		if !pm.waitGone(cmd.Process.Pid) {
-			_ = killProcessTreeForce(name, cmd)
-			pm.waitGone(cmd.Process.Pid)
-		}
-		afterExit(name)
-		return nil
-	case hasAdopted:
-		// A child re-adopted after a daemon restart has no *exec.Cmd; kill it
-		// by its process-group leader PID instead.
-		_ = killAdoptedProcess(adoptedPID)
-		if !pm.waitGone(adoptedPID) {
-			_ = killAdoptedProcessForce(adoptedPID)
-			pm.waitGone(adoptedPID)
-		}
-		afterExit(name)
+	if ch, ok := pm.stopping[name]; ok {
+		// Another Stop already owns this teardown (the idle timer racing
+		// handleStop, say). Wait for it rather than registering a second
+		// entry: the first Stop's cleanup would then delete ours, and a Start
+		// arriving mid-escalation would spawn alongside the dying tree.
+		pm.mu.Unlock()
+		<-ch
 		return nil
 	}
-	return fmt.Errorf("%s is not running", name)
+	cmd, hasCmd := pm.procs[name]
+	adoptedPID, hasAdopted := pm.adopted[name]
+	hasCmd = hasCmd && cmd.Process != nil
+	if !hasCmd && !hasAdopted {
+		pm.mu.Unlock()
+		return fmt.Errorf("%s is not running", name)
+	}
+	// Keep the child tracked until it is actually gone. Dropping it up front
+	// let a concurrent Start for the same name spawn a second copy while the
+	// first still held the port, and — on Windows — this Stop's trailing
+	// afterExit then closed the NEW child's Job Object. Start waits on this
+	// channel instead.
+	done := make(chan struct{})
+	pm.stopping[name] = done
+	pm.mu.Unlock()
+	defer func() {
+		pm.mu.Lock()
+		if pm.stopping[name] == done {
+			delete(pm.stopping, name)
+		}
+		pm.mu.Unlock()
+		close(done)
+	}()
+
+	if hasCmd {
+		pid := cmd.Process.Pid
+		_ = killProcessTree(name, cmd)
+		if !pm.waitGone(pid) {
+			_ = killProcessTreeForce(name, cmd)
+			pm.waitGone(pid)
+		}
+		// The Wait goroutine may already have untracked it (and run
+		// afterExit) when the leader exited; only the side that removes the
+		// entry runs the per-name hook.
+		pm.mu.Lock()
+		cur, ok := pm.procs[name]
+		mine := ok && cur == cmd
+		if mine {
+			delete(pm.procs, name)
+		}
+		pm.mu.Unlock()
+		if mine {
+			afterExit(name)
+		}
+		return nil
+	}
+	// A child re-adopted after a daemon restart has no *exec.Cmd; kill it by
+	// its process-group leader PID instead.
+	_ = killAdoptedProcess(adoptedPID)
+	if !pm.waitGone(adoptedPID) {
+		_ = killAdoptedProcessForce(adoptedPID)
+		pm.waitGone(adoptedPID)
+	}
+	pm.mu.Lock()
+	cur, ok := pm.adopted[name]
+	mine := ok && cur == adoptedPID
+	if mine {
+		delete(pm.adopted, name)
+	}
+	pm.mu.Unlock()
+	if mine {
+		afterExit(name)
+	}
+	return nil
 }
 
-// waitGone polls until pid has exited or the grace period lapses. Polling,
-// not cmd.Wait: the Wait goroutine owns that call, and an adopted child has
-// no Cmd at all. 20ms steps keep a prompt exit prompt.
+// waitGone polls until the process tree led by pid has exited or the grace
+// period lapses. The whole tree, not the leader: see treeAlive. Polling, not
+// cmd.Wait: the Wait goroutine owns that call, and an adopted child has no
+// Cmd at all. 20ms steps keep a prompt exit prompt.
 func (pm *ProcessManager) waitGone(pid int) bool {
 	deadline := time.Now().Add(pm.stopGrace)
 	for time.Now().Before(deadline) {
-		if !processAlive(pid) {
+		if !treeAlive(pid) {
 			return true
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return !processAlive(pid)
+	return !treeAlive(pid)
 }
 
 // rotateLog moves path to path.1 (replacing any previous rotation) once it

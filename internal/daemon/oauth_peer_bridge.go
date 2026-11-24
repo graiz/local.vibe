@@ -97,6 +97,18 @@ func (s *Server) peerOAuthBridges() map[int]peerOAuthBridge {
 	return out
 }
 
+// oauthBridgePortsHeld reports which bridge ports currently have a bound
+// listener on this machine.
+func (s *Server) oauthBridgePortsHeld() map[int]bool {
+	s.oauthBridgeMu.Lock()
+	defer s.oauthBridgeMu.Unlock()
+	held := make(map[int]bool, len(s.oauthBridgeServers))
+	for port := range s.oauthBridgeServers {
+		held[port] = true
+	}
+	return held
+}
+
 // peerBridgeYieldedLocked reports whether port was recently handed back to a
 // local route. Caller holds oauthBridgeMu.
 func (s *Server) peerBridgeYieldedLocked(port int) bool {

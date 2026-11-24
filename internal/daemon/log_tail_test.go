@@ -71,13 +71,13 @@ func TestTailLogFileDropsDecorationOnlyLines(t *testing.T) {
 // punctuation — only lines with no letters or digits at all are noise.
 func TestTailLogFileKeepsLinesWithContent(t *testing.T) {
 	p := writeLog(t,
-		"  |   iMacNano   |",
+		"  |   DevBox   |",
 		"---> build finished in 1.2s",
 	)
 
 	got := tailLogFile(p, 12)
 
-	for _, want := range []string{"iMacNano", "build finished in 1.2s"} {
+	for _, want := range []string{"DevBox", "build finished in 1.2s"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("dropped a line with real content (%q); got %q", want, got)
 		}

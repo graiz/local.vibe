@@ -32,7 +32,7 @@ var noRedirectClient = &http.Client{
 }
 
 func seedPeerRoutes(s *Server, routes ...peer.RouteSummary) peer.Peer {
-	p := peer.Peer{Name: "imacnano", Host: "127.0.0.1", Port: 7444, Fingerprint: "fp-imacnano", AddedAt: time.Now()}
+	p := peer.Peer{Name: "peerbox", Host: "127.0.0.1", Port: 7444, Fingerprint: "fp-peerbox", AddedAt: time.Now()}
 	s.peerList = append(s.peerList, p)
 	s.peerStates[p.Name] = &peerState{lastOK: time.Now(), routes: routes}
 	return p
@@ -49,12 +49,12 @@ func TestPeerOAuthBridgeEndToEnd(t *testing.T) {
 	pairAB(t, a, b)
 
 	cbPort := freeLoopbackPort(t)
-	route := &Route{Name: "screener", Type: RouteSticky, Port: 1, OAuthCallbackPort: cbPort, RegisteredAt: time.Now()}
+	route := &Route{Name: "billing", Type: RouteSticky, Port: 1, OAuthCallbackPort: cbPort, RegisteredAt: time.Now()}
 	b.table.Add(route) // no reconcile on b: both daemons share this host's loopback
 	t.Cleanup(a.stopOAuthBridgeListeners)
 
 	a.refreshAllPeers(true)
-	_, sum, ok := a.findPeerRoute("screener")
+	_, sum, ok := a.findPeerRoute("billing")
 	if !ok || sum.OAuthCallbackPort != cbPort {
 		t.Fatalf("summary did not carry oauth_callback_port: ok=%v sum=%+v", ok, sum)
 	}
@@ -69,7 +69,7 @@ func TestPeerOAuthBridgeEndToEnd(t *testing.T) {
 		t.Fatalf("bridge must render a confirmation page, got %d Location=%q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	peerName := a.peerList[0].Name
-	if !containsAll(body, "screener", peerName, `href="http://screener.vibe/auth/google/callback?state=%252F&amp;code=abc"`) {
+	if !containsAll(body, "billing", peerName, `href="http://billing.vibe/auth/google/callback?state=%252F&amp;code=abc"`) {
 		t.Fatalf("confirmation page missing route/peer/target:\n%s", body)
 	}
 	if resp.Header.Get("X-Frame-Options") != "DENY" || resp.Header.Get("Cache-Control") != "no-store" {
@@ -118,14 +118,14 @@ func peerBridgeRequest(t *testing.T, s *Server, port int, method, target string,
 func TestPeerOAuthBridgeWorktreeState(t *testing.T) {
 	s := newBareServer(t)
 	seedPeerRoutes(s,
-		peer.RouteSummary{Name: "screener", Type: "managed", OAuthCallbackPort: 8787},
-		peer.RouteSummary{Name: "wt.screener", Type: "managed"},
+		peer.RouteSummary{Name: "billing", Type: "managed", OAuthCallbackPort: 8787},
+		peer.RouteSummary{Name: "wt.billing", Type: "managed"},
 		peer.RouteSummary{Name: "other", Type: "managed"},
 	)
 
-	tagged := url.QueryEscape(wrapOAuthState("wt.screener", "orig"))
+	tagged := url.QueryEscape(wrapOAuthState("wt.billing", "orig"))
 	body := peerBridgeRequest(t, s, 8787, "GET", "http://localhost:8787/cb?code=c&state="+tagged, nil).Body.String()
-	if !strings.Contains(body, `href="http://wt.screener.vibe/cb?code=c&amp;state=orig"`) {
+	if !strings.Contains(body, `href="http://wt.billing.vibe/cb?code=c&amp;state=orig"`) {
 		t.Fatalf("worktree tag not unwrapped to its origin:\n%s", body)
 	}
 
@@ -133,7 +133,7 @@ func TestPeerOAuthBridgeWorktreeState(t *testing.T) {
 	// left alone: the callback still goes to the owner, state untouched.
 	evil := url.QueryEscape(wrapOAuthState("other", "orig"))
 	body = peerBridgeRequest(t, s, 8787, "GET", "http://localhost:8787/cb?state="+evil, nil).Body.String()
-	if !strings.Contains(body, `href="http://screener.vibe/cb?state=`+evil+`"`) {
+	if !strings.Contains(body, `href="http://billing.vibe/cb?state=`+evil+`"`) {
 		t.Fatalf("foreign tag must not redirect elsewhere:\n%s", body)
 	}
 }
@@ -142,10 +142,10 @@ func TestPeerOAuthBridgeWorktreeState(t *testing.T) {
 // replays the fields in a form the user submits.
 func TestPeerOAuthBridgeFormPost(t *testing.T) {
 	s := newBareServer(t)
-	seedPeerRoutes(s, peer.RouteSummary{Name: "screener", Type: "managed", OAuthCallbackPort: 8787})
+	seedPeerRoutes(s, peer.RouteSummary{Name: "billing", Type: "managed", OAuthCallbackPort: 8787})
 	rec := peerBridgeRequest(t, s, 8787, "POST", "http://localhost:8787/cb", url.Values{"code": {"c<1>"}, "state": {"s"}})
 	body := rec.Body.String()
-	if !containsAll(body, `method="post"`, `action="http://screener.vibe/cb"`, `name="code" value="c&lt;1&gt;"`, `name="state" value="s"`) {
+	if !containsAll(body, `method="post"`, `action="http://billing.vibe/cb"`, `name="code" value="c&lt;1&gt;"`, `name="state" value="s"`) {
 		t.Fatalf("form_post replay form wrong:\n%s", body)
 	}
 }
@@ -153,7 +153,7 @@ func TestPeerOAuthBridgeFormPost(t *testing.T) {
 func TestPeerOAuthBridgesLocalWins(t *testing.T) {
 	s := newBareServer(t)
 	seedPeerRoutes(s,
-		peer.RouteSummary{Name: "screener", OAuthCallbackPort: 8787},
+		peer.RouteSummary{Name: "billing", OAuthCallbackPort: 8787},
 		peer.RouteSummary{Name: "shadowed", OAuthCallbackPort: 8788},
 		peer.RouteSummary{Name: "clash", OAuthCallbackPort: 3005},
 	)
@@ -164,7 +164,7 @@ func TestPeerOAuthBridgesLocalWins(t *testing.T) {
 	s.table.Add(&Route{Name: "local", Type: RouteSticky, Port: 4101, ReservePorts: map[string]int{"api": 3005}, RegisteredAt: time.Now()})
 
 	got := s.peerOAuthBridges()
-	if b, ok := got[8787]; !ok || b.route != "screener" || b.peer.Name != "imacnano" {
+	if b, ok := got[8787]; !ok || b.route != "billing" || b.peer.Name != "peerbox" {
 		t.Fatalf("first-paired peer must win port ties: %+v", got)
 	}
 	if _, ok := got[8788]; ok {
@@ -185,7 +185,7 @@ func TestPeerOAuthBridgesLocalWins(t *testing.T) {
 func TestPeerOAuthBridgeYieldsToLocalRoute(t *testing.T) {
 	s := newBareServer(t)
 	port := freeLoopbackPort(t)
-	seedPeerRoutes(s, peer.RouteSummary{Name: "screener", OAuthCallbackPort: port})
+	seedPeerRoutes(s, peer.RouteSummary{Name: "billing", OAuthCallbackPort: port})
 	t.Cleanup(s.stopOAuthBridgeListeners)
 	if err := s.reconcileOAuthBridgeListeners(); err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func TestPeerServeRouteRewritesBridgeHostRedirect(t *testing.T) {
 	b := newBareServer(t)
 	a := newBareServer(t)
 	pairAB(t, a, b)
-	route := &Route{Name: "screener", Type: RouteSticky, Port: portOf(t, backend.URL), OAuthCallbackPort: 8787, RegisteredAt: time.Now()}
+	route := &Route{Name: "billing", Type: RouteSticky, Port: portOf(t, backend.URL), OAuthCallbackPort: 8787, RegisteredAt: time.Now()}
 	route.Running.Store(true)
 	route.Ready.Store(true)
 	b.table.Add(route)
@@ -233,13 +233,31 @@ func TestPeerServeRouteRewritesBridgeHostRedirect(t *testing.T) {
 	c := peerHTTPClient(mustClientIdentity(t, a), b.peerFP)
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	req, _ := http.NewRequest("GET", "https://"+b.peerLn.Addr().String()+"/auth/done", nil)
-	req.Host = "screener.vibe"
+	req.Host = "billing.vibe"
 	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if loc := resp.Header.Get("Location"); loc != "http://screener.vibe/dashboard" {
+	if loc := resp.Header.Get("Location"); loc != "http://billing.vibe/dashboard" {
 		t.Fatalf("relay did not rewrite bridge-host redirect: %q", loc)
+	}
+}
+
+// `vibe peers` must say which localhost ports this machine holds for a peer:
+// it's the only place a local server that hits EADDRINUSE on one can learn why.
+func TestPeersListReportsOAuthBridges(t *testing.T) {
+	s := newBareServer(t)
+	port := freeLoopbackPort(t)
+	seedPeerRoutes(s, peer.RouteSummary{Name: "billing", OAuthCallbackPort: port})
+	t.Cleanup(s.stopOAuthBridgeListeners)
+	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.handlePeersList(rec, httptest.NewRequest("GET", "/_api/peers", nil))
+	want := fmt.Sprintf(`"oauth_bridges":[{"port":%d,"route":"billing","bound":true}]`, port)
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("peers list missing %s:\n%s", want, rec.Body.String())
 	}
 }

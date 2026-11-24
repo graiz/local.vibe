@@ -96,7 +96,7 @@ type Server struct {
 	peerList          []peer.Peer
 	peerInviteCode    string
 	peerInviteExpires time.Time
-	peerPairFailures  int // rejected proofs against the current invite
+	peerPairAttempts  int // proof checks reserved against the current invite (peerPairReserve)
 	peerSrv           *http.Server
 	peerLn            net.Listener
 	peerStates        map[string]*peerState
@@ -807,6 +807,15 @@ func findFreePort(table *RouteTable) (int, error) {
 			continue
 		}
 		l.Close()
+		// The bind probe alone is not enough: Go sets SO_REUSEADDR, and on
+		// macOS a 127.0.0.1 bind then succeeds beside a server on :N, [::]:N,
+		// [::1]:N (Vite) or 0.0.0.0:N. Handing such a port out was worse than
+		// a crash — the start preflight then SIGTERMed the server holding it.
+		// A port that answers on either loopback address is taken.
+		if conn, err := netprobe.DialLoopback(port, 150*time.Millisecond); err == nil {
+			conn.Close()
+			continue
+		}
 		return port, nil
 	}
 	// Fallback: let the OS pick.

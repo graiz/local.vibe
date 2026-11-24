@@ -50,12 +50,25 @@ func updateConfigJSON(cfgPath string, mutate func(daemon map[string]any)) error 
 
 // tlsConfigFor is the daemon.tls object setup enables, pointing at the certs
 // dir under home.
-func tlsConfigFor(home string) map[string]any {
-	return map[string]any{
-		"enabled":   true,
-		"port":      config.DefaultTLSPort,
-		"certs_dir": filepath.Join(home, ".vibe", "certs"),
+func tlsConfigFor(home string, existing any) map[string]any {
+	// Merge onto what's there rather than replacing it. The pf/portproxy
+	// step forwards 443 to the *configured* TLS port (configuredDaemonPortsIn);
+	// resetting it to the default here on a re-run would leave 443 forwarding
+	// to a port the daemon no longer listens on — every https://*.vibe dead.
+	tls := map[string]any{}
+	if m, ok := existing.(map[string]any); ok {
+		for k, v := range m {
+			tls[k] = v
+		}
 	}
+	tls["enabled"] = true
+	if p, ok := tls["port"].(float64); !ok || p <= 0 {
+		tls["port"] = config.DefaultTLSPort
+	}
+	if d, ok := tls["certs_dir"].(string); !ok || d == "" {
+		tls["certs_dir"] = filepath.Join(home, ".vibe", "certs")
+	}
+	return tls
 }
 
 // generateCertsIn creates the local CA and an initial leaf for local.vibe

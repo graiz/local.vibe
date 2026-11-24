@@ -239,3 +239,7 @@ func jobPIDsForRoute(name string) ([]int, error) {
 	}
 	return pids, nil
 }
+
+// treeAlive: TerminateJobObject kills every job member at once, so the
+// leader's exit is the tree's exit.
+func treeAlive(pid int) bool { return processAlive(pid) }

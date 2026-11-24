@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -440,7 +441,7 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	// Reject state-changing calls from a foreign page. Checked here — after
 	// the passthrough above — so a proxied app's own /_api/ endpoints keep
 	// working cross-origin; only vibe's own API is guarded. See origin.go.
-	if apiStateChanging(r.Method, path) {
+	if apiStateChanging(r.Method) {
 		if s.apiRequestCrossSite(r) {
 			writeJSONError(w, http.StatusForbidden,
 				"cross-site request blocked: the vibe API only accepts state-changing requests from the dashboard, a route's own page, or a local client like the vibe CLI")
@@ -843,6 +844,19 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// The origin gate lets a route's own page reach this endpoint for its own
+	// route — for exactly one purpose: the start page's edit_cmd recovery. That
+	// origin is also every third-party script the app loads, and cmd runs
+	// through a login shell on the next start, so an open PUT here would be
+	// the drive-by RCE the gate exists to stop. Accept only the cmd the
+	// daemon itself suggested for the route's current failure, and nothing
+	// else (no port/url/oauth/rename edits either).
+	if _, fromRoute := s.originRouteName(r.Header.Get("Origin")); fromRoute {
+		if msg := routeOriginEditRefusal(route, req); msg != "" {
+			writeJSONError(w, http.StatusForbidden, msg)
+			return
+		}
+	}
 	if req.Name != "" {
 		req.Name = strings.ToLower(req.Name)
 	}
@@ -989,6 +1003,26 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
 
+// routeOriginEditRefusal reports why a PUT from a route's own origin is
+// refused, or "" when it is the one edit such an origin may make: setting cmd
+// to the SuggestedCmd of the route's current edit_cmd recovery hint. The
+// suggestion is derived by the daemon from the route's existing cmd (e.g.
+// python → python3), never from request or log content, so accepting it
+// grants a page nothing it could choose.
+func routeOriginEditRefusal(route *Route, req registerRequest) string {
+	const msg = "a route's own page may only apply the command fix vibe suggested for it; edit routes from the dashboard or the vibe CLI"
+	rest := req
+	rest.Cmd = ""
+	if req.Cmd == "" || !reflect.DeepEqual(rest, registerRequest{}) {
+		return msg
+	}
+	f := route.LoadFailure()
+	if f == nil || f.Recovery == nil || f.Recovery.Action != "edit_cmd" || f.Recovery.SuggestedCmd != req.Cmd {
+		return msg
+	}
+	return ""
+}
+
 // handleAdoptWorktree registers a discovered on-disk worktree of a managed
 // app as a worktree route (inheriting the app's cmd) and starts it. The path
 // must be one the daemon itself discovers via git — arbitrary directories
@@ -1065,7 +1099,9 @@ func (s *Server) handleAdoptWorktree(w http.ResponseWriter, r *http.Request, nam
 	}
 	if err := s.startManagedNow(route); err != nil {
 		s.table.Remove(route.Name)
-		writeJSONError(w, http.StatusConflict, err.Error())
+		// Same structured shape as every other engine caller, so the picker
+		// gets the log tail and recovery hint, not a bare string.
+		err.(*startFailure).write(w, route)
 		return
 	}
 	_ = s.saveStickyRoutes()
@@ -1094,6 +1130,13 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 
+	// Config first: a start that will fail on vibe.json or a missing cmd must
+	// not run the destructive recovery below on its way to failing.
+	if err := s.prepareManagedStart(route, true); err != nil {
+		err.(*startFailure).write(w, route)
+		return
+	}
+
 	// Optional: the dashboard may send a recovery action with the retry, e.g.
 	// {"kill_pid": 23674} after a log-scan hint told the user a previous Next
 	// dev server is holding things up. Kill it before starting the new process.
@@ -1105,6 +1148,20 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		_ = json.NewDecoder(r.Body).Decode(&rec)
 	}
 	if rec.KillPID > 0 {
+		// From the route's own origin — which is also every third-party
+		// script its app loads — kill_pid may only name the PID the start
+		// page is offering to kill: the one in this route's current
+		// kill_pid recovery hint. Otherwise any page on the route could
+		// SIGTERM any of the user's processes (editor, browser, ssh-agent).
+		// The dashboard and the CLI (no route Origin) are unrestricted, as
+		// before; safeKillPID's own guards still apply to everyone.
+		if _, fromRoute := s.originRouteName(r.Header.Get("Origin")); fromRoute {
+			f := route.LoadFailure()
+			if f == nil || f.Recovery == nil || f.Recovery.Action != "kill_pid" || f.Recovery.PID != rec.KillPID {
+				writeJSONError(w, http.StatusForbidden, fmt.Sprintf("a route's own page may only kill the process vibe offered to kill for it, not PID %d", rec.KillPID))
+				return
+			}
+		}
 		if err := s.safeKillPID(rec.KillPID); err != nil {
 			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("could not kill PID %d: %s", rec.KillPID, err))
 			return
@@ -1122,12 +1179,12 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		time.Sleep(300 * time.Millisecond)
 	}
 
-	// The engine re-reads vibe.json (edits to cmd / oauth_callback_port /
-	// reserve_ports take effect without re-registering), assigns a port if
-	// none, checks collisions, preflights, spawns, and persists the PID so a
+	// vibe.json was re-read above (edits to cmd / oauth_callback_port /
+	// reserve_ports take effect without re-registering); the engine assigns
+	// a port if none, checks collisions, preflights, spawns, and persists the PID so a
 	// daemon restart can re-adopt the child. Any failure is recorded on the
 	// route so a start-page reload rehydrates the kill-and-retry button.
-	if err := s.startManaged(route, true); err != nil {
+	if err := s.startManaged(route, false); err != nil { // synced above
 		err.(*startFailure).write(w, route)
 		return
 	}
@@ -1161,8 +1218,21 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
-	if route.Type == RouteManaged {
+	switch {
+	case route.Type == RouteManaged:
 		s.stopManaged(route)
+	case route.Type == RouteBookmark || route.Port <= 0:
+		// Nothing local to stop — say so rather than print "stopped".
+		writeJSONError(w, http.StatusBadRequest, "only routes with a local port can be stopped")
+		return
+	default:
+		// Sticky / pid / ttl: vibe didn't spawn the server, so stopping means
+		// what it always meant — terminate whatever listens on the route's
+		// own registered port (killPort still refuses the daemon and managed
+		// children). Without this, `vibe stop <sticky>` reported success and
+		// left the server running.
+		s.killPort(route.Port)
+		route.Ready.Store(false)
 	}
 
 	// If request came from browser form, redirect back to dashboard.

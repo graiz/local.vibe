@@ -3,11 +3,11 @@ package daemon
 import (
 	"crypto/tls"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
+
+	"github.com/graiz/local.vibe/internal/netprobe"
 )
 
 // Some local apps serve HTTPS, not HTTP, on their port — typically with a
@@ -30,18 +30,15 @@ const upstreamTLSProbeTimeout = 500 * time.Millisecond
 // TLS handshake. Certificates aren't verified: this asks which protocol the
 // port speaks, not whom to trust.
 func probeUpstreamTLS(port int) bool {
-	for _, host := range []string{"127.0.0.1", "::1"} {
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 300*time.Millisecond)
-		if err != nil {
-			continue
-		}
-		_ = conn.SetDeadline(time.Now().Add(upstreamTLSProbeTimeout))
-		tc := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: "localhost"}) //nolint:gosec // protocol probe only
-		err = tc.Handshake()
-		tc.Close()
-		return err == nil
+	conn, err := netprobe.DialLoopback(port, 300*time.Millisecond)
+	if err != nil {
+		return false
 	}
-	return false
+	_ = conn.SetDeadline(time.Now().Add(upstreamTLSProbeTimeout))
+	tc := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: "localhost"}) //nolint:gosec // protocol probe only
+	err = tc.Handshake()
+	tc.Close()
+	return err == nil
 }
 
 // upstreamTLSKey identifies what a cached probe result was measured against:
