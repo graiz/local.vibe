@@ -4,6 +4,7 @@
 <head>
 {{.Head}}
 <style>{{.CSS}}</style>
+<script>{{.JS}}</script>
 </head>
 <body class="page-centered">
 <div class="card">
@@ -28,7 +29,6 @@
   <div class="error" id="error" style="display:none"></div>
 </div>
 <script>
-var attempts=0;
 var maxAttempts=30;
 
 function showActions(html){
@@ -62,50 +62,38 @@ function restartApp(){
   document.getElementById('msg').textContent='Restarting\u2026';
   document.getElementById('error').style.display='none';
   document.getElementById('actions').style.display='none';
-  var xhr=new XMLHttpRequest();
-  xhr.open('POST','/_api/routes/{{.Name}}/start');
-  xhr.setRequestHeader('Accept','application/json');
-  xhr.onload=function(){
-    if(xhr.status===200){
-      attempts=0;
-      setTimeout(pollRepair,500);
-    }else{
-      var err='Failed to start';
-      try{var d=JSON.parse(xhr.responseText);if(d&&d.error)err=d.error;}catch(e){}
-      giveUp(err, true);
-    }
-  };
-  xhr.onerror=function(){giveUp('Could not reach daemon', true);};
-  xhr.send();
+  vibeAPI('POST','/_api/routes/{{.Name}}/start',{},function(status,d){
+    if(status===200){setTimeout(pollRepair,500);return;}
+    if(status===0){giveUp('Could not reach daemon', true);return;}
+    giveUp((d&&d.error)||'Failed to start', true);
+  });
 }
 
 function pollRepair(){
-  if(attempts>=maxAttempts){
+  vibePoll(function(next){
+    vibeAPI('POST','/_api/routes/{{.Name}}/repair',{timeout:2500},function(status,d){
+      if(d&&d.ok){
+        document.getElementById('msg').textContent='Found it \u2014 reloading';
+        document.getElementById('msg').style.color='var(--green)';
+        reloadSoon(250);
+        return;
+      }
+      if(d&&d.restartable&&d.failure){
+        // The child died with a recorded failure. A reload lands on the start
+        // page (recovery skips auto-spawn while a failure is set), which shows
+        // the tailed log and recovery hint instead of a bare "no port" error.
+        reloadSoon();
+        return;
+      }
+      if(d&&d.restartable){
+        giveUp(d.reason||'Process is not running.', true);
+        return;
+      }
+      next();
+    });
+  },500,maxAttempts,function(){
     giveUp('Still no listener after '+Math.round(maxAttempts*0.5)+'s. The app may have crashed.', false);
-    return;
-  }
-  attempts++;
-  var xhr=new XMLHttpRequest();
-  xhr.open('GET','/_api/routes/{{.Name}}/repair');
-  xhr.timeout=2500;
-  xhr.onload=function(){
-    var d=null;
-    try{d=JSON.parse(xhr.responseText);}catch(e){}
-    if(d&&d.ok){
-      document.getElementById('msg').textContent='Found it \u2014 reloading';
-      document.getElementById('msg').style.color='var(--green)';
-      setTimeout(function(){window.location.href=window.location.href;},250);
-      return;
-    }
-    if(d&&d.restartable){
-      giveUp(d.reason||'Process is not running.', true);
-      return;
-    }
-    setTimeout(pollRepair,500);
-  };
-  xhr.onerror=function(){setTimeout(pollRepair,500);};
-  xhr.ontimeout=function(){setTimeout(pollRepair,500);};
-  xhr.send();
+  });
 }
 
 pollRepair();

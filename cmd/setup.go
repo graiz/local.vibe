@@ -3,7 +3,6 @@ package cmd
 import (
 	"bufio"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -58,7 +57,7 @@ func runSteps(steps []setupStep) error {
 // without /dev/tty, falls back to stdin and defaults to yes when not
 // interactive (CI, pipes).
 func promptYN(question string) bool {
-	tty, err := openControllingTTY()
+	tty, err := openTTYPlatform()
 	if err != nil {
 		fmt.Printf("\n%s — defaulting to yes\n", question)
 		return true
@@ -72,10 +71,4 @@ func promptYN(question string) bool {
 	}
 	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
 	return answer == "" || answer == "y" || answer == "yes"
-}
-
-// openControllingTTY is per-OS: /dev/tty on unix, stdin fallback on Windows.
-// Returns an io.Closer so the caller can defer Close().
-func openControllingTTY() (*os.File, error) {
-	return openTTYPlatform()
 }

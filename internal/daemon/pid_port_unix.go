@@ -16,22 +16,34 @@ func pidGroupHoldsPort(pid, port int) bool {
 	if pid <= 0 || port <= 0 {
 		return false
 	}
-	pgid, err := syscall.Getpgid(pid)
-	if err != nil {
+	group := groupPIDs(pid)
+	if len(group) == 0 {
 		return false
-	}
-	group, err := pidsInGroup(pgid)
-	if err != nil || len(group) == 0 {
-		return false
-	}
-	inGroup := make(map[int]bool, len(group))
-	for _, p := range group {
-		inGroup[p] = true
 	}
 	for _, lp := range pidsListeningOnPort(port) {
-		if inGroup[lp] {
+		if group[lp] {
 			return true
 		}
 	}
 	return false
+}
+
+// groupPIDs returns the members of leader's process group as a set, or an
+// empty set when the group can't be read. Shared by every ownership check
+// (adoption, stranger detection, the load-time prune) so they can't disagree
+// about what "ours" means.
+func groupPIDs(leader int) map[int]bool {
+	pgid, err := syscall.Getpgid(leader)
+	if err != nil {
+		return nil
+	}
+	group, err := pidsInGroup(pgid)
+	if err != nil {
+		return nil
+	}
+	set := make(map[int]bool, len(group))
+	for _, p := range group {
+		set[p] = true
+	}
+	return set
 }

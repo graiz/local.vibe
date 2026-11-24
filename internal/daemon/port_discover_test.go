@@ -203,7 +203,7 @@ func TestHandleRepairUpdatesPort(t *testing.T) {
 		t.Fatalf("write log: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", "/_api/routes/"+name+"/repair", nil)
+	req := httptest.NewRequest("POST", "/_api/routes/"+name+"/repair", nil)
 	w := httptest.NewRecorder()
 	s.apiHandler(w, req)
 
@@ -258,7 +258,7 @@ func TestHandleRepairAlreadyReachable(t *testing.T) {
 	route := &Route{Name: "live", Port: port, Type: RouteSticky}
 	s.table.Add(route)
 
-	req := httptest.NewRequest("GET", "/_api/routes/live/repair", nil)
+	req := httptest.NewRequest("POST", "/_api/routes/live/repair", nil)
 	w := httptest.NewRecorder()
 	s.apiHandler(w, req)
 
@@ -308,7 +308,7 @@ func TestHandleRepairRefusesToAdoptPortOwnedByAnotherRoute(t *testing.T) {
 		t.Fatalf("write log: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", "/_api/routes/lp/repair", nil)
+	req := httptest.NewRequest("POST", "/_api/routes/lp/repair", nil)
 	w := httptest.NewRecorder()
 	s.apiHandler(w, req)
 
@@ -346,7 +346,7 @@ func TestHandleRepairNoCandidate(t *testing.T) {
 	route := &Route{Name: "dead", Port: 9, Type: RouteManaged, Cmd: "echo hi"}
 	s.table.Add(route)
 
-	req := httptest.NewRequest("GET", "/_api/routes/dead/repair", nil)
+	req := httptest.NewRequest("POST", "/_api/routes/dead/repair", nil)
 	w := httptest.NewRecorder()
 	s.apiHandler(w, req)
 
@@ -360,6 +360,48 @@ func TestHandleRepairNoCandidate(t *testing.T) {
 	}
 	if resp["restartable"] != true {
 		t.Errorf("restartable = %v; want true for managed route without a live child", resp["restartable"])
+	}
+}
+
+// TestHandleRepairIncludesFailure: a child that died after Start's startup
+// window has its failure recorded by handleManagedExit. The starting page polls
+// /repair only, so the failure must ride along with restartable — otherwise the
+// recovery hint (e.g. the quarantine xattr fix) is never shown.
+func TestHandleRepairIncludesFailure(t *testing.T) {
+	tmp := t.TempDir()
+	s := NewServer(&config.Config{Daemon: config.DaemonConfig{Port: 0, TLD: "test"}})
+	s.ConfigDir = tmp
+
+	route := &Route{Name: "dead", Port: 9, Type: RouteManaged, Cmd: "bunx concurrently"}
+	route.SetFailure(&Failure{
+		Message:  "process exited after becoming ready",
+		Recovery: &Recovery{Action: "info", Message: "macOS is blocking execution"},
+	})
+	s.table.Add(route)
+
+	req := httptest.NewRequest("POST", "/_api/routes/dead/repair", nil)
+	req.Host = "dead.test" // the starting page polls from the route's own host
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["restartable"] != true {
+		t.Fatalf("restartable = %v; want true; body: %s", resp["restartable"], w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "macOS is blocking execution") {
+		t.Errorf("repair response omits the recorded failure; body: %s", w.Body.String())
+	}
+
+	// No recorded failure → no failure key, so the page keeps its old
+	// "Restart app" affordance rather than reload-looping.
+	route.SetFailure(nil)
+	w = httptest.NewRecorder()
+	s.apiHandler(w, httptest.NewRequest("POST", "/_api/routes/dead/repair", nil))
+	resp = nil
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if _, has := resp["failure"]; has {
+		t.Errorf("failure present without a recorded failure; body: %s", w.Body.String())
 	}
 }
 

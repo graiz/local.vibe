@@ -24,6 +24,12 @@ import (
 
 const peerInviteTTL = 5 * time.Minute
 
+// peerPairMaxAttempts closes an invite after this many failed proofs. The
+// code is six digits; with the window open for five minutes and no cap, a LAN
+// client at ~1k requests/s had a real chance of guessing it and getting its
+// certificate pinned as a peer.
+const peerPairMaxAttempts = 5
+
 type pairRequest struct {
 	Name  string `json:"name"`
 	Host  string `json:"host"`
@@ -57,8 +63,21 @@ func (s *Server) openPeerInvite() (string, time.Time, error) {
 	s.peerMu.Lock()
 	s.peerInviteCode = code
 	s.peerInviteExpires = expires
+	s.peerPairFailures = 0
 	s.peerMu.Unlock()
 	return code, expires, nil
+}
+
+// peerPairFailed records a rejected proof and closes the invite once the cap
+// is reached. The caller still answers the generic 403.
+func (s *Server) peerPairFailed() {
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	s.peerPairFailures++
+	if s.peerPairFailures >= peerPairMaxAttempts && s.peerInviteCode != "" {
+		s.peerInviteCode = ""
+		fmt.Fprintf(os.Stderr, "vibe: peer invite closed after %d failed pairing attempts — run `vibe peer invite` again\n", s.peerPairFailures)
+	}
 }
 
 // handlePeerPair answers a pairing request on the LAN listener. Every
@@ -80,11 +99,13 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 	}
 
 	var req pairRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, apiMaxBodyBytes)).Decode(&req); err != nil {
+		s.peerPairFailed()
 		deny()
 		return
 	}
 	if !peer.VerifyProof(req.Proof, code, clientFP, localFP) {
+		s.peerPairFailed()
 		deny()
 		return
 	}
@@ -193,7 +214,7 @@ func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, er
 		peerPort = port
 	}
 	newPeer := peer.Peer{
-		Name:        pr.Name,
+		Name:        peer.SanitizeName(pr.Name), // the responder's claim is data, not a key
 		Host:        host,
 		Port:        peerPort,
 		Fingerprint: serverFP,

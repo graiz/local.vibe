@@ -1,0 +1,13 @@
+{{- /* message.html.tmpl — a themed one-paragraph status page (peer routes:
+       starting / not running / unreachable). Auto-escaped; no buttons —
+       these pages are shown to viewers who cannot operate this daemon. */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+{{.Head}}
+{{if .RefreshSeconds}}<meta http-equiv="refresh" content="{{.RefreshSeconds}}">{{end}}
+<style>{{.CSS}}</style>
+</head>
+<body><div class="wrap"><h1>{{.Heading}}</h1>
+{{range .Lines}}<p>{{.}}</p>
+{{end}}</div></body></html>

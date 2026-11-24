@@ -41,7 +41,14 @@ func (s *Server) watchTrackedPID(name string, pid int) {
 		s.table.Remove(name)
 		return
 	}
+	if prev, loaded := s.pidWatchers.LoadOrStore(name, pid); loaded {
+		if prev.(int) == pid {
+			return // already watched; a second watcher would leak an fd
+		}
+		s.pidWatchers.Store(name, pid)
+	}
 	go watchPIDExit(pid, func() {
+		s.pidWatchers.CompareAndDelete(name, pid)
 		if r, ok := s.table.Get(name); ok {
 			if cur, has := r.PIDValue(); has && cur == pid {
 				s.table.Remove(name)

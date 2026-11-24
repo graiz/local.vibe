@@ -15,7 +15,7 @@ func TestManagedStoppedRouteDoesNotProxyForeignListener(t *testing.T) {
 	}))
 	defer foreign.Close()
 
-	s := testServer()
+	s := testServer(t)
 	port := testPortFromURL(t, foreign.URL)
 	route := &Route{
 		Name:         "lp",
@@ -51,7 +51,7 @@ func TestManagedRunningRouteStillProxies(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	port := testPortFromURL(t, upstream.URL)
 	route := &Route{
 		Name:         "app",

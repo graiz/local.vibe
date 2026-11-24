@@ -14,8 +14,7 @@ import (
 // load when the route already has a known-bad signal — so users see the
 // "Kill PID X and retry" affordance without having to click Start first.
 type startPageData struct {
-	Head         template.HTML
-	CSS          template.CSS
+	pageShell
 	Name         string
 	TLD          string
 	Cmd          string
@@ -45,7 +44,6 @@ type startPageWorktree struct {
 // accepts connections.
 func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *Route) {
 	tld := s.cfg.Daemon.TLD
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	// The start page doubles as the worktree picker: when the app itself is
 	// stopped, its running worktrees are one click away. List() is
@@ -55,7 +53,7 @@ func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *R
 		if rt.Parent == route.Name {
 			worktrees = append(worktrees, startPageWorktree{
 				Name:       strings.TrimSuffix(rt.Name, "."+route.Name),
-				URL:        fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), rt.Name, tld),
+				URL:        s.routeURL(rt.Name) + "/",
 				Running:    rt.Running.Load(),
 				Registered: true,
 			})
@@ -71,8 +69,6 @@ func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *R
 	}
 
 	data := startPageData{
-		Head:         template.HTML(themeHead(route.Name + "." + tld)),
-		CSS:          template.CSS(themeCSS),
 		Name:         route.Name,
 		TLD:          tld,
 		Cmd:          route.Cmd,
@@ -81,9 +77,7 @@ func (s *Server) serveStartPage(w http.ResponseWriter, _ *http.Request, route *R
 		AutoLaunch:   len(worktrees) == 0,
 	}
 
-	if err := tmplStartPage.Execute(w, data); err != nil {
-		fmt.Fprintf(w, "\n<!-- template error: %v -->\n", err)
-	}
+	renderPage(w, http.StatusOK, tmplStartPage, s.routeHost(route.Name), &data)
 }
 
 // startPageRecoveryInitJS returns JavaScript that calls showRecovery(...) on

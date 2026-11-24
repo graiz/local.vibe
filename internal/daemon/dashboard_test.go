@@ -38,7 +38,7 @@ func TestDashboardRedirectBanner(t *testing.T) {
 func TestDashboardShowsPeerRoutesReadOnly(t *testing.T) {
 	s := newBareServer(t)
 	s.peerList = []peer.Peer{{Name: "imac", Host: "127.0.0.1", Port: 7444, Fingerprint: "aa", AddedAt: time.Now()}}
-	s.peerStates["imac"] = &peerState{routes: []peer.RouteSummary{
+	s.peerStates["imac"] = &peerState{lastOK: time.Now(), routes: []peer.RouteSummary{
 		{Name: "face", Type: "managed", Running: true, Ready: true},
 		{Name: "clash", Type: "sticky", Running: true, Ready: true},
 	}}
@@ -70,5 +70,85 @@ func TestDashboardShowsPeerRoutesReadOnly(t *testing.T) {
 	// No start/stop controls target peer routes.
 	if strings.Contains(body, `routeAction(this,'face'`) {
 		t.Fatal("peer route has a start/stop control")
+	}
+}
+
+// peerRowStatuses renders the dashboard and returns each peer list row's
+// status word, keyed by route name.
+func peerRowStatuses(t *testing.T, s *Server) (string, map[string]string) {
+	t.Helper()
+	req := httptest.NewRequest("GET", "http://local.vibe/", nil)
+	req.Host = "local.vibe"
+	rec := httptest.NewRecorder()
+	s.serveDashboard(rec, req)
+	body := rec.Body.String()
+	list := body[strings.Index(body, `id="peer-list"`):strings.Index(body, `id="peer-grid"`)]
+	got := map[string]string{}
+	for _, row := range strings.Split(list, "<tr>")[1:] {
+		name := between(row, `<span class="route-name-link"`, "</span>")
+		name = name[strings.Index(name, ">")+1:]
+		status := between(row, `<span class="peer-status `, "</span>")
+		got[name] = status[strings.Index(status, ">")+1:]
+	}
+	return body, got
+}
+
+func between(s, start, end string) string {
+	i := strings.Index(s, start)
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(s[i:], end)
+	if j < 0 {
+		return ""
+	}
+	return s[i : i+j]
+}
+
+// Every peer row says whether the route runs on the peer — including a
+// shadowed row, whose name resolves locally but whose peer-side state is
+// still worth showing. A stopped route must not read as "starting" (the old
+// yellow dot did).
+func TestDashboardPeerRouteStatus(t *testing.T) {
+	s := newBareServer(t)
+	s.peerList = []peer.Peer{{Name: "imac", Host: "127.0.0.1", Port: 7444, Fingerprint: "aa", AddedAt: time.Now()}}
+	s.peerStates["imac"] = &peerState{lastOK: time.Now(), routes: []peer.RouteSummary{
+		{Name: "up", Type: "managed", Running: true, Ready: true},
+		{Name: "booting", Type: "managed", Running: true},
+		{Name: "down", Type: "managed"},
+		{Name: "tasks", Type: "managed", Running: true, Ready: true},
+	}}
+	s.table.Add(&Route{Name: "tasks", Type: RouteManaged, Port: 4000, RegisteredAt: time.Now()})
+
+	body, got := peerRowStatuses(t, s)
+	want := map[string]string{"up": "ready", "booting": "starting", "down": "stopped", "tasks": "ready"}
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("peer row %q status = %q, want %q (all: %v)", name, got[name], w, got)
+		}
+	}
+	if !strings.Contains(body, "shadowed by this machine") {
+		t.Error("local tasks route must shadow the peer's tasks, with a badge")
+	}
+	list := body[strings.Index(body, `id="peer-list"`):strings.Index(body, `id="peer-grid"`)]
+	downRow := list[strings.Index(list, `>down<`)-400 : strings.Index(list, `>down<`)]
+	if !strings.Contains(downRow, "led-gray") || strings.Contains(downRow, "led-yellow") {
+		t.Errorf("stopped peer route should have a gray dot: %q", downRow)
+	}
+}
+
+// A peer whose last good sync is stale has flags we can no longer vouch
+// for: its rows read "unreachable", not their cached running state.
+func TestDashboardPeerRouteStatusStalePeer(t *testing.T) {
+	s := newBareServer(t)
+	s.peerList = []peer.Peer{{Name: "imac", Host: "127.0.0.1", Port: 7444, Fingerprint: "aa", AddedAt: time.Now()}}
+	s.peerStates["imac"] = &peerState{
+		lastOK:  time.Now().Add(-3 * peerSyncInterval),
+		lastErr: "dial tcp: connection refused",
+		routes:  []peer.RouteSummary{{Name: "up", Type: "managed", Running: true, Ready: true}},
+	}
+	_, got := peerRowStatuses(t, s)
+	if got["up"] != "unreachable" {
+		t.Errorf("stale peer row status = %q, want unreachable", got["up"])
 	}
 }

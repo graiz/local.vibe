@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/graiz/local.vibe/internal/config"
 )
 
 // Client talks to the vibe daemon via Unix socket (preferred) or TCP fallback.
@@ -20,8 +22,18 @@ type Client struct {
 	baseURL string
 }
 
+// Per-request deadlines. Reads are quick; a register or start legitimately
+// takes seconds (the daemon watches the child for a second, preflights each
+// port with a 500ms settle, and may run git/lsof), so mutations get more.
+// The socket probe in New is the one that must fail fast.
+const (
+	readTimeout   = 5 * time.Second
+	mutateTimeout = 30 * time.Second
+	probeTimeout  = 2 * time.Second
+)
+
 // New creates a Client, preferring the Unix socket for communication.
-// Falls back to TCP (127.0.0.1:7999) if the socket is unavailable.
+// Falls back to TCP (127.0.0.1:<default port>) if the socket is unavailable.
 func New() *Client {
 	home, _ := os.UserHomeDir()
 	sock := filepath.Join(home, ".vibe", "vibe.sock")
@@ -29,24 +41,42 @@ func New() *Client {
 	sockClient := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", sock)
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", sock)
 			},
 		},
-		Timeout: 5 * time.Second,
+		// Redirects are never followed: a 303 to https://local.vibe/ cannot be
+		// chased over the socket transport, and no daemon response the CLI
+		// wants is behind one.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 
 	c := &Client{http: sockClient, baseURL: "http://local"}
-	if _, err := c.Health(); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	if _, _, err := c.doCtx(ctx, "GET", "/_api/health", nil); err == nil {
 		return c
 	}
 
 	return &Client{
-		http:    &http.Client{Timeout: 5 * time.Second},
-		baseURL: "http://127.0.0.1:7999",
+		http: &http.Client{
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		baseURL: fmt.Sprintf("http://127.0.0.1:%d", config.DefaultPort),
 	}
 }
 
 func (c *Client) do(method, path string, body any) ([]byte, int, error) {
+	timeout := readTimeout
+	if method != http.MethodGet {
+		timeout = mutateTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return c.doCtx(ctx, method, path, body)
+}
+
+func (c *Client) doCtx(ctx context.Context, method, path string, body any) ([]byte, int, error) {
 	var r io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -55,7 +85,7 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 		}
 		r = bytes.NewReader(data)
 	}
-	req, err := http.NewRequest(method, c.baseURL+path, r)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, r)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -69,6 +99,12 @@ func (c *Client) do(method, path string, body any) ([]byte, int, error) {
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// A deadline is the daemon being slow (or wedged), not absent — the
+		// route it was starting may well be up. Say so instead of sending
+		// the user to start a daemon that is running.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, 0, fmt.Errorf("the daemon did not answer within %s — check `vibe status` and ~/.vibe/daemon.log", timeoutOf(ctx))
+		}
 		return nil, 0, fmt.Errorf("daemon not running — start it with: vibe daemon start")
 	}
 	defer resp.Body.Close()
@@ -85,7 +121,7 @@ type RegisterRequest struct {
 	Cmd               string         `json:"cmd,omitempty"`
 	Dir               string         `json:"dir,omitempty"`
 	OAuthCallbackPort *int           `json:"oauth_callback_port,omitempty"`
-	ReservePorts        map[string]int `json:"reserve_ports,omitempty"`
+	ReservePorts      map[string]int `json:"reserve_ports,omitempty"`
 }
 
 type RegisterResponse struct {
@@ -150,7 +186,7 @@ func (c *Client) Register(req RegisterRequest) (*RegisterResponse, error) {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("%s", data)
+		return nil, apiError(data, status)
 	}
 	var resp RegisterResponse
 	return &resp, json.Unmarshal(data, &resp)
@@ -165,7 +201,7 @@ func (c *Client) Deregister(name string) error {
 		return fmt.Errorf("no route named %q", name)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("%s", data)
+		return apiError(data, status)
 	}
 	return nil
 }
@@ -176,7 +212,7 @@ func (c *Client) List() ([]RouteInfo, error) {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("%s", data)
+		return nil, apiError(data, status)
 	}
 	var routes []RouteInfo
 	return routes, json.Unmarshal(data, &routes)
@@ -188,7 +224,7 @@ func (c *Client) Start(name string) error {
 		return err
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("%s", data)
+		return apiError(data, status)
 	}
 	return nil
 }
@@ -199,7 +235,7 @@ func (c *Client) Stop(name string) error {
 		return err
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("%s", data)
+		return apiError(data, status)
 	}
 	return nil
 }
@@ -210,7 +246,7 @@ func (c *Client) Health() (*HealthResponse, error) {
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("%s", data)
+		return nil, apiError(data, status)
 	}
 	var h HealthResponse
 	return &h, json.Unmarshal(data, &h)
@@ -309,6 +345,16 @@ func (c *Client) PeerRemove(name string) error {
 		return apiError(data, status)
 	}
 	return nil
+}
+
+// timeoutOf renders a context's remaining-or-original deadline for messages.
+func timeoutOf(ctx context.Context) string {
+	if dl, ok := ctx.Deadline(); ok {
+		if d := time.Until(dl); d > 0 {
+			return d.Round(time.Second).String()
+		}
+	}
+	return "the timeout"
 }
 
 // apiError surfaces the daemon's JSON error message when present.

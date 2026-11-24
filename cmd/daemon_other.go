@@ -1,24 +1,9 @@
-//go:build !darwin && !linux && !windows
+//go:build !darwin && !windows
 
 package cmd
 
-import (
-	"errors"
-	"runtime"
-)
-
+// No platform autostart hook outside macOS (LaunchAgent) and Windows
+// (Scheduled Task) yet: `vibe daemon start` forks, `vibe daemon stop`
+// signals. A systemd user unit is the planned Linux hook — see FUTURE_PLAN.md.
 func tryPlatformDaemonStart() (bool, error) { return false, nil }
 func tryPlatformDaemonStop() (bool, error)  { return false, nil }
-
-func forkDaemon() error {
-	return errors.New("forking the daemon is not supported on " + runtime.GOOS)
-}
-
-func cliProcessAlive(pid int) bool {
-	return pid > 0
-}
-
-func signalDaemonStop(pid int) error {
-	_ = pid
-	return errors.New("daemon stop is not supported on " + runtime.GOOS)
-}

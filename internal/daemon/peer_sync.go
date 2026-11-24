@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -36,6 +38,12 @@ type peerState struct {
 	lastErr     string
 	lastRefresh time.Time
 	refreshing  atomic.Bool
+}
+
+// reachable reports whether this peer's cached routes are fresh: its last
+// successful sync falls within two poll intervals. Caller holds peerMu.
+func (st *peerState) reachable() bool {
+	return !st.lastOK.IsZero() && time.Since(st.lastOK) < 2*peerSyncInterval
 }
 
 // peerSyncLoop polls every paired peer's route list until daemon shutdown.
@@ -147,12 +155,14 @@ func (s *Server) refreshPeerRoutes(p peer.Peer, force bool) {
 		s.peerMu.Unlock()
 	case http.StatusOK:
 		var routes []peer.RouteSummary
-		if err := json.NewDecoder(resp.Body).Decode(&routes); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, apiMaxBodyBytes)).Decode(&routes); err != nil {
 			s.setPeerErr(st, err)
 			return
 		}
+		routes = sanitizePeerSummaries(routes)
 		s.peerMu.Lock()
 		changed := !sameRouteNames(st.routes, routes)
+		bridgesChanged := !sameOAuthPorts(st.routes, routes)
 		st.routes = routes
 		st.etag = resp.Header.Get("ETag")
 		st.lastOK = time.Now()
@@ -165,6 +175,9 @@ func (s *Server) refreshPeerRoutes(p peer.Peer, force bool) {
 				fmt.Printf("vibe: peer SAN reload failed: %v\n", err)
 			}
 		}
+		if bridgesChanged {
+			s.reconcileOAuthBridgeListenersLogged()
+		}
 	default:
 		s.setPeerErr(st, fmt.Errorf("peer returned %d", resp.StatusCode))
 	}
@@ -174,6 +187,57 @@ func (s *Server) setPeerErr(st *peerState, err error) {
 	s.peerMu.Lock()
 	st.lastErr = err.Error()
 	s.peerMu.Unlock()
+}
+
+// sanitizePeerSummaries filters what a peer sent down to what this daemon can
+// safely use. Names must be valid route names: they go into the leaf cert's
+// SANs, and one non-IA5 name would make every later reloadTLSCert fail. Icons
+// are kept only when they are inline (emoji or data:image) — an http(s) icon
+// would be rendered as <img src> on this machine's dashboard, a tracking
+// beacon the peer controls.
+func sanitizePeerSummaries(in []peer.RouteSummary) []peer.RouteSummary {
+	out := make([]peer.RouteSummary, 0, len(in))
+	for _, r := range in {
+		if _, err := parseRouteName(r.Name); err != nil || r.Name == "local" {
+			continue
+		}
+		if strings.HasPrefix(r.Icon, "http://") || strings.HasPrefix(r.Icon, "https://") ||
+			(strings.HasPrefix(r.Icon, "data:") && !strings.HasPrefix(strings.ToLower(r.Icon), "data:image/")) {
+			r.Icon = ""
+		}
+		// The viewing machine binds a loopback listener on this port, so
+		// only accept an unprivileged TCP port; daemon/local-route conflicts
+		// are resolved at bind time (peerOAuthBridges), where they're known.
+		if r.OAuthCallbackPort < 1024 || r.OAuthCallbackPort > 65535 {
+			r.OAuthCallbackPort = 0
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// sameOAuthPorts reports whether two route lists advertise the same
+// (name, oauth_callback_port) pairs — the input to the peer OAuth bridges.
+func sameOAuthPorts(a, b []peer.RouteSummary) bool {
+	ports := func(rs []peer.RouteSummary) map[string]int {
+		m := make(map[string]int)
+		for _, r := range rs {
+			if r.OAuthCallbackPort > 0 {
+				m[r.Name] = r.OAuthCallbackPort
+			}
+		}
+		return m
+	}
+	pa, pb := ports(a), ports(b)
+	if len(pa) != len(pb) {
+		return false
+	}
+	for k, v := range pa {
+		if pb[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func sameRouteNames(a, b []peer.RouteSummary) bool {

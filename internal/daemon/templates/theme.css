@@ -83,6 +83,9 @@ a:hover{color:var(--text)}
   box-shadow:0 1px 2px rgba(0,0,0,.5),0 4px 12px rgba(0,0,0,.25);
 }
 .btn-add:hover{background:#cfcfcf;border-color:#cfcfcf}
+/* An <a class="btn-add"> would otherwise take the global a:hover color
+   (light text on the light hover fill) — a:hover outranks .btn-add. */
+a.btn-add,a.btn-add:hover{color:var(--bg);text-decoration:none;display:inline-block}
 .btn-add:disabled{background:var(--elevated);border-color:var(--border);color:var(--text-muted);cursor:default}
 
 /* Spinner */
@@ -473,6 +476,9 @@ a.route-name-cell:hover .route-name-link{text-decoration:underline;text-underlin
 .peer-grid-title{font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:500;color:var(--text-muted);margin:0 0 8px}
 .filter-hide{display:none!important}
 .peer-shadow{font-size:11.5px;color:var(--text-muted)}
+.peer-status{font-size:11.5px;color:var(--text-muted)}
+.peer-status-ready{color:var(--green)}
+.peer-status-starting{color:var(--yellow)}
 
 /* Get Started section */
 .get-started{

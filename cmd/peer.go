@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/graiz/local.vibe/internal/client"
+	"github.com/graiz/local.vibe/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -21,8 +22,7 @@ var peersCmd = &cobra.Command{
 		c := client.New()
 		resp, err := c.Peers()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 		if !resp.Enabled {
 			fmt.Println("peers are disabled — set daemon.peers.enabled=true in ~/.vibe/config.json and restart the daemon")
@@ -70,13 +70,12 @@ var peerInviteCmd = &cobra.Command{
 		c := client.New()
 		resp, err := c.PeerInvite()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 		hostname, _ := os.Hostname()
 		fmt.Printf("invite code: %s (valid until %s)\n\n", resp.Code, resp.ExpiresAt.Format("15:04:05"))
 		fmt.Printf("on the other machine, run:\n\n  vibe peer add %s --code %s\n", hostname, resp.Code)
-		if resp.Port != 7444 {
+		if resp.Port != config.DefaultPeerPort {
 			fmt.Printf("\n(this machine's peer port is %d — add --port %d)\n", resp.Port, resp.Port)
 		}
 		return nil
@@ -94,14 +93,12 @@ var peerAddCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if peerAddCode == "" {
-			fmt.Fprintln(os.Stderr, "error: --code is required (shown by `vibe peer invite` on the other machine)")
-			os.Exit(1)
+			return fmt.Errorf("--code is required (shown by `vibe peer invite` on the other machine)")
 		}
 		c := client.New()
 		p, err := c.PeerAdd(args[0], peerAddPort, peerAddCode)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Printf("paired with %s (%s:%d)\nfingerprint %s\n", p.Name, p.Host, p.Port, p.Fingerprint)
 		fmt.Println("their routes will appear in `vibe list` and resolve as https://<name>.vibe")
@@ -116,8 +113,7 @@ var peerRemoveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c := client.New()
 		if err := c.PeerRemove(args[0]); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Printf("removed peer %s\n", args[0])
 		return nil
@@ -126,7 +122,7 @@ var peerRemoveCmd = &cobra.Command{
 
 func init() {
 	peerAddCmd.Flags().StringVar(&peerAddCode, "code", "", "invite code from the other machine")
-	peerAddCmd.Flags().IntVar(&peerAddPort, "port", 7444, "peer listener port on the other machine")
+	peerAddCmd.Flags().IntVar(&peerAddPort, "port", config.DefaultPeerPort, "peer listener port on the other machine")
 	peerCmd.AddCommand(peerInviteCmd)
 	peerCmd.AddCommand(peerAddCmd)
 	peerCmd.AddCommand(peerRemoveCmd)

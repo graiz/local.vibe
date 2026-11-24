@@ -20,7 +20,7 @@ func TestBookmarkProxyForwardsRequest(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -57,7 +57,7 @@ func TestBookmarkProxySendsUpstreamHost(t *testing.T) {
 
 	upstreamURL, _ := url.Parse(upstream.URL)
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -89,7 +89,7 @@ func TestBookmarkProxyOmitsXForwardedFor(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -119,7 +119,7 @@ func TestBookmarkProxyScrubsIncomingXForwardedFor(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -151,7 +151,7 @@ func TestBookmarkProxyLandingPathRedirect(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -205,7 +205,7 @@ func TestBookmarkProxyNoLandingPathWhenRoot(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -237,7 +237,7 @@ func TestBookmarkProxyRewritesLocation(t *testing.T) {
 	defer upstream.Close()
 	upstreamURL = upstream.URL
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -271,7 +271,7 @@ func TestBookmarkProxyPreservesCrossOriginLocation(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -300,7 +300,7 @@ func TestBookmarkProxyStripsCookieDomain(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -336,7 +336,7 @@ func TestBookmarkProxyStripsCookieDomain(t *testing.T) {
 // TestBookmarkNoProxyStillRedirects is the regression guard — bookmarks
 // without Proxy set continue to 307-redirect to their ExternalURL.
 func TestBookmarkNoProxyStillRedirects(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "ext",
 		Type:         RouteBookmark,
@@ -360,7 +360,7 @@ func TestBookmarkNoProxyStillRedirects(t *testing.T) {
 // TestAPIProxyRequiresURL — API rejects proxy=true without a url because
 // the proxy target comes from ExternalURL.
 func TestAPIProxyRequiresURL(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	body, _ := json.Marshal(map[string]any{"name": "bad", "port": 3000, "proxy": true})
 	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -374,7 +374,7 @@ func TestAPIProxyRequiresURL(t *testing.T) {
 // TestAPIProxyBookmarkRoundtrip registers a proxy bookmark and verifies the
 // response surfaces Proxy and InsecureSkipVerify.
 func TestAPIProxyBookmarkRoundtrip(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	body, _ := json.Marshal(map[string]any{
 		"name":                 "mirror",
 		"url":                  "https://app.example.com",

@@ -16,7 +16,7 @@ import (
 // RemoteAddr not being ip:port. Pin that against a real socket rather than a
 // faked RemoteAddr, since it is what the CLI actually exercises.
 func TestListRoutesDirOverRealUnixSocket(t *testing.T) {
-	s := listTestServer()
+	s := listTestServer(t)
 	s.table.Add(&Route{Name: "app", Port: 3000, Type: RouteManaged, Cmd: "node server.js", Dir: "/work/app"})
 
 	// Short path: macOS caps sun_path at 104 bytes and t.TempDir() is long.

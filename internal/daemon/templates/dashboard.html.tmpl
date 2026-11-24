@@ -6,6 +6,7 @@
 <head>
 {{.Head}}
 <style>{{.CSS}}</style>
+<script>{{.JS}}</script>
 </head>
 <body>
 <nav class="navbar">
@@ -114,11 +115,11 @@
     <tbody>
     {{range .Routes}}
     <tr>
-      <td>{{if .ShadowedBy}}<div class="route-name-cell"><span class="led row-led led-gray"></span><span class="route-icon">{{iconHTML .Icon}}</span><div><span class="route-name-link" style="opacity:.5">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></div>{{else}}<a class="route-name-cell" href="{{.VibeURL}}" target="_blank"><span class="led row-led {{if .Ready}}led-green{{else}}led-yellow{{end}}"></span><span class="route-icon">{{iconHTML .Icon}}</span><div><span class="route-name-link">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></a>{{end}}</td>
+      <td>{{if .ShadowedBy}}<div class="route-name-cell"><span class="led row-led {{.LEDClass}}"></span><span class="route-icon route-icon-stopped">{{iconHTML .Icon}}</span><div><span class="route-name-link" style="opacity:.5">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></div>{{else}}<a class="route-name-cell" href="{{.VibeURL}}" target="_blank"><span class="led row-led {{.LEDClass}}"></span><span class="{{if .Live}}route-icon{{else}}route-icon route-icon-stopped{{end}}">{{iconHTML .Icon}}</span><div><span class="route-name-link">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></a>{{end}}</td>
       <td class="td-type">peer</td>
       <td class="td-port">&mdash;</td>
       <td class="td-age hide-mobile">&mdash;</td>
-      <td>{{if .ShadowedBy}}<div class="td-actions"><span class="peer-shadow">shadowed by {{.ShadowedBy}}</span></div>{{end}}</td>
+      <td><div class="td-actions"><span class="peer-status peer-status-{{.Status}}">{{.Status}}</span>{{if .ShadowedBy}}<span class="peer-shadow">shadowed by {{.ShadowedBy}}</span>{{end}}</div></td>
     </tr>
     {{end}}
     </tbody></table>
@@ -133,16 +134,16 @@
     <div class="grid-container">
     {{range .Routes}}
     {{if .ShadowedBy}}
-    <div class="grid-tile tile-stopped" title="shadowed by {{.ShadowedBy}}">
+    <div class="grid-tile tile-stopped" title="{{.Status}} on the peer, shadowed by {{.ShadowedBy}}">
       <div class="tile-icon">{{iconHTML .Icon}}</div>
       <div class="tile-name">{{.Name}}</div>
       <div class="tile-url">shadowed by {{.ShadowedBy}}</div>
     </div>
     {{else}}
-    <a href="{{.VibeURL}}" target="_blank" class="{{if .Ready}}grid-tile{{else}}grid-tile tile-stopped{{end}}">
+    <a href="{{.VibeURL}}" target="_blank" title="{{.Status}}" class="{{if .Live}}grid-tile{{else}}grid-tile tile-stopped{{end}}">
       <div class="tile-icon">{{iconHTML .Icon}}</div>
       <div class="tile-name">{{.Name}}</div>
-      <div class="tile-url">{{.Name}}.{{$.TLD}}</div>
+      <div class="tile-url">{{if .Live}}{{.Name}}.{{$.TLD}}{{else}}{{.Status}}{{end}}</div>
     </a>
     {{end}}
     {{end}}
@@ -737,8 +738,8 @@ function routeAction(btn,name,action){
       return r.json();
     })
     .then(function(){
-      if(action==='start'){pollReady(name,0)}
-      else{pollStopped(name,0)}
+      if(action==='start'){pollReady(name)}
+      else{pollStopped(name)}
     })
     .catch(function(e){
       btn.disabled=false;btn.textContent=origText;
@@ -767,32 +768,22 @@ function startDiscoveredWorktree(btn,parent,path){
       showToast(e.message||'Could not start worktree');
     });
 }
-function pollStopped(name,n){
-  if(n>20){location.reload();return}
-  fetch('/_api/routes/'+encodeURIComponent(name)+'/ready')
-    .then(function(r){return r.json()})
-    .then(function(d){
-      if(!d.ready){location.reload()}
-      else{setTimeout(function(){pollStopped(name,n+1)},300)}
-    })
-    .catch(function(){location.reload()});
+function pollStopped(name){
+  vibePoll(function(next){
+    vibeAPI('GET','/_api/routes/'+encodeURIComponent(name)+'/ready',{},function(status,d){
+      if(!d||!d.ready){reloadSoon();return}
+      next();
+    });
+  },300,21,reloadSoon);
 }
-function pollReady(name,n){
-  if(n>60){location.reload();return}
-  fetch('/_api/routes/'+encodeURIComponent(name)+'/ready')
-    .then(function(r){return r.json()})
-    .then(function(d){
-      if(d.ready){location.reload()}
-      else if(d.running===false){showToast(name+' crashed during startup');location.reload()}
-      else{setTimeout(function(){pollReady(name,n+1)},500)}
-    })
-    .catch(function(){setTimeout(function(){pollReady(name,n+1)},500)});
-}
-function showToast(msg){
-  var el=document.createElement('div');el.className='toast';el.textContent=msg;
-  document.body.appendChild(el);
-  setTimeout(function(){el.classList.add('show')},10);
-  setTimeout(function(){el.classList.remove('show');setTimeout(function(){el.remove()},300)},4000);
+function pollReady(name){
+  vibePoll(function(next){
+    vibeAPI('GET','/_api/routes/'+encodeURIComponent(name)+'/ready',{},function(status,d){
+      if(d&&d.ready){reloadSoon();return}
+      if(d&&d.running===false){showToast(name+' crashed during startup');reloadSoon();return}
+      next();
+    });
+  },500,61,reloadSoon);
 }
 document.addEventListener('keydown',function(e){
   if(e.key!=='Escape')return;

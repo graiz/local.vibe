@@ -179,8 +179,8 @@ func TestPeerServeRouteRemotePages(t *testing.T) {
 		wantRefresh bool
 		wantText    string
 	}{
-		{"app.vibe", false, "isn't running"},
-		{"web.vibe", false, "isn't running"},
+		{"app.vibe", false, "is not running"},
+		{"web.vibe", false, "is not running"},
 	} {
 		code, body := peerGetRoute(t, a, b, c.host)
 		if code != http.StatusServiceUnavailable {

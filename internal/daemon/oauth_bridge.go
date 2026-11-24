@@ -31,45 +31,64 @@ func (s *Server) validateOAuthBridgeConfig(routeName string, appPort, callbackPo
 	return nil
 }
 
+// reconcileOAuthBridgeListeners binds a loopback bridge for every local
+// route's oauth_callback_port and — when peers are enabled — for every
+// peer route's advertised port that no local route claims. A local bind
+// failure is an error (the caller's config is unusable); a peer bind failure
+// is logged once and skipped, since a peer's choice of port must never break
+// this machine's own route changes.
 func (s *Server) reconcileOAuthBridgeListeners() error {
-	wanted := make(map[int]struct{})
+	wanted := make(map[int]bool) // port -> owned by a local route
 	for _, r := range s.table.List() {
 		if r.OAuthCallbackPort > 0 {
 			if err := s.validateOAuthBridgeConfig(r.Name, r.Port, r.OAuthCallbackPort); err != nil {
 				return err
 			}
-			wanted[r.OAuthCallbackPort] = struct{}{}
+			wanted[r.OAuthCallbackPort] = true
 		}
 	}
+	peerPorts := s.peerOAuthBridges()
 
 	s.oauthBridgeMu.Lock()
 	defer s.oauthBridgeMu.Unlock()
+
+	for port := range peerPorts {
+		if _, local := wanted[port]; local || s.peerBridgeYieldedLocked(port) {
+			continue
+		}
+		wanted[port] = false
+	}
 
 	for port, srv := range s.oauthBridgeServers {
 		if _, ok := wanted[port]; ok {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = srv.Shutdown(ctx)
-		cancel()
-		if ln, ok := s.oauthBridgeListeners[port]; ok {
-			_ = ln.Close()
-		}
-		delete(s.oauthBridgeServers, port)
-		delete(s.oauthBridgeListeners, port)
+		s.closeBridgeLocked(port, srv)
 	}
 
-	for port := range wanted {
+	for port, local := range wanted {
 		if _, ok := s.oauthBridgeServers[port]; ok {
 			continue
 		}
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
-			return fmt.Errorf("oauth_callback_port %d is not available: %w", port, err)
+			if local {
+				return fmt.Errorf("oauth_callback_port %d is not available: %w", port, err)
+			}
+			if s.oauthPeerBindFailed == nil {
+				s.oauthPeerBindFailed = make(map[int]bool)
+			}
+			if !s.oauthPeerBindFailed[port] {
+				s.oauthPeerBindFailed[port] = true
+				b := peerPorts[port]
+				fmt.Fprintf(os.Stderr, "warning: peer OAuth bridge for %s (on %s) could not bind localhost:%d: %v\n", b.route, b.peer.Name, port, err)
+			}
+			continue
 		}
-		srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		delete(s.oauthPeerBindFailed, port)
+		srv := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			s.handleOAuthCallbackBridge(w, r, port)
-		})}
+		}))
 		s.oauthBridgeServers[port] = srv
 		s.oauthBridgeListeners[port] = ln
 		go func(p int, server *http.Server, listener net.Listener) {
@@ -82,18 +101,31 @@ func (s *Server) reconcileOAuthBridgeListeners() error {
 	return nil
 }
 
+// reconcileOAuthBridgeListenersLogged is reconcileOAuthBridgeListeners for
+// callers with no request to fail (peer sync, peer removal).
+func (s *Server) reconcileOAuthBridgeListenersLogged() {
+	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: oauth bridge listener reconcile failed: %v\n", err)
+	}
+}
+
+// closeBridgeLocked shuts one bridge listener down. Caller holds oauthBridgeMu.
+func (s *Server) closeBridgeLocked(port int, srv *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = srv.Shutdown(ctx)
+	cancel()
+	if ln, ok := s.oauthBridgeListeners[port]; ok {
+		_ = ln.Close()
+	}
+	delete(s.oauthBridgeServers, port)
+	delete(s.oauthBridgeListeners, port)
+}
+
 func (s *Server) stopOAuthBridgeListeners() {
 	s.oauthBridgeMu.Lock()
 	defer s.oauthBridgeMu.Unlock()
 	for port, srv := range s.oauthBridgeServers {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = srv.Shutdown(ctx)
-		cancel()
-		if ln, ok := s.oauthBridgeListeners[port]; ok {
-			_ = ln.Close()
-		}
-		delete(s.oauthBridgeServers, port)
-		delete(s.oauthBridgeListeners, port)
+		s.closeBridgeLocked(port, srv)
 	}
 }
 
@@ -106,6 +138,12 @@ func (s *Server) handleOAuthCallbackBridge(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if route == nil {
+		// Not a local route's port: maybe a peer route's (local wins —
+		// checked first). Never auto-forwarded; see oauth_peer_bridge.go.
+		if b, ok := s.peerOAuthBridges()[callbackPort]; ok {
+			s.servePeerOAuthBridge(w, r, b, callbackPort)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}

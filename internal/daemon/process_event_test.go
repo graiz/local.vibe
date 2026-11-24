@@ -15,7 +15,7 @@ import (
 // the event-based PID-exit watcher when its external process dies (the
 // replacement for the sweep's dead-PID scan).
 func TestPIDTrackedRouteRemovedOnExit(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	cmd := exec.Command("sleep", "10")
@@ -46,7 +46,7 @@ func TestPIDTrackedRouteRemovedOnExit(t *testing.T) {
 // TestPIDTrackedAlreadyDeadRemovedImmediately verifies a PID-tracked route whose
 // PID is already gone at registration is removed right away.
 func TestPIDTrackedAlreadyDeadRemovedImmediately(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	r := &Route{Name: "deadtrack", Type: RoutePIDTracked, Port: 1, RegisteredAt: time.Now()}

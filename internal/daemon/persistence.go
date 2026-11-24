@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,29 +10,17 @@ import (
 )
 
 type stickyStore struct {
-	StickyRoutes map[string]stickyEntry `json:"sticky_routes"`
+	StickyRoutes map[string]*stickyEntry `json:"sticky_routes"`
 }
 
+// stickyEntry is a persisted route: the Route's own JSON shape (its runtime
+// fields are tagged "-") plus the process-group leader PID of a running
+// managed route. The PID is what lets a new daemon re-adopt the surviving
+// child after a restart (managed children, in their own process group,
+// outlive the daemon) instead of reporting the route stopped. A stale PID is
+// harmless: adoption re-verifies that it is alive and still listening.
 type stickyEntry struct {
-	Port               int       `json:"port,omitempty"`
-	Cmd                string    `json:"cmd,omitempty"`
-	Dir                string    `json:"dir,omitempty"`
-	ExternalURL        string    `json:"external_url,omitempty"`
-	Type               RouteType `json:"type,omitempty"`
-	RegisteredAt       time.Time `json:"registered_at"`
-	IdleTimeout        int       `json:"idle_timeout,omitempty"`
-	Icon               string    `json:"icon,omitempty"`
-	AutoIcon           string    `json:"auto_icon,omitempty"`
-	Proxy              bool           `json:"proxy,omitempty"`
-	InsecureSkipVerify bool           `json:"insecure_skip_verify,omitempty"`
-	ReservePorts       map[string]int `json:"reserve_ports,omitempty"`
-	OAuthCallbackPort  int            `json:"oauth_callback_port,omitempty"`
-	// PID is the process-group leader of a running managed route. It is
-	// persisted so that after a daemon restart (where managed children, in
-	// their own process group, outlive the daemon) the new daemon can re-adopt
-	// the surviving process instead of losing track of it and reporting the
-	// route as stopped. A stale PID is harmless: adoption re-verifies that the
-	// PID is alive and still listening before trusting it.
+	*Route
 	PID int `json:"pid,omitempty"`
 }
 
@@ -50,9 +39,21 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 	}
 	var store stickyStore
 	if err := json.Unmarshal(data, &store); err != nil {
-		return err
+		// Move the file aside rather than leave it to be overwritten: the
+		// daemon would otherwise start with an empty table and the next save
+		// — any register, any favicon fetch — would replace every route the
+		// user had with that empty table. A hand-edit with a trailing comma,
+		// or a partial write from the file-sync provider hosting ~, is enough.
+		bad := fmt.Sprintf("%s.bad-%d", path, time.Now().Unix())
+		if renameErr := os.Rename(path, bad); renameErr == nil {
+			return fmt.Errorf("%s is not valid JSON (%v); moved it to %s — fix and rename it back, then restart the daemon", path, err, bad)
+		}
+		return fmt.Errorf("%s is not valid JSON: %w", path, err)
 	}
 	for name, entry := range store.StickyRoutes {
+		if entry == nil || entry.Route == nil {
+			continue
+		}
 		lower := strings.ToLower(name)
 		parent, perr := parseRouteName(lower)
 		if perr != nil || lower == "local" {
@@ -76,35 +77,24 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 			}
 			continue
 		}
-		rt := RouteSticky
-		if entry.Type != "" {
-			rt = entry.Type
-		}
-		r := &Route{
-			Name:               lower,
-			Parent:             parent,
-			Port:               entry.Port,
-			Cmd:                entry.Cmd,
-			Dir:                entry.Dir,
-			ExternalURL:        entry.ExternalURL,
-			RegisteredAt:       entry.RegisteredAt,
-			Type:               rt,
-			IdleTimeout:        entry.IdleTimeout,
-			Icon:               entry.Icon,
-			AutoIcon:           entry.AutoIcon,
-			Proxy:              entry.Proxy,
-			InsecureSkipVerify: entry.InsecureSkipVerify,
-			ReservePorts:       entry.ReservePorts,
-			OAuthCallbackPort:  entry.OAuthCallbackPort,
+		// The decoded Route is the live one: the map key is authoritative
+		// for its name, Parent is derived from that name, and the runtime
+		// fields start fresh (they're tagged "-" and never persisted).
+		r := entry.Route
+		r.Name = lower
+		r.Parent = parent
+		r.ExpiresAt = nil // TTL routes are never persisted
+		if r.Type == "" {
+			r.Type = RouteSticky
 		}
 		// Managed routes start not running until launched (or re-adopted on
 		// startup); others are assumed ready. The persisted PID is stashed so
 		// the startup adoption pass can check whether the managed child
 		// survived a `vibe daemon restart` — but Running stays false until that
 		// check confirms the process is alive and listening.
-		r.Running.Store(rt != RouteManaged)
-		r.Ready.Store(rt != RouteManaged)
-		if rt == RouteManaged && entry.PID > 0 {
+		r.Running.Store(r.Type != RouteManaged)
+		r.Ready.Store(r.Type != RouteManaged)
+		if r.Type == RouteManaged && entry.PID > 0 {
 			r.SetPID(entry.PID)
 		}
 		table.Add(r)
@@ -115,7 +105,7 @@ func loadStickyRoutes(table *RouteTable, dir string) error {
 // saveStickyRoutes writes all persistent routes (sticky, managed, bookmark)
 // to ~/.vibe/routes.json. Called after any route change.
 func saveStickyRoutes(table *RouteTable, dir string) error {
-	store := stickyStore{StickyRoutes: make(map[string]stickyEntry)}
+	store := stickyStore{StickyRoutes: make(map[string]*stickyEntry)}
 	for _, r := range table.List() {
 		if r.Type == RouteSticky || r.Type == RouteManaged || r.Type == RouteBookmark {
 			// Persist the PID only for managed routes the daemon believes are
@@ -127,22 +117,7 @@ func saveStickyRoutes(table *RouteTable, dir string) error {
 					pid = p
 				}
 			}
-			store.StickyRoutes[r.Name] = stickyEntry{
-				Port:               r.Port,
-				Cmd:                r.Cmd,
-				Dir:                r.Dir,
-				ExternalURL:        r.ExternalURL,
-				Type:               r.Type,
-				RegisteredAt:       r.RegisteredAt,
-				IdleTimeout:        r.IdleTimeout,
-				Icon:               r.Icon,
-				AutoIcon:           r.AutoIcon,
-				Proxy:              r.Proxy,
-				InsecureSkipVerify: r.InsecureSkipVerify,
-				ReservePorts:       r.ReservePorts,
-				OAuthCallbackPort:  r.OAuthCallbackPort,
-				PID:                pid,
-			}
+			store.StickyRoutes[r.Name] = &stickyEntry{Route: r, PID: pid}
 		}
 	}
 	data, err := json.MarshalIndent(store, "", "  ")
@@ -166,7 +141,7 @@ func saveStickyRoutes(table *RouteTable, dir string) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := tmp.Chmod(0644); err != nil {
+	if err := tmp.Chmod(0600); err != nil {
 		tmp.Close()
 		_ = os.Remove(tmpPath)
 		return err

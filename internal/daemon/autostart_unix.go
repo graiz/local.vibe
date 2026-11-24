@@ -5,10 +5,8 @@ package daemon
 import (
 	"bufio"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // adoptOrphan re-adopts a managed route's surviving child process after a
@@ -36,26 +34,8 @@ func (s *Server) adoptOrphan(route *Route) (pid int, port int, ok bool) {
 	if !hasPID || !processAlive(leader) {
 		return 0, 0, false
 	}
-	if route.Port <= 0 {
-		return 0, 0, false
-	}
-
-	pgid, err := syscall.Getpgid(leader)
-	if err != nil {
-		return 0, 0, false
-	}
-	group, err := pidsInGroup(pgid)
-	if err != nil || len(group) == 0 {
-		return 0, 0, false
-	}
-	inGroup := make(map[int]bool, len(group))
-	for _, p := range group {
-		inGroup[p] = true
-	}
-	for _, lp := range pidsListeningOnPort(route.Port) {
-		if inGroup[lp] {
-			return leader, route.Port, true
-		}
+	if pidGroupHoldsPort(leader, route.Port) {
+		return leader, route.Port, true
 	}
 	return 0, 0, false
 }
@@ -86,20 +66,12 @@ func (s *Server) portForeignToRoute(route *Route) bool {
 	if !ok || !processAlive(leader) {
 		return false // no live child to anchor ownership on — fail open
 	}
-	pgid, err := syscall.Getpgid(leader)
-	if err != nil {
+	group := groupPIDs(leader)
+	if len(group) == 0 {
 		return false
-	}
-	group, err := pidsInGroup(pgid)
-	if err != nil || len(group) == 0 {
-		return false
-	}
-	inGroup := make(map[int]bool, len(group))
-	for _, p := range group {
-		inGroup[p] = true
 	}
 	for _, lp := range listeners {
-		if inGroup[lp] {
+		if group[lp] {
 			return false // one of ours is listening — healthy
 		}
 	}
@@ -110,7 +82,7 @@ func (s *Server) portForeignToRoute(route *Route) bool {
 // port, via `lsof -t -nP -iTCP:<port> -sTCP:LISTEN`. Empty on none (lsof exits
 // non-zero when there are no matches — that's "nobody listening", not an error).
 func pidsListeningOnPort(port int) []int {
-	out, err := exec.Command("lsof", "-t", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN").Output()
+	out, err := runTool("lsof", "-t", "-nP", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN")
 	if err != nil {
 		return nil
 	}

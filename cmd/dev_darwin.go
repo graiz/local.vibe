@@ -21,7 +21,7 @@ import (
 func restartDaemonForDev() error {
 	if u, err := user.Current(); err == nil {
 		target := fmt.Sprintf("gui/%s/com.vibe.daemon", u.Uid)
-		if err := exec.Command("launchctl", "kickstart", "-k", target).Run(); err == nil {
+		if err := exec.Command(launchctlPath, "kickstart", "-k", target).Run(); err == nil {
 			return nil
 		}
 		// Fall through to a best-effort kill if kickstart didn't take (e.g. the

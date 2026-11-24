@@ -102,7 +102,7 @@ func TestProxyTunnelsWebSocketUpgrade(t *testing.T) {
 	upstreamPort, stopUpstream := upstreamWebSocketEcho(t)
 	defer stopUpstream()
 
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	s.table.Add(&Route{
 		Name:         "app",
@@ -165,7 +165,7 @@ func TestProxyRewritesOriginOnUpgrade(t *testing.T) {
 	upstreamPort, stopUpstream := upstreamWebSocketEcho(t)
 	defer stopUpstream()
 
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	s.table.Add(&Route{
 		Name: "app", Type: RouteSticky, Port: upstreamPort, RegisteredAt: time.Now(),
@@ -224,7 +224,7 @@ func TestProxyLeavesOriginAloneOnNormalRequests(t *testing.T) {
 	upstreamPort, stopUpstream := upstreamWebSocketEcho(t)
 	defer stopUpstream()
 
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	s.table.Add(&Route{
 		Name: "app", Type: RouteSticky, Port: upstreamPort, RegisteredAt: time.Now(),

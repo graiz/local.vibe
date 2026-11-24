@@ -32,10 +32,9 @@ func TestPIDWriteOnlyOnSuccessfulBind(t *testing.T) {
 
 	cfg := &config.Config{
 		Daemon: config.DaemonConfig{
-			Port:             port,
-			Socket:           filepath.Join(dir, "test.sock"),
-			TLD:              "test",
-			PIDCheckInterval: 1,
+			Port:   port,
+			Socket: filepath.Join(dir, "test.sock"),
+			TLD:    "test",
 		},
 	}
 	// Override config dir so the PID file lands in our temp dir. os.UserHomeDir

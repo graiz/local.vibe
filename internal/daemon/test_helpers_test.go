@@ -1,18 +1,18 @@
 package daemon
 
 import (
-	"os"
+	"testing"
 
 	"github.com/graiz/local.vibe/internal/config"
 )
 
 // testServer constructs a Server suitable for in-process tests: zero TCP
-// port (no real bind), a temp config dir so we never clobber a real
-// ~/.vibe/routes.json. Used across api_test.go, proxy_bookmark_test.go,
-// oauth_fallback_test.go, and route_request_managed_test.go — kept in its
-// own file (not api_test.go) so it remains visible on Windows builds where
-// the unix-only api_test.go is excluded by build tag.
-func testServer() *Server {
+// port (no real bind) and a per-test temp config dir, so tests never share a
+// routes.json with each other or clobber a real ~/.vibe. Kept in its own file
+// (not api_test.go) so it remains visible on Windows builds where the
+// unix-only api_test.go is excluded by build tag.
+func testServer(t testing.TB) *Server {
+	t.Helper()
 	cfg := &config.Config{
 		Daemon: config.DaemonConfig{
 			Port: 0,
@@ -20,6 +20,6 @@ func testServer() *Server {
 		},
 	}
 	s := NewServer(cfg)
-	s.ConfigDir = os.TempDir()
+	s.ConfigDir = t.TempDir()
 	return s
 }

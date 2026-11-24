@@ -32,7 +32,7 @@ func platformRepairRedirect() error {
 	if err != nil {
 		return fmt.Errorf("could not read config: %w", err)
 	}
-	c := exec.Command("sudo", self, "pf-apply",
+	c := exec.Command(sudoPath, self, "pf-apply",
 		"--http-port", fmt.Sprint(cfg.Daemon.Port),
 		"--tls-port", fmt.Sprint(cfg.Daemon.TLS.Port))
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr

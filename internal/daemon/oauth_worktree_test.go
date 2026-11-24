@@ -154,7 +154,7 @@ func TestTagAuthorizeJSONBody(t *testing.T) {
 }
 
 func TestOAuthEnvForRoute(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	owner := &Route{Name: "app", Type: RouteManaged, Port: 3990, Cmd: "x", OAuthCallbackPort: 3000, RegisteredAt: time.Now()}
 	s.table.Add(owner)
@@ -204,7 +204,7 @@ func TestRewriteBridgeHostRedirect(t *testing.T) {
 }
 
 func TestBridgeRoutesWrappedStateToWorktree(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	owner := &Route{Name: "app", Type: RouteManaged, Port: 3970, Cmd: "x", OAuthCallbackPort: 53123, RegisteredAt: time.Now()}
 	s.table.Add(owner)
@@ -273,7 +273,7 @@ func TestBridgeRoutesWrappedStateToWorktree(t *testing.T) {
 // End-to-end through the reverse proxy: a worktree app's 302 toward the OAuth
 // provider gets its state tagged in flight.
 func TestProxyTagsWorktreeOAuthRedirect(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	authURL := "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=" +
 		url.QueryEscape("http://localhost:53124/cb") + "&state=orig789"
@@ -346,7 +346,7 @@ func TestProxyTagsWorktreeOAuthRedirect(t *testing.T) {
 // "<anything>.<app>" with an arbitrary dir would relocate the app's real
 // credentials there.
 func TestPrepareWorktreeEnvRefusesNonWorktreeDir(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	repo, _ := initGitRepoWithWorktree(t, "feature/real")
 
 	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("SECRET=1\n"), 0600); err != nil {
@@ -368,7 +368,7 @@ func TestPrepareWorktreeEnvRefusesNonWorktreeDir(t *testing.T) {
 }
 
 func TestPrepareWorktreeEnv(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// A real repo + linked worktree: prepareWorktreeEnv only copies into a
 	// directory git actually reports as a worktree of the parent.

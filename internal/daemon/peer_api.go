@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/graiz/local.vibe/internal/config"
 	"github.com/graiz/local.vibe/internal/peer"
 )
 
@@ -55,7 +56,7 @@ func (s *Server) handlePeersList(w http.ResponseWriter, _ *http.Request) {
 			Routes:      []peerRouteResponse{},
 		}
 		if st, ok := s.peerStates[p.Name]; ok {
-			pr.Reachable = time.Since(st.lastOK) < 2*peerSyncInterval
+			pr.Reachable = st.reachable()
 			pr.LastError = st.lastErr
 			for _, rt := range st.routes {
 				pr.Routes = append(pr.Routes, peerRouteResponse{
@@ -105,7 +106,7 @@ func (s *Server) handlePeerAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Port == 0 {
-		req.Port = 7444
+		req.Port = config.DefaultPeerPort
 	}
 	p, err := s.pairWithPeer(req.Host, req.Port, req.Code)
 	if err != nil {
@@ -141,5 +142,7 @@ func (s *Server) handlePeerRemove(w http.ResponseWriter, _ *http.Request, name s
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The removed peer's OAuth bridges (if any) must close with it.
+	s.reconcileOAuthBridgeListenersLogged()
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }

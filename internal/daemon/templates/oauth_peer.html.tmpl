@@ -1,0 +1,56 @@
+{{- /* oauth_peer.html.tmpl — confirmation page for an OAuth callback that
+       landed on a peer route's localhost bridge. Served from
+       http://localhost:<N>, so it never auto-forwards: the user confirms that
+       the sign-in code may leave this machine for the peer. Rendered as a
+       standalone copy of the dashboard's modal (header / body / action bar)
+       so it reads as local.vibe, not as the app. Auto-escaped. */ -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+{{.Head}}
+<meta name="referrer" content="no-referrer">
+<style>{{.CSS}}
+.modal-overlay.static{display:flex;position:static;inset:auto;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;min-height:100vh}
+.route-tile{cursor:default}
+.oauth-facts{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;margin:0 0 16px;padding:12px 14px;background:var(--bg);border:1px solid var(--border-subtle);border-radius:8px;font-size:12.5px}
+.oauth-facts dt{color:var(--text-muted)}
+.oauth-facts dd{color:var(--text);font-family:var(--font-mono);font-size:12px;overflow-wrap:anywhere}
+.oauth-note{font-size:13px;color:var(--text-secondary);line-height:1.55}
+.oauth-note+.oauth-note{margin-top:8px}
+.oauth-note.muted{color:var(--text-muted);font-size:12.5px}
+.modal-actions form{margin:0}
+.modal-actions a.btn{text-decoration:none}
+.modal-brand{margin-right:auto;font-size:11.5px;color:var(--text-muted);letter-spacing:.01em}
+</style>
+</head>
+<body>
+<div class="modal-overlay static">
+<div class="modal" role="dialog" aria-labelledby="oauth-heading">
+  <div class="modal-header">
+    <div class="icon-trigger route-tile" aria-hidden="true">{{iconHTML .Icon}}</div>
+    <div class="modal-header-text">
+      <div class="modal-eyebrow">Sign-in · via {{.Peer}}</div>
+      <h3 id="oauth-heading">Finish signing in to {{.Route}}</h3>
+      <div class="modal-sub">A sign-in callback arrived on this machine for a route that runs on {{.Peer}}.</div>
+    </div>
+  </div>
+  <div class="modal-body">
+    <dl class="oauth-facts">
+      <dt>Route</dt><dd>{{.Host}}</dd>
+      <dt>Runs on</dt><dd>{{.Peer}}</dd>
+      <dt>Callback</dt><dd>localhost:{{.Port}}</dd>
+    </dl>
+    <p class="oauth-note">Continuing sends the sign-in code to {{.Peer}} so {{.Route}} can finish logging you in.</p>
+    <p class="oauth-note muted">Weren't signing in to {{.Route}} just now? Don't continue — the callback may have been meant for another app on this machine.</p>
+  </div>
+  <div class="modal-actions">
+    <span class="modal-brand">local.vibe</span>
+    <a class="btn" href="{{.DashboardURL}}">Cancel</a>
+    {{if .IsPost}}<form method="post" action="{{.Target}}">
+      {{range .PostFields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">
+      {{end}}<button class="btn-add" type="submit">Continue to {{.Host}}</button>
+    </form>{{else}}<a class="btn-add" href="{{.Target}}">Continue to {{.Host}}</a>{{end}}
+  </div>
+</div>
+</div>
+</body></html>

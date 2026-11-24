@@ -45,6 +45,32 @@ func killProcessTree(name string, cmd *exec.Cmd) error {
 	return cmd.Process.Signal(syscall.SIGTERM)
 }
 
+// killProcessTreeForce is the SIGKILL escalation for a group that ignored
+// SIGTERM (Stop's grace period lapsed with the leader still alive).
+func killProcessTreeForce(name string, cmd *exec.Cmd) error {
+	_ = name
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if pgid, err := syscall.Getpgid(cmd.Process.Pid); err == nil {
+		return syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+	return cmd.Process.Kill()
+}
+
+// killAdoptedProcessForce is killAdoptedProcess with SIGKILL, under the same
+// group-leader ownership check.
+func killAdoptedProcessForce(pid int) error {
+	if pid <= 1 || pid == os.Getpid() {
+		return nil
+	}
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil || pgid != pid {
+		return nil
+	}
+	return syscall.Kill(-pgid, syscall.SIGKILL)
+}
+
 // killAdoptedProcess terminates a managed child the daemon re-adopted after a
 // restart — it has the process-group leader PID but no *exec.Cmd. It signals
 // the whole process group, matching killProcessTree's semantics for children

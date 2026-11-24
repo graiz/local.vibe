@@ -19,7 +19,7 @@ import (
 // recovery — serving the start page rather than surfacing a bare 502 — and must
 // flip the route out of the ready state.
 func TestHandleProxyErrorRecoversFromSquatter(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	// A squatter: a listener that accepts TCP but isn't the route's process and
@@ -64,7 +64,7 @@ func TestHandleProxyErrorRecoversFromSquatter(t *testing.T) {
 // the ownership/recovery probing must only run on the error path. A healthy
 // upstream must serve normally with the error handler never firing.
 func TestHealthyProxyDoesNotInvokeErrorHandler(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// A real HTTP backend that responds 200.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

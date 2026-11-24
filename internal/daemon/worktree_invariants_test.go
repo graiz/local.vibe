@@ -26,7 +26,7 @@ func putRoute(t *testing.T, s *Server, name, body string) *httptest.ResponseReco
 // route whose behavior changed silently on the next daemon restart, because
 // Parent is recomputed from the name at load rather than stored.
 func TestUpdateEnforcesWorktreeInvariants(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	s.table.Add(&Route{
 		Name: "feat.app", Parent: "app", Type: RouteManaged,
@@ -63,7 +63,7 @@ func TestUpdateEnforcesWorktreeInvariants(t *testing.T) {
 // against a directory that isn't a worktree used to succeed, spawn a child,
 // and then deregister itself and kill that child on the first visit.
 func TestRegisterRejectsNonWorktreeDir(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	w := postRegister(t, s, `{"name":"feat.app","cmd":"sleep 30","dir":"`+t.TempDir()+`"}`)
@@ -81,7 +81,7 @@ func TestRegisterRejectsNonWorktreeDir(t *testing.T) {
 // route fell through to preflightPort → killPort and SIGTERM'd that route's
 // server instead of reporting the conflict.
 func TestRegisterRejectsPrimaryPortHeldByAnotherRoute(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	s.table.Add(&Route{
 		Name: "other", Type: RouteManaged, Port: 3410, Cmd: "sleep 30", RegisteredAt: time.Now(),
@@ -101,7 +101,7 @@ func TestRegisterRejectsPrimaryPortHeldByAnotherRoute(t *testing.T) {
 // would strand both (Stop reports "not running" while the child keeps
 // serving; its eventual exit flips nothing). The API requires a stop first.
 func TestUpdateRejectsRenamingRunningManagedRoute(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	rt := &Route{
 		Name: "app", Type: RouteManaged,

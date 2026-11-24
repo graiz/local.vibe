@@ -29,7 +29,7 @@ func TestRouteRequestNoOAuthFallbackRedirect(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	port := testPortFromURL(t, upstream.URL)
 	s.table.Add(&Route{
 		Name:         "screener",
@@ -52,7 +52,7 @@ func TestRouteRequestNoOAuthFallbackRedirect(t *testing.T) {
 }
 
 func TestOAuthCallbackBridgeListenerRedirectsToVibeHost(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	defer s.stopOAuthBridgeListeners()
 
 	appPort := pickFreePort(t)
@@ -89,7 +89,7 @@ func TestOAuthCallbackBridgeListenerRedirectsToVibeHost(t *testing.T) {
 }
 
 func TestOAuthCallbackBridgeForwardsArbitraryPath(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	defer s.stopOAuthBridgeListeners()
 
 	appPort := pickFreePort(t)
@@ -127,7 +127,7 @@ func TestOAuthCallbackBridgeForwardsArbitraryPath(t *testing.T) {
 }
 
 func TestAPIRejectsOAuthCallbackPortMatchingRoutePort(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	body, _ := json.Marshal(map[string]any{
 		"name":                "screener",

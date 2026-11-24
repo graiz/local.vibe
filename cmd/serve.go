@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/graiz/local.vibe/internal/config"
 	"github.com/graiz/local.vibe/internal/daemon"
@@ -30,6 +32,16 @@ var serveCmd = &cobra.Command{
 			cfg = config.DefaultConfig()
 		}
 		srv := daemon.NewServer(cfg)
+		// launchctl kickstart -k, `vibe daemon stop`, and a terminal ^C all
+		// deliver a signal. Without handling it the process just dies:
+		// in-flight requests are cut, the socket and pid file are left
+		// behind, and Server.Stop's orderly shutdown never runs.
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+		go func() {
+			<-sigs
+			srv.Stop()
+		}()
 		return srv.Start()
 	},
 }

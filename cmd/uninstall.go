@@ -7,7 +7,7 @@ import (
 var uninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Reverse `vibe setup`: remove DNS, port forwarding, autostart, trusted CA",
-	Long: `Removes everything `+ "`vibe setup`"+` installed on this machine:
+	Long: `Removes everything ` + "`vibe setup`" + ` installed on this machine:
 
   macOS:    pf LaunchDaemon, dnsmasq config, /etc/resolver/vibe, LaunchAgent,
             and the trusted CA in your Keychain

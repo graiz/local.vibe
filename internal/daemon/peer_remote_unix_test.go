@@ -66,7 +66,7 @@ func TestPeerServeRouteRemoteRecovery(t *testing.T) {
 		wantText    string
 	}{
 		{"boot.vibe", true, "is starting"},
-		{"stuck.vibe", false, "isn't running"},
+		{"stuck.vibe", false, "is not running"},
 	} {
 		code, body := peerGetRoute(t, a, b, c.host)
 		if code != http.StatusServiceUnavailable {

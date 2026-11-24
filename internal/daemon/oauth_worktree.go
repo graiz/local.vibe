@@ -73,6 +73,48 @@ func (s *Server) parentBridgePort(route *Route) int {
 	return parent.OAuthCallbackPort
 }
 
+// oauthBridgeModifier returns the reverse proxy's ModifyResponse hook for
+// OAuth bridging, or nil when the route has no bridge. For worktrees: tag
+// outbound authorize URLs — in 3xx Locations AND in small JSON bodies
+// (client-side signIn() receives {"url": ...} and navigates itself) — so the
+// parent's callback bridge can route the callback back to this worktree's
+// origin. For parent and worktrees alike: point bridge-host redirects
+// (post-login bounces to http://localhost:<N>/...) back at this route's own
+// origin. Accept-Encoding is stripped from r so JSON bodies arrive
+// uncompressed and taggable.
+//
+// Shared by the local proxy and the peer listener's proxy: a remote viewer's
+// browser reaches the callback through its own daemon's bridge (see
+// oauth_peer_bridge.go), so the same tagging and rewrites must apply on the
+// relay hop too.
+func (s *Server) oauthBridgeModifier(route *Route, r *http.Request) func(*http.Response) error {
+	bridgePort := route.OAuthCallbackPort
+	isWorktree := false
+	if bridgePort == 0 {
+		bridgePort = s.parentBridgePort(route)
+		isWorktree = bridgePort > 0
+	}
+	if bridgePort == 0 {
+		return nil
+	}
+	routeName := route.Name
+	vibeHost := routeName + "." + s.cfg.Daemon.TLD
+	scheme := s.vibeScheme()
+	if isWorktree {
+		r.Header.Del("Accept-Encoding")
+	}
+	return func(resp *http.Response) error {
+		if isWorktree {
+			tagOAuthAuthorizeRedirect(resp, routeName, bridgePort)
+			if err := tagOAuthJSONResponse(resp, routeName, bridgePort); err != nil {
+				return err
+			}
+		}
+		rewriteBridgeHostRedirect(resp, scheme, vibeHost, bridgePort)
+		return nil
+	}
+}
+
 // tagOAuthAuthorizeRedirect rewrites the state parameter of an outbound OAuth
 // authorize redirect so the callback bridge can route the eventual callback
 // back to the originating worktree. It only touches absolute 3xx Locations

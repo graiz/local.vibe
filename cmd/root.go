@@ -15,6 +15,11 @@ var rootCmd = &cobra.Command{
 
 Instead of remembering localhost:3000, localhost:5678, localhost:8123...
 just use myapp.vibe, n8n.vibe, desk.vibe.`,
+	// Commands return errors; Execute prints them once, as "error: ...", and
+	// exits 1. Cobra's own echo and the usage dump would otherwise bury a
+	// one-line "daemon not running" under the full flag list.
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
 // SetVersion sets the CLI version string (populated via ldflags at build time).
@@ -25,7 +30,7 @@ func SetVersion(v string) {
 // Execute runs the root command. Called from main().
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }

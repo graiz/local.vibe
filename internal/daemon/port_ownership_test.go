@@ -127,7 +127,7 @@ func TestManagedRouteDoesNotProxyStrangerThatSpeaksHTTP(t *testing.T) {
 	}))
 	defer stranger.Close()
 
-	s := testServer()
+	s := testServer(t)
 	port := testPortFromURL(t, stranger.URL)
 
 	route := &Route{Name: "sq", Type: RouteManaged, Port: port, Cmd: "jekyll serve", RegisteredAt: time.Now()}
@@ -178,7 +178,7 @@ func TestHandleRepairRediscoversWhenPortForeign(t *testing.T) {
 	route.Running.Store(true)
 	s.table.Add(route)
 
-	req := httptest.NewRequest("GET", "/_api/routes/sq/repair", nil)
+	req := httptest.NewRequest("POST", "/_api/routes/sq/repair", nil)
 	w := httptest.NewRecorder()
 	s.apiHandler(w, req)
 

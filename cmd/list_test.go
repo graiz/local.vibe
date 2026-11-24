@@ -87,7 +87,7 @@ func TestWriteRouteTablePeerRows(t *testing.T) {
 	now := time.Now()
 	routes := []client.RouteInfo{{Name: "dialt", URL: "https://dialt.vibe", Port: 3012, Type: "managed", Running: true, Ready: true, RegisteredAt: now}}
 	peers := &client.PeersResponse{Enabled: true, Peers: []client.PeerInfo{
-		{Name: "imac", Routes: []client.PeerRouteInfo{{Name: "faces", Ready: true}, {Name: "dialt", Ready: true}}},
+		{Name: "imac", Reachable: true, Routes: []client.PeerRouteInfo{{Name: "faces", Ready: true}, {Name: "dialt", Ready: true}}},
 	}}
 	for _, long := range []bool{false, true} {
 		var buf bytes.Buffer
@@ -103,10 +103,14 @@ func TestWriteRouteTablePeerRows(t *testing.T) {
 			want = 9
 		}
 		for _, l := range lines[1:] {
-			// "on imac" is one cell rendered as two fields.
+			// The peer note ("on imac[, shadowed by …]") is one cell of
+			// several words; count it once.
 			n := len(strings.Fields(l))
-			if strings.Contains(l, "on imac") {
-				n--
+			if i := strings.Index(l, "on imac"); i >= 0 {
+				n = len(strings.Fields(l[:i])) + 1
+				if long {
+					n += 2 // DIR and CMD dashes follow the note
+				}
 			} else if strings.Contains(l, " ago") {
 				n--
 			}
@@ -114,7 +118,10 @@ func TestWriteRouteTablePeerRows(t *testing.T) {
 				t.Errorf("long=%v: row has %d cells, want %d: %q", long, n, want, l)
 			}
 		}
-		if !strings.Contains(lines[2], "ready") || !strings.Contains(lines[3], "shadowed") {
+		// A shadowed row keeps the peer's own status; the shadow goes in
+		// the note.
+		if !strings.Contains(lines[2], "ready") || !strings.Contains(lines[3], "ready") ||
+			!strings.Contains(lines[3], "shadowed by this machine") {
 			t.Errorf("long=%v: peer statuses wrong:\n%s", long, buf.String())
 		}
 	}

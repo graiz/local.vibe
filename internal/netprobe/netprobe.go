@@ -11,6 +11,21 @@ import (
 	"time"
 )
 
+// DialLoopback connects to port on the loopback interface, trying IPv4 then
+// IPv6 — some dev servers (Vite) bind only [::1]. This is the one place that
+// rule lives; the daemon's readiness dial and its TLS probe both use it.
+func DialLoopback(port int, timeout time.Duration) (net.Conn, error) {
+	var lastErr error
+	for _, addr := range []string{fmt.Sprintf("127.0.0.1:%d", port), fmt.Sprintf("[::1]:%d", port)} {
+		conn, err := net.DialTimeout("tcp", addr, timeout)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 // PortOpen reports whether a TCP connection to 127.0.0.1:port succeeds within
 // timeout. Dialing the privileged ports (:80/:443) succeeds only when the
 // redirect is forwarding them to the daemon, so this detects a flushed redirect

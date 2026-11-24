@@ -11,16 +11,15 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/cert"
 	"github.com/graiz/local.vibe/internal/config"
 	vdns "github.com/graiz/local.vibe/internal/dns"
+	"github.com/graiz/local.vibe/internal/netprobe"
 	"github.com/graiz/local.vibe/internal/peer"
 )
 
@@ -37,15 +36,27 @@ type Server struct {
 	ReadyTimeout time.Duration // max time to wait for port to accept connections; 0 = 30s default
 	ConfigDir    string        // override config dir for persistence; empty = default (~/.vibe)
 
-	// TLS hot-reload state
+	// TLS hot-reload state. tlsMu guards all four: the CA pair is set by
+	// startTLS (a goroutine) and read by every later reloadTLSCert.
 	tlsMu   sync.RWMutex
 	tlsCert *tls.Certificate
 	caCert  *x509.Certificate
 	caKey   *ecdsa.PrivateKey
 
+	// saveMu serializes saveStickyRoutes + the TLS leaf reload it triggers.
+	// Two concurrent saves could otherwise rename an older snapshot over a
+	// newer one (dropping, say, a just-recorded pid) and interleave their
+	// cert/key writes.
+	saveMu sync.Mutex
+
 	oauthBridgeMu        sync.Mutex
 	oauthBridgeServers   map[int]*http.Server
 	oauthBridgeListeners map[int]net.Listener
+	// Peer OAuth bridge bookkeeping (oauth_peer_bridge.go), guarded by
+	// oauthBridgeMu: ports a local route took back (not rebound for
+	// peerBridgeYieldWindow) and ports whose bind failure was already logged.
+	oauthPeerYielded    map[int]time.Time
+	oauthPeerBindFailed map[int]bool
 
 	dnsServer *vdns.Server // nil unless cfg.Daemon.DNS.Enabled
 
@@ -53,6 +64,21 @@ type Server struct {
 	// so concurrent requests to a just-stopped route don't each spawn a
 	// duplicate process. Keys are route names; presence means "starting".
 	autoStarting sync.Map
+
+	// pidWatchers dedupes exit watchers for PID-tracked routes: name → pid
+	// currently watched. Each watcher holds a kqueue/pidfd until the process
+	// dies, so re-registering the same pid must not add another.
+	pidWatchers sync.Map
+
+	// bookmarkTransports caches one *http.Transport per bookmark upstream
+	// (see bookmarkTransport). Keys are "host|insecure".
+	bookmarkTransports sync.Map
+
+	// lostAccessRestarts records when each route was last restarted for
+	// losing access to its working directory (lost_access.go), so a child
+	// that hits the same wall again passes its 5xx through instead of
+	// restart-looping. Keys are route names; values are time.Time.
+	lostAccessRestarts sync.Map
 
 	// Per-route lifecycle timers (event-based replacements for the monitor
 	// sweep): a one-shot TTL-expiry timer and a self-rescheduling idle timer.
@@ -70,14 +96,19 @@ type Server struct {
 	peerList          []peer.Peer
 	peerInviteCode    string
 	peerInviteExpires time.Time
+	peerPairFailures  int // rejected proofs against the current invite
 	peerSrv           *http.Server
 	peerLn            net.Listener
 	peerStates        map[string]*peerState
 }
 
-// NewServer creates a daemon server with the given configuration.
+// NewServer creates a daemon server with the given configuration. The
+// lifecycle wiring — the managed-exit handler, the env hook, and the route
+// table's add/remove hooks that arm timers and clear per-route state — is
+// part of construction, not Start, so a Server behaves the same whether it
+// serves real listeners or is driven in-process by tests.
 func NewServer(cfg *config.Config) *Server {
-	return &Server{
+	s := &Server{
 		cfg:                  cfg,
 		table:                NewRouteTable(),
 		procs:                NewProcessManager(),
@@ -88,6 +119,13 @@ func NewServer(cfg *config.Config) *Server {
 		idleTimers:           make(map[string]*time.Timer),
 		peerStates:           make(map[string]*peerState),
 	}
+	s.procs.SetExitHandler(s.handleManagedExit)
+	s.procs.SetEnvHook(s.oauthEnvForRoute)
+	if cfg.Logging.MaxSizeMB > 0 {
+		s.procs.maxLogBytes = int64(cfg.Logging.MaxSizeMB) << 20
+	}
+	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
+	return s
 }
 
 // Start binds the TCP port, loads persisted routes, starts the Unix socket
@@ -97,22 +135,9 @@ func (s *Server) Start() error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	// Register the event-based exit handler before loading/adopting routes, so
-	// adopted children's PID-exit watchers report through it.
-	s.procs.SetExitHandler(s.handleManagedExit)
-	s.procs.SetEnvHook(s.oauthEnvForRoute)
-	// Arm/cancel per-route TTL + idle timers from the table's add/remove hooks,
-	// so loaded routes below get their timers too.
-	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
-
 	if err := loadStickyRoutes(s.table, s.configDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load persisted routes: %v\n", err)
 	}
-	// Re-adopt managed children that outlived a previous daemon (e.g. across
-	// `vibe daemon restart`), so they report as running immediately rather than
-	// stopped. This only re-attaches to live, listening processes — it never
-	// spawns anything.
-	s.adoptManagedOrphansOnStartup()
 	if err := s.reconcileOAuthBridgeListeners(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not start oauth callback bridge listeners: %v\n", err)
 	}
@@ -131,13 +156,20 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	s.httpSrv = &http.Server{
-		Addr:    fmt.Sprintf("127.0.0.1:%d", s.cfg.Daemon.Port),
-		Handler: mux,
-	}
+	s.httpSrv = newHTTPServer(mux)
+	s.httpSrv.Addr = fmt.Sprintf("127.0.0.1:%d", s.cfg.Daemon.Port)
 
 	pidFile := fmt.Sprintf("%s/daemon.pid", config.Dir())
 	_ = os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", os.Getpid())), 0644)
+
+	// Re-adopt managed children that outlived a previous daemon (e.g. across
+	// `vibe daemon restart`), so they report as running rather than stopped.
+	// This only re-attaches to live, listening processes — it never spawns
+	// anything. It runs after the listener is bound: each survivor costs a
+	// `ps` and an `lsof`, and several of them used to push startup past the
+	// readiness wait `vibe dev` allows. A request that arrives before the
+	// pass reaches its route adopts on demand (recoverManagedRoute).
+	go s.adoptManagedOrphansOnStartup()
 
 	go s.startUnixSocket(mux)
 	// Route lifecycle is event-based (no sweep): managed-process death via
@@ -180,7 +212,9 @@ func (s *Server) Stop() {
 	close(s.quit)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = s.httpSrv.Shutdown(ctx)
+	if s.httpSrv != nil {
+		_ = s.httpSrv.Shutdown(ctx)
+	}
 	if s.httpsSrv != nil {
 		_ = s.httpsSrv.Shutdown(ctx)
 	}
@@ -214,9 +248,23 @@ func (s *Server) startUnixSocket(handler http.Handler) {
 		fmt.Fprintf(os.Stderr, "warning: unix socket unavailable: %v\n", err)
 		return
 	}
-	_ = os.Chmod(s.cfg.Daemon.Socket, 0666) // allow non-root CLI to connect
-	srv := &http.Server{Handler: handler}
-	_ = srv.Serve(ln)
+	// Owner-only: the CLI runs as the same user as the daemon, and the socket
+	// grants the full API (including shell execution) to whoever can connect.
+	_ = os.Chmod(s.cfg.Daemon.Socket, 0600)
+	_ = newHTTPServer(handler).Serve(ln)
+}
+
+// newHTTPServer builds an http.Server with the timeouts every daemon listener
+// needs. A connection that never finishes its headers, or idles forever,
+// shouldn't pin a goroutine — the peer listener is reachable from the LAN,
+// and even loopback listeners are better off bounded. Body sizes are capped
+// per handler (the proxy paths must stream uploads untouched).
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 }
 
 func (s *Server) startTLS(handler http.Handler) {
@@ -227,8 +275,10 @@ func (s *Server) startTLS(handler http.Handler) {
 		fmt.Fprintf(os.Stderr, "warning: TLS CA setup failed: %v\n", err)
 		return
 	}
+	s.tlsMu.Lock()
 	s.caCert = caCert
 	s.caKey = caKey
+	s.tlsMu.Unlock()
 
 	// Generate initial cert with current route names
 	if err := s.reloadTLSCert(); err != nil {
@@ -250,7 +300,7 @@ func (s *Server) startTLS(handler http.Handler) {
 		return
 	}
 
-	s.httpsSrv = &http.Server{Handler: handler}
+	s.httpsSrv = newHTTPServer(handler)
 	fmt.Printf("vibe daemon HTTPS on 127.0.0.1:%d\n", s.cfg.Daemon.TLS.Port)
 	if err := s.httpsSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "HTTPS server error: %v\n", err)
@@ -284,13 +334,16 @@ func (s *Server) tlsHostnames() []string {
 // reloadTLSCert regenerates the leaf certificate with SANs for all current routes
 // and atomically swaps it into the running TLS listener.
 func (s *Server) reloadTLSCert() error {
-	if s.caCert == nil || s.caKey == nil {
+	s.tlsMu.RLock()
+	caCert, caKey := s.caCert, s.caKey
+	s.tlsMu.RUnlock()
+	if caCert == nil || caKey == nil {
 		return nil // TLS not initialized
 	}
 	certsDir := s.tlsCertsDir()
 	hostnames := s.tlsHostnames()
 
-	certFile, keyFile, err := cert.GenerateLeaf(certsDir, s.caCert, s.caKey, hostnames)
+	certFile, keyFile, err := cert.GenerateLeaf(certsDir, caCert, caKey, hostnames)
 	if err != nil {
 		return err
 	}
@@ -323,8 +376,8 @@ func (s *Server) tlsCertsDir() string {
 //   - unknown hosts → dashboard with "not found" banner
 func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
-	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
 
 	// Redirect HTTP → HTTPS when TLS is enabled (browser requests only;
@@ -335,8 +388,7 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.HasSuffix(host, "."+s.cfg.Daemon.TLD) {
-		name := strings.TrimSuffix(host, "."+s.cfg.Daemon.TLD)
+	if name, ok := s.routeNameFromHost(host); ok {
 
 		// local.vibe is the built-in dashboard — always serve directly.
 		if name == "local" {
@@ -403,9 +455,22 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 				s.serveRepairPage(w, r, route)
 				return
 			}
+			// Answering again. Only managed routes have a readiness poll to
+			// flip this back; without it a sticky route stays "starting" in
+			// `vibe ls` and the peer listing after one failed round-trip. A
+			// failure recorded earlier (the readiness probe giving up before a
+			// slow first compile bound late) is stale now — left in place it
+			// would label the next brief flap "isn't running" with no retry.
+			route.Ready.Store(true)
+			if route.Type == RouteManaged && route.LoadFailure() != nil {
+				route.SetFailure(nil)
+			}
 			route.TouchActivity()
-			target, _ := url.Parse(fmt.Sprintf("http://localhost:%d", route.Port))
+			target, transport := localUpstream(route)
 			proxy := httputil.NewSingleHostReverseProxy(target)
+			if transport != nil {
+				proxy.Transport = transport
+			}
 			// Dev servers increasingly gate their hot-reload WebSocket on the
 			// request's Origin: Next.js 15.2+ (allowedDevOrigins) answers an
 			// upgrade carrying a foreign Origin with 200 HTML instead of 101.
@@ -451,38 +516,22 @@ func (s *Server) routeRequest(w http.ResponseWriter, r *http.Request) {
 				if errors.Is(err, context.Canceled) || req.Context().Err() != nil {
 					return
 				}
+				if errors.Is(err, errLostDirAccess) {
+					s.restartLostAccess(rw, req, route)
+					return
+				}
 				s.handleProxyError(rw, req, route)
 			}
-			// OAuth bridging (see oauth_worktree.go). For worktrees: tag
-			// outbound authorize URLs — in 3xx Locations AND in small JSON
-			// bodies (client-side signIn() receives {"url": ...} and
-			// navigates itself) — so the parent's callback bridge can route
-			// the callback back to this worktree's origin. For parent and
-			// worktrees alike: point bridge-host redirects (post-login
-			// bounces to http://localhost:<N>/...) back at this route's own
-			// origin. Accept-Encoding is stripped so JSON bodies arrive
-			// uncompressed and taggable.
-			bridgePort := route.OAuthCallbackPort
-			isWorktree := false
-			if bridgePort == 0 {
-				bridgePort = s.parentBridgePort(route)
-				isWorktree = bridgePort > 0
-			}
-			if bridgePort > 0 {
-				routeName := route.Name
-				vibeHost := routeName + "." + s.cfg.Daemon.TLD
-				scheme := s.vibeScheme()
-				if isWorktree {
-					r.Header.Del("Accept-Encoding")
-				}
+			bridgeModify := s.oauthBridgeModifier(route, r)
+			proxy.ModifyResponse = bridgeModify
+			if route.Type == RouteManaged {
 				proxy.ModifyResponse = func(resp *http.Response) error {
-					if isWorktree {
-						tagOAuthAuthorizeRedirect(resp, routeName, bridgePort)
-						if err := tagOAuthJSONResponse(resp, routeName, bridgePort); err != nil {
-							return err
-						}
+					if s.lostDirAccess(route, resp) {
+						return errLostDirAccess
 					}
-					rewriteBridgeHostRedirect(resp, scheme, vibeHost, bridgePort)
+					if bridgeModify != nil {
+						return bridgeModify(resp)
+					}
 					return nil
 				}
 			}
@@ -533,7 +582,7 @@ func (s *Server) parentKnown(app string) bool {
 // parent app. 307, never 301 — a permanent redirect would be cached by the
 // browser and poison a future worktree that reuses the same branch name.
 func (s *Server) redirectToParent(w http.ResponseWriter, r *http.Request, parent string) {
-	http.Redirect(w, r, fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), parent, s.cfg.Daemon.TLD), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, s.routeURL(parent)+"/", http.StatusTemporaryRedirect)
 }
 
 // managedOwnerCheckInterval bounds how often the managed request hot path
@@ -590,6 +639,7 @@ func (s *Server) managedStrangerOnPort(route *Route) bool {
 // repair page so the client retries once the port answers again.
 func (s *Server) handleProxyError(w http.ResponseWriter, r *http.Request, route *Route) {
 	route.Ready.Store(false)
+	forgetUpstreamScheme(route)
 	if route.Type == RouteManaged {
 		if s.recoverManagedRoute(w, r, route) {
 			return
@@ -709,6 +759,8 @@ func (s *Server) configDir() string {
 }
 
 func (s *Server) saveStickyRoutes() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	if err := saveStickyRoutes(s.table, s.configDir()); err != nil {
 		return err
 	}
@@ -767,17 +819,13 @@ func findFreePort(table *RouteTable) (int, error) {
 	return port, nil
 }
 
+// isPortReady reports whether something accepts TCP connections on the
+// loopback port (IPv4 or IPv6 — see netprobe.DialLoopback).
 func (s *Server) isPortReady(port int) bool {
-	// Try IPv4 first, then IPv6 — some tools (e.g. vite) only bind to [::1].
-	for _, addr := range []string{
-		fmt.Sprintf("127.0.0.1:%d", port),
-		fmt.Sprintf("[::1]:%d", port),
-	} {
-		conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return true
-		}
+	conn, err := netprobe.DialLoopback(port, 300*time.Millisecond)
+	if err != nil {
+		return false
 	}
-	return false
+	conn.Close()
+	return true
 }

@@ -1,17 +1,23 @@
 package daemon
 
-import "testing"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestScanLogForRecovery(t *testing.T) {
 	cases := []struct {
-		name        string
-		tail        string
-		cmd         string
-		wantAction  string
-		wantPID     int
-		wantPort    int
-		wantSugCmd  string
-		wantSubstr  string // optional: must appear in Message
+		name       string
+		tail       string
+		cmd        string
+		wantAction string
+		wantPID    int
+		wantPort   int
+		wantSugCmd string
+		wantSubstr string // optional: must appear in Message
 	}{
 		{
 			name: "nextjs-orphan-pid",
@@ -139,10 +145,10 @@ func TestSuggestPython3Cmd(t *testing.T) {
 		{"python app.py", "python3 app.py", true},
 		{"python -m http.server", "python3 -m http.server", true},
 		{"  python app.py  ", "  python3 app.py  ", true},
-		{"python3 app.py", "python3 app.py", false},      // already python3
-		{"pythonw app.py", "pythonw app.py", false},      // word-boundary stops match
-		{"node app.js", "node app.js", false},            // no python
-		{"", "", false},                                  // empty
+		{"python3 app.py", "python3 app.py", false},                 // already python3
+		{"pythonw app.py", "pythonw app.py", false},                 // word-boundary stops match
+		{"node app.js", "node app.js", false},                       // no python
+		{"", "", false},                                             // empty
 		{"/usr/bin/python app.py", "/usr/bin/python app.py", false}, // paths kept as-is (not safe to rewrite)
 	}
 	for _, tc := range cases {
@@ -150,5 +156,24 @@ func TestSuggestPython3Cmd(t *testing.T) {
 		if got != tc.want || ok != tc.ok {
 			t.Errorf("suggestPython3Cmd(%q) = (%q, %v); want (%q, %v)", tc.in, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+// tailLogFile must return the last lines of a file far larger than the read
+// window, without reading the whole file.
+func TestTailLogFileLargeFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "big.log")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20000; i++ {
+		fmt.Fprintf(f, "line %d of filler output that pads the file well past the window\n", i)
+	}
+	fmt.Fprintln(f, "the last line")
+	f.Close()
+	got := tailLogFile(p, 2)
+	if !strings.HasSuffix(got, "the last line") || !strings.Contains(got, "line 19999") {
+		t.Errorf("tail = %q", got)
 	}
 }

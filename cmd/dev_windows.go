@@ -84,8 +84,11 @@ func replaceVibeBinary(srcDir, binary string) error {
 
 	if err := os.Rename(tmpBin, binary); err != nil {
 		// Try to put the old binary back so the user isn't left with nothing.
-		_ = os.Rename(oldBin, binary)
 		os.Remove(tmpBin)
+		if restoreErr := os.Rename(oldBin, binary); restoreErr != nil {
+			return fmt.Errorf("install failed: %w — and restoring the previous binary failed too (%v); it is at %s, rename it back to %s by hand",
+				err, restoreErr, oldBin, binary)
+		}
 		return fmt.Errorf("install failed: %w", err)
 	}
 	return nil

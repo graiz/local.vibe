@@ -21,6 +21,10 @@ import (
 // validName matches DNS-safe route names: lowercase letters, digits, and hyphens.
 var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$`)
 
+// apiMaxBodyBytes caps a vibe API request body. The largest legitimate body
+// is a register/update carrying a data: icon, well under this.
+const apiMaxBodyBytes = 1 << 20
+
 // writeJSONError sends a well-formed JSON error response. Using fmt.Sprintf
 // into a literal `{"error":"..."}` string is unsafe when the message can
 // contain quotes, backslashes, or newlines (e.g. tailed process output).
@@ -209,6 +213,10 @@ func (s *Server) preflightPort(port int) *Recovery {
 	if port <= 0 {
 		return nil
 	}
+	// A peer route's OAuth bridge may be holding the port on this daemon's
+	// behalf; a local route always wins, so hand it back first (killPort
+	// can't — it refuses to signal the daemon itself).
+	s.releasePeerOAuthBridge(port)
 	if !s.isPortReady(port) {
 		return nil
 	}
@@ -298,7 +306,7 @@ type registerRequest struct {
 	Proxy              *bool          `json:"proxy,omitempty"`                // bookmark: reverse-proxy instead of 307-redirect
 	InsecureSkipVerify *bool          `json:"insecure_skip_verify,omitempty"` // bookmark+proxy: skip upstream TLS verify
 	OAuthCallbackPort  *int           `json:"oauth_callback_port,omitempty"`
-	ReservePorts         map[string]int `json:"reserve_ports,omitempty"` // managed: named auxiliary ports, exposed as PORT_<UPPER_NAME>
+	ReservePorts       map[string]int `json:"reserve_ports,omitempty"` // managed: named auxiliary ports, exposed as PORT_<UPPER_NAME>
 }
 
 type routeResponse struct {
@@ -322,6 +330,86 @@ type routeResponse struct {
 	Dir                string     `json:"dir,omitempty"`
 }
 
+// apiRoute is one entry in the daemon API: a method, a path pattern whose
+// single {name} segment captures a route (or peer) name, the handler, and
+// two access attributes. ownRoute marks the endpoints a route's own pages may
+// drive from the route's .vibe origin (its start, repair and worktree-picker
+// pages; the edit_cmd recovery's PUT) — that origin is also every third-party
+// script the app loads, so it gets exactly these, for exactly its own name.
+// localOnly marks reads that return machine-local detail (filesystem paths,
+// peer hosts) and are answered only for the dashboard host, loopback, or the
+// unix socket. Dispatch and isDaemonAPIPath both read this table, so an
+// endpoint exists in one place.
+type apiRoute struct {
+	method    string
+	pattern   string
+	handler   func(s *Server, w http.ResponseWriter, r *http.Request, name string)
+	ownRoute  bool
+	localOnly bool
+}
+
+var apiRoutes = []apiRoute{
+	{method: http.MethodGet, pattern: "/health", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handleHealth(w, r) }},
+	{method: http.MethodGet, pattern: "/routes", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handleListRoutes(w, r) }},
+	{method: http.MethodPost, pattern: "/routes", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handleRegister(w, r) }},
+	{method: http.MethodGet, pattern: "/worktrees", localOnly: true, handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handleListWorktrees(w, r) }},
+	{method: http.MethodGet, pattern: "/routes/{name}/ready", handler: (*Server).handleReady},
+	{method: http.MethodPost, pattern: "/routes/{name}/repair", ownRoute: true, handler: (*Server).handleRepair},
+	{method: http.MethodPut, pattern: "/routes/{name}", ownRoute: true, handler: (*Server).handleUpdate},
+	{method: http.MethodDelete, pattern: "/routes/{name}", handler: (*Server).handleDeregister},
+	{method: http.MethodDelete, pattern: "/routes/{name}/stop", ownRoute: true, handler: (*Server).handleStop},
+	{method: http.MethodPost, pattern: "/routes/{name}/stop", ownRoute: true, handler: (*Server).handleStop},
+	{method: http.MethodPost, pattern: "/routes/{name}/start", ownRoute: true, handler: (*Server).handleStart},
+	{method: http.MethodPost, pattern: "/routes/{name}/worktrees", ownRoute: true, handler: (*Server).handleAdoptWorktree},
+	{method: http.MethodPut, pattern: "/preferences", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handleSetPreferences(w, r) }},
+	{method: http.MethodGet, pattern: "/peers", localOnly: true, handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeersList(w, r) }},
+	{method: http.MethodPost, pattern: "/peers/invite", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerInvite(w, r) }},
+	{method: http.MethodPost, pattern: "/peers", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerAdd(w, r) }},
+	{method: http.MethodDelete, pattern: "/peers/{name}", handler: (*Server).handlePeerRemove},
+}
+
+// match reports whether path (already stripped of /_api) fits the pattern,
+// returning the captured {name}. Names never contain "/", so segments compare
+// one to one.
+func (rt apiRoute) match(path string) (name string, ok bool) {
+	want := strings.Split(rt.pattern, "/")
+	got := strings.Split(path, "/")
+	if len(want) != len(got) {
+		return "", false
+	}
+	for i := range want {
+		switch {
+		case want[i] == "{name}":
+			if got[i] == "" {
+				return "", false
+			}
+			name = got[i]
+		case want[i] != got[i]:
+			return "", false
+		}
+	}
+	return name, true
+}
+
+// lookupAPIRoute finds the table entry for a request, or nil.
+func lookupAPIRoute(method, path string) (*apiRoute, string) {
+	for i := range apiRoutes {
+		if apiRoutes[i].method != method {
+			continue
+		}
+		if name, ok := apiRoutes[i].match(path); ok {
+			return &apiRoutes[i], name
+		}
+	}
+	return nil, ""
+}
+
+// isDaemonAPIPath reports whether method+path is one of vibe's own endpoints.
+func isDaemonAPIPath(method, path string) bool {
+	rt, _ := lookupAPIRoute(method, path)
+	return rt != nil
+}
+
 // apiHandler routes /_api/* requests to the appropriate handler.
 func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/_api")
@@ -329,122 +417,53 @@ func (s *Server) apiHandler(w http.ResponseWriter, r *http.Request) {
 	// On non-local .vibe hosts, reserve only the daemon's known API routes.
 	// Unknown /_api/* paths should continue through normal proxying so apps
 	// that expose their own /_api namespace (e.g. Jekyll Admin) still work.
-	host := r.Host
-	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
 	nonLocalVibeHost := false
-	if strings.HasSuffix(host, "."+s.cfg.Daemon.TLD) {
-		name := strings.TrimSuffix(host, "."+s.cfg.Daemon.TLD)
+	if name, ok := s.routeNameFromHost(r.Host); ok {
 		nonLocalVibeHost = name != "local"
 	}
-	if nonLocalVibeHost && !isDaemonAPIPath(r.Method, path) {
-		s.routeRequest(w, r)
-		return
-	}
-
-	// Reject state-changing calls from a foreign page. Checked here — after
-	// the passthrough above — so a proxied app's own /_api/ endpoints keep
-	// working cross-origin; only vibe's own API is guarded. See origin.go.
-	if apiStateChanging(r.Method, path) && s.apiRequestCrossSite(r) {
-		writeJSONError(w, http.StatusForbidden,
-			"cross-site request blocked: the vibe API only accepts state-changing requests from the dashboard, a route's own page, or a local client like the vibe CLI")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-
-	switch {
-	case r.Method == http.MethodGet && path == "/health":
-		s.handleHealth(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/ready"):
-		name := strings.TrimPrefix(path, "/routes/")
-		name = strings.TrimSuffix(name, "/ready")
-		s.handleReady(w, r, name)
-	case r.Method == http.MethodGet && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/repair"):
-		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/repair")
-		s.handleRepair(w, r, name)
-	case r.Method == http.MethodGet && path == "/worktrees":
-		s.handleListWorktrees(w, r)
-	case r.Method == http.MethodGet && path == "/routes":
-		s.handleListRoutes(w, r)
-	case r.Method == http.MethodPost && path == "/routes":
-		s.handleRegister(w, r)
-	case r.Method == http.MethodPut && strings.HasPrefix(path, "/routes/"):
-		name := strings.TrimPrefix(path, "/routes/")
-		s.handleUpdate(w, r, name)
-	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/routes/"):
-		name := strings.TrimPrefix(path, "/routes/")
-		if strings.HasSuffix(name, "/stop") {
-			s.handleStop(w, r, strings.TrimSuffix(name, "/stop"))
-		} else {
-			s.handleDeregister(w, r, name)
-		}
-	case r.Method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/stop"):
-		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/stop")
-		s.handleStop(w, r, name)
-	case r.Method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/start"):
-		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/start")
-		s.handleStart(w, r, name)
-	case r.Method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/worktrees"):
-		name := strings.TrimSuffix(strings.TrimPrefix(path, "/routes/"), "/worktrees")
-		s.handleAdoptWorktree(w, r, name)
-	case r.Method == http.MethodPut && path == "/preferences":
-		s.handleSetPreferences(w, r)
-	case r.Method == http.MethodGet && path == "/peers":
-		s.handlePeersList(w, r)
-	case r.Method == http.MethodPost && path == "/peers/invite":
-		s.handlePeerInvite(w, r)
-	case r.Method == http.MethodPost && path == "/peers":
-		s.handlePeerAdd(w, r)
-	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/peers/"):
-		s.handlePeerRemove(w, r, strings.TrimPrefix(path, "/peers/"))
-	default:
+	rt, name := lookupAPIRoute(r.Method, path)
+	if rt == nil {
 		if nonLocalVibeHost {
 			s.routeRequest(w, r)
 			return
 		}
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
 	}
-}
 
-func isDaemonAPIPath(method, path string) bool {
-	switch {
-	case method == http.MethodGet && path == "/health":
-		return true
-	case method == http.MethodGet && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/ready"):
-		return true
-	case method == http.MethodGet && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/repair"):
-		return true
-	case method == http.MethodGet && path == "/routes":
-		return true
-	case method == http.MethodGet && path == "/worktrees":
-		return true
-	case method == http.MethodPost && path == "/routes":
-		return true
-	case method == http.MethodPut && strings.HasPrefix(path, "/routes/"):
-		return true
-	case method == http.MethodDelete && strings.HasPrefix(path, "/routes/"):
-		return true
-	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/stop"):
-		return true
-	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/start"):
-		return true
-	case method == http.MethodPost && strings.HasPrefix(path, "/routes/") && strings.HasSuffix(path, "/worktrees"):
-		return true
-	case method == http.MethodPut && path == "/preferences":
-		return true
-	case method == http.MethodGet && path == "/peers":
-		return true
-	case method == http.MethodPost && path == "/peers/invite":
-		return true
-	case method == http.MethodPost && path == "/peers":
-		return true
-	case method == http.MethodDelete && strings.HasPrefix(path, "/peers/"):
-		return true
-	default:
-		return false
+	// Every vibe API body is small JSON. Cap it so a client can't make the
+	// daemon buffer an arbitrary amount; the proxy paths (above) still stream.
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, apiMaxBodyBytes)
 	}
+
+	// Reject state-changing calls from a foreign page. Checked here — after
+	// the passthrough above — so a proxied app's own /_api/ endpoints keep
+	// working cross-origin; only vibe's own API is guarded. See origin.go.
+	if apiStateChanging(r.Method, path) {
+		if s.apiRequestCrossSite(r) {
+			writeJSONError(w, http.StatusForbidden,
+				"cross-site request blocked: the vibe API only accepts state-changing requests from the dashboard, a route's own page, or a local client like the vibe CLI")
+			return
+		}
+		// A route's own origin is trusted only for that route's own
+		// endpoints: the pages vibe serves there need start/stop/repair, and
+		// nothing else — register in particular executes a command line.
+		if originRoute, isRoute := s.originRouteName(r.Header.Get("Origin")); isRoute {
+			if !rt.ownRoute || originRoute != name {
+				writeJSONError(w, http.StatusForbidden,
+					fmt.Sprintf("a page on %s may only operate its own route", s.routeHost(originRoute)))
+				return
+			}
+		}
+	}
+	if rt.localOnly && !s.localDetailsAllowed(r) {
+		writeJSONError(w, http.StatusForbidden, "this detail is only readable from the dashboard or a local client")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	rt.handler(s, w, r, name)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -460,7 +479,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // register.
 type worktreeResponse struct {
 	Parent string `json:"parent"`
-	Name   string `json:"name"`   // the route name it would get: <slug>.<app>
+	Name   string `json:"name"` // the route name it would get: <slug>.<app>
 	Slug   string `json:"slug"`
 	Branch string `json:"branch"`
 	Path   string `json:"path"`
@@ -481,14 +500,13 @@ func (s *Server) handleListWorktrees(w http.ResponseWriter, _ *http.Request) {
 	out := []worktreeResponse{}
 	for _, route := range s.table.List() {
 		for _, d := range s.discoverUnregisteredWorktrees(route) {
-			name := d.Slug + "." + route.Name
 			out = append(out, worktreeResponse{
 				Parent: route.Name,
-				Name:   name,
+				Name:   d.Name,
 				Slug:   d.Slug,
 				Branch: d.Branch,
 				Path:   d.Path,
-				URL:    fmt.Sprintf("%s://%s.%s", s.vibeScheme(), name, s.cfg.Daemon.TLD),
+				URL:    s.routeURL(d.Name),
 			})
 		}
 	}
@@ -510,9 +528,26 @@ func (s *Server) handleListRoutes(w http.ResponseWriter, r *http.Request) {
 		if withLocal {
 			resp[i].Cmd = s.table.ManagedCmd(r)
 			resp[i].Dir = r.Dir
+		} else {
+			// A bookmark URL can carry basic-auth credentials; those are the
+			// user's to see locally, not any .vibe page's.
+			resp[i].ExternalURL = redactUserinfo(resp[i].ExternalURL)
+			if r.Type == RouteBookmark {
+				resp[i].URL = resp[i].ExternalURL
+			}
 		}
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+// redactUserinfo strips user:password@ from a URL, leaving it otherwise intact.
+func redactUserinfo(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
 
 // handleRegister creates a new route. The route type is inferred from the request:
@@ -625,6 +660,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusConflict, fmt.Sprintf("route %q is already running on port %d", req.Name, existing.Port))
 		return
 	}
+	// A PID-tracked route for a process that is already gone would be
+	// removed by the add hook the instant it was added; tell the caller.
+	if req.PID != nil && req.Cmd == "" && !processAlive(*req.PID) {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("pid %d is not running", *req.PID))
+		return
+	}
 
 	route := &Route{
 		Name:         req.Name,
@@ -671,25 +712,26 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		route.Type = RouteTTL
 		exp := time.Now().Add(time.Duration(*req.TTL) * time.Second)
 		route.ExpiresAt = &exp
-		route.TTL = req.TTL
 	default:
 		route.Type = RouteSticky
 	}
 
+	// Adding replaces any existing (stopped) registration under this name —
+	// `vibe start` on an app that already has a route. If anything below
+	// fails, that registration comes back: removing it would leave the table
+	// and routes.json disagreeing until the next daemon restart resurrected it.
+	old, replaced := s.table.Get(req.Name)
 	s.table.Add(route)
+	undo := func() {
+		if replaced {
+			s.table.Add(old)
+		} else {
+			s.table.Remove(route.Name)
+		}
+	}
 
 	// Launch managed process immediately.
 	if route.Type == RouteManaged {
-		// Auto-assign a free port if none was specified.
-		if route.Port == 0 {
-			port, err := findFreePort(s.table)
-			if err != nil {
-				s.table.Remove(route.Name)
-				writeJSONError(w, http.StatusInternalServerError, "could not find a free port")
-				return
-			}
-			route.Port = port
-		}
 		// Assign fresh reserve-port values for worktree routes. The route is
 		// already in the table, so each findFreePort call sees the values
 		// assigned so far and can't hand out a duplicate.
@@ -700,52 +742,27 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				}
 				p, err := findFreePort(s.table)
 				if err != nil {
-					s.table.Remove(route.Name)
+					undo()
 					writeJSONError(w, http.StatusInternalServerError, "could not find a free reserve port")
 					return
 				}
 				route.ReservePorts[kv.Name] = p
 			}
 		}
-		// Clear stale process on the primary port and each reserve_port before
-		// launching. Reserve ports check first so a multi-port app surfaces
-		// the right collision instead of silently bleeding into a stale
-		// holder of a non-routed port (the screener.vibe / task-tracker bug).
-		// Iterate in sorted-name order so behavior is deterministic.
-		for _, kv := range reservePortValuesSorted(route.ReservePorts) {
-			if rec := s.preflightPort(kv.Port); rec != nil {
-				s.table.Remove(route.Name)
-				writePortConflict(w, kv.Port, rec)
-				return
-			}
-		}
-		if rec := s.preflightPort(route.Port); rec != nil {
-			s.table.Remove(route.Name)
-			writePortConflict(w, route.Port, rec)
+		// The caller supplied this route's config just now (vibe start reads
+		// vibe.json itself), so the engine runs without the vibe.json sync.
+		if err := s.startManaged(route, false); err != nil {
+			undo()
+			err.(*startFailure).write(w, route)
 			return
 		}
-		s.prepareWorktreeEnv(route)
-		pid, err := s.procs.Start(route)
-		if err != nil {
-			s.table.Remove(route.Name)
-			writeStartFailure(w, http.StatusInternalServerError, err, route.Cmd, route.Dir)
-			return
-		}
-		route.SetPID(pid)
-		route.Running.Store(true)
-		route.Ready.Store(false)
-		route.SetFailure(nil)
-		// Seed LastActivity so the idle-timeout sweep has a baseline even if
-		// the process is started but never receives a proxy request.
-		route.TouchActivity()
-		go s.waitForReady(route)
 	}
 
 	if err := s.reconcileOAuthBridgeListeners(); err != nil {
 		if route.Type == RouteManaged {
-			_ = s.procs.Stop(route.Name)
+			s.stopManaged(route)
 		}
-		s.table.Remove(route.Name)
+		undo()
 		writeJSONError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -756,7 +773,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":   true,
-		"url":  fmt.Sprintf("%s://%s.%s", s.vibeScheme(), req.Name, s.cfg.Daemon.TLD),
+		"url":  s.routeURL(req.Name),
 		"port": route.Port,
 	})
 }
@@ -768,19 +785,7 @@ func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name s
 		return
 	}
 	if route.Type == RouteManaged {
-		// Mark not-running BEFORE killing, like every other intentional stop.
-		// handleManagedExit distinguishes a crash from a deliberate stop purely
-		// by this flag, so skipping it makes a deregistered route's exit look
-		// unexpected and seeds a Failure (a log-file read) for a route that is
-		// about to disappear.
-		route.Running.Store(false)
-		route.Ready.Store(false)
-		// Stop handles both spawned and re-adopted children. Fall back to
-		// killing whatever holds the port (mirrors handleStop) so a route the
-		// daemon couldn't track cleanly still releases its port on removal.
-		if err := s.procs.Stop(name); err != nil {
-			s.killPort(route.Port)
-		}
+		s.stopManaged(route)
 	}
 	s.table.Remove(name)
 	if err := s.reconcileOAuthBridgeListeners(); err != nil {
@@ -788,6 +793,42 @@ func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name s
 	}
 	_ = s.saveStickyRoutes()
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+// routeEdit is the editable subset of a Route. handleUpdate computes the
+// requested edit on a copy, validates it, and applies it in one step — so a
+// rejected PUT (bad URL, OAuth port collision, bridge listener failure) never
+// leaves a half-mutated route, and no field has to be snapshotted and
+// restored by hand.
+type routeEdit struct {
+	Name               string
+	Port               int
+	ExternalURL        string
+	Type               RouteType
+	IdleTimeout        int
+	Icon               string
+	Cmd                string
+	Proxy              bool
+	InsecureSkipVerify bool
+	OAuthCallbackPort  int
+}
+
+func editOf(r *Route) routeEdit {
+	return routeEdit{
+		Name: r.Name, Port: r.Port, ExternalURL: r.ExternalURL, Type: r.Type,
+		IdleTimeout: r.IdleTimeout, Icon: r.Icon, Cmd: r.Cmd, Proxy: r.Proxy,
+		InsecureSkipVerify: r.InsecureSkipVerify, OAuthCallbackPort: r.OAuthCallbackPort,
+	}
+}
+
+// apply writes the edit onto r under the table lock, so a reader that takes
+// the lock (ManagedCmd) never sees a torn update.
+func (t *RouteTable) apply(r *Route, e routeEdit) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r.Name, r.Port, r.ExternalURL, r.Type = e.Name, e.Port, e.ExternalURL, e.Type
+	r.IdleTimeout, r.Icon, r.Cmd, r.Proxy = e.IdleTimeout, e.Icon, e.Cmd, e.Proxy
+	r.InsecureSkipVerify, r.OAuthCallbackPort = e.InsecureSkipVerify, e.OAuthCallbackPort
 }
 
 // handleUpdate modifies an existing route's name, port, or URL.
@@ -805,10 +846,6 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	if req.Name != "" {
 		req.Name = strings.ToLower(req.Name)
 	}
-	// Validate a rename up-front, but defer the table mutation until after
-	// every other validation has passed — otherwise a later early-return
-	// (bad URL, OAuth port collision, etc.) would leave the route removed
-	// from the table but never re-added under any name.
 	// Worktree routes carry invariants that register enforces and this handler
 	// historically did not, letting a PUT produce a route that behaves one way
 	// until the next daemon restart and differently after it (Parent is
@@ -832,8 +869,8 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 			return
 		}
 	}
-	renaming := false
-	if req.Name != "" && req.Name != name {
+	renaming := req.Name != "" && req.Name != name
+	if renaming {
 		if !validName.MatchString(req.Name) {
 			writeJSONError(w, http.StatusBadRequest, "invalid name — use lowercase letters, digits, and hyphens")
 			return
@@ -855,7 +892,6 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 			writeJSONError(w, http.StatusConflict, "a route with that name already exists")
 			return
 		}
-		renaming = true
 	}
 	if req.URL != "" {
 		if err := validateExternalURL(req.URL); err != nil {
@@ -869,86 +905,82 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 		writeJSONError(w, http.StatusBadRequest, "proxy requires a url")
 		return
 	}
-	originalName := route.Name
-	if renaming {
-		route.Name = req.Name
+	// A new port gets the same checks register applies. Without them a route
+	// could be pointed at the daemon's own listener — a self-proxy loop
+	// locally, and through the peer relay a paired machine's path to the
+	// loopback-only API.
+	if req.Port != 0 && req.URL == "" {
+		if req.Port < 1 || req.Port > 65535 {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("port %d is out of range (1-65535)", req.Port))
+			return
+		}
+		if msg := s.vibePortClaim(name, req.Port); msg != "" {
+			writeJSONError(w, http.StatusConflict, msg)
+			return
+		}
 	}
-	originalPort := route.Port
-	originalExternalURL := route.ExternalURL
-	originalType := route.Type
-	originalIdleTimeout := route.IdleTimeout
-	originalIcon := route.Icon
-	originalProxy := route.Proxy
-	originalInsecureSkipVerify := route.InsecureSkipVerify
-	originalOAuthCallbackPort := route.OAuthCallbackPort
+
+	// Compute the edit on a copy; nothing on the route changes until it has
+	// passed every check below.
+	edit := editOf(route)
+	if renaming {
+		edit.Name = req.Name
+	}
 	if req.Port != 0 {
-		route.Port = req.Port
+		edit.Port = req.Port
 	}
 	if req.IdleTimeout != nil {
-		route.IdleTimeout = *req.IdleTimeout
+		edit.IdleTimeout = *req.IdleTimeout
 	}
 	if req.Icon != nil {
-		route.Icon = *req.Icon
+		edit.Icon = *req.Icon
 	}
 	// Cmd is only meaningful on managed routes — silently ignore on others so
 	// generic clients can PUT a full route shape without surprises.
 	if req.Cmd != "" && route.Type == RouteManaged {
-		s.table.SetManagedCmd(route, req.Cmd)
+		edit.Cmd = req.Cmd
 	}
 	if req.URL != "" {
-		route.ExternalURL = req.URL
-		route.Type = RouteBookmark
-		route.Port = 0
+		edit.ExternalURL = req.URL
+		edit.Type = RouteBookmark
+		edit.Port = 0
 	} else if route.Type == RouteBookmark && req.Port != 0 {
 		// Switching from bookmark to sticky
-		route.ExternalURL = ""
-		route.Type = RouteSticky
-		route.Proxy = false
-		route.InsecureSkipVerify = false
+		edit.ExternalURL = ""
+		edit.Type = RouteSticky
+		edit.Proxy = false
+		edit.InsecureSkipVerify = false
 	}
 	if req.Proxy != nil {
-		route.Proxy = *req.Proxy
+		edit.Proxy = *req.Proxy
 	}
 	if req.InsecureSkipVerify != nil {
-		route.InsecureSkipVerify = *req.InsecureSkipVerify
+		edit.InsecureSkipVerify = *req.InsecureSkipVerify
 	}
 	if req.OAuthCallbackPort != nil {
-		route.OAuthCallbackPort = *req.OAuthCallbackPort
+		edit.OAuthCallbackPort = *req.OAuthCallbackPort
 	}
-	if route.OAuthCallbackPort > 0 {
-		if err := s.validateOAuthBridgeConfig(route.Name, route.Port, route.OAuthCallbackPort); err != nil {
-			route.Name = originalName
-			route.Port = originalPort
-			route.ExternalURL = originalExternalURL
-			route.Type = originalType
-			route.IdleTimeout = originalIdleTimeout
-			route.Icon = originalIcon
-			route.Proxy = originalProxy
-			route.InsecureSkipVerify = originalInsecureSkipVerify
-			route.OAuthCallbackPort = originalOAuthCallbackPort
+	if edit.OAuthCallbackPort > 0 {
+		if err := s.validateOAuthBridgeConfig(edit.Name, edit.Port, edit.OAuthCallbackPort); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
-	// Commit any rename now that all validation has succeeded: remove the
-	// old key, then re-add under the (possibly new) name.
+
+	// Commit: apply the edit, re-key the table on a rename, and bring the
+	// OAuth bridge listeners in line. If that last step fails, apply the
+	// original edit back and re-key under the old name.
+	original := editOf(route)
 	if renaming {
 		s.table.Remove(name)
 	}
+	s.table.apply(route, edit)
 	s.table.Add(route)
 	if err := s.reconcileOAuthBridgeListeners(); err != nil {
 		if renaming {
 			s.table.Remove(route.Name)
 		}
-		route.Name = originalName
-		route.Port = originalPort
-		route.ExternalURL = originalExternalURL
-		route.Type = originalType
-		route.IdleTimeout = originalIdleTimeout
-		route.Icon = originalIcon
-		route.Proxy = originalProxy
-		route.InsecureSkipVerify = originalInsecureSkipVerify
-		route.OAuthCallbackPort = originalOAuthCallbackPort
+		s.table.apply(route, original)
 		s.table.Add(route)
 		writeJSONError(w, http.StatusConflict, err.Error())
 		return
@@ -990,7 +1022,7 @@ func (s *Server) handleAdoptWorktree(w http.ResponseWriter, r *http.Request, nam
 		writeJSONError(w, http.StatusNotFound, "path is not an unregistered worktree of this app")
 		return
 	}
-	wtName := match.Slug + "." + parent.Name
+	wtName := match.Name
 	// The slug came from a branch name, so it still has to clear the same
 	// validation a CLI-registered worktree does. Without this a branch called
 	// "local" (or anything else parseRouteName rejects) registers and runs
@@ -1039,7 +1071,7 @@ func (s *Server) handleAdoptWorktree(w http.ResponseWriter, r *http.Request, nam
 	_ = s.saveStickyRoutes()
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":   true,
-		"url":  fmt.Sprintf("%s://%s.%s", s.vibeScheme(), route.Name, s.cfg.Daemon.TLD),
+		"url":  s.routeURL(route.Name),
 		"port": route.Port,
 	})
 }
@@ -1051,21 +1083,14 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		return
 	}
 	if worktreeDirGone(route) {
+		s.stopManaged(route)
 		s.table.Remove(route.Name)
 		_ = s.saveStickyRoutes()
 		writeJSONError(w, http.StatusGone, fmt.Sprintf("worktree directory %s is gone — route removed", route.Dir))
 		return
 	}
-	// Re-read vibe.json from the route's Dir before launching so edits to
-	// oauth_callback_port, reserve_ports, or cmd take effect without forcing
-	// the user to deregister + re-register. Errors here are config conflicts
-	// that should block the start; missing/malformed files are silent no-ops.
-	if err := s.syncRouteFromVibeJSON(route); err != nil {
-		writeJSONError(w, http.StatusConflict, err.Error())
-		return
-	}
-	if route.Cmd == "" {
-		writeJSONError(w, http.StatusBadRequest, "route has no launch command")
+	if route.Type != RouteManaged {
+		writeJSONError(w, http.StatusBadRequest, "only managed routes can be started")
 		return
 	}
 
@@ -1087,76 +1112,47 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 		time.Sleep(300 * time.Millisecond)
 	}
 	if rec.KillPort > 0 {
+		// Bounded to this route's own ports: the start page may only clear
+		// what its app would bind, not any port on the machine.
+		if !routeBindsPort(route, rec.KillPort) {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("port %d is not one of this route's ports", rec.KillPort))
+			return
+		}
 		s.killPort(rec.KillPort)
 		time.Sleep(300 * time.Millisecond)
 	}
 
-	// Auto-assign a free port if the route has none (e.g. auto-assigned on first start).
-	if route.Port == 0 {
-		port, err := findFreePort(s.table)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "could not find a free port")
-			return
-		}
-		route.Port = port
-	}
-	// Fail fast with a clear message if a port the cmd will bind collides with
-	// vibe's own ports (the daemon's listeners, or another route's primary /
-	// oauth_callback / reserve port) — a misconfiguration no amount of killing
-	// or retrying can fix, distinct from an external process squatting the port.
-	if msg := s.checkVibePortCollisions(route); msg != "" {
-		route.SetFailure(&Failure{Message: msg})
-		writeJSONError(w, http.StatusConflict, msg)
+	// The engine re-reads vibe.json (edits to cmd / oauth_callback_port /
+	// reserve_ports take effect without re-registering), assigns a port if
+	// none, checks collisions, preflights, spawns, and persists the PID so a
+	// daemon restart can re-adopt the child. Any failure is recorded on the
+	// route so a start-page reload rehydrates the kill-and-retry button.
+	if err := s.startManaged(route, true); err != nil {
+		err.(*startFailure).write(w, route)
 		return
 	}
-	// Pre-flight every port the cmd will bind: each reserve_port first, then
-	// the primary. Persist the recovery on the route's Failure so a startpage
-	// reload rehydrates the "Kill PID X and retry" button via
-	// startPageRecoveryInitJS instead of showing a bare error.
-	for _, kv := range reservePortValuesSorted(route.ReservePorts) {
-		if rec := s.preflightPort(kv.Port); rec != nil {
-			route.SetFailure(&Failure{
-				Message:  fmt.Sprintf("reserve_ports[%q] = %d is already in use by another process", kv.Name, kv.Port),
-				Recovery: rec,
-			})
-			writePortConflict(w, kv.Port, rec)
-			return
-		}
-	}
-	if rec := s.preflightPort(route.Port); rec != nil {
-		route.SetFailure(&Failure{
-			Message:  fmt.Sprintf("port %d is already in use by another process", route.Port),
-			Recovery: rec,
-		})
-		writePortConflict(w, route.Port, rec)
-		return
-	}
-
-	s.prepareWorktreeEnv(route)
-	pid, err := s.procs.Start(route)
-	if err != nil {
-		route.Running.Store(false)
-		route.Ready.Store(false)
-		route.SetFailure(failureFromError(err, route.Cmd, route.Dir))
-		writeStartFailure(w, http.StatusInternalServerError, err, route.Cmd, route.Dir)
-		return
-	}
-	route.SetPID(pid)
-	route.Running.Store(true)
-	route.Ready.Store(false)
-	route.SetFailure(nil)
-	route.TouchActivity()
-	// Persist the PID so a daemon restart can re-adopt this child instead of
-	// reporting the route as stopped.
-	_ = s.saveStickyRoutes()
-	go s.waitForReady(route)
+	pid, _ := route.PIDValue()
 
 	// If request came from browser form, redirect back to the app.
 	if isBrowserFormRequest(r) {
-		http.Redirect(w, r, fmt.Sprintf("%s://%s.%s/", s.vibeScheme(), name, s.cfg.Daemon.TLD), http.StatusSeeOther)
+		http.Redirect(w, r, s.routeURL(name)+"/", http.StatusSeeOther)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "pid": pid})
+}
+
+// routeBindsPort reports whether port is the route's primary or one of its
+// reserve ports.
+func routeBindsPort(route *Route, port int) bool {
+	if port == route.Port {
+		return true
+	}
+	for _, p := range route.ReservePorts {
+		if p == port {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string) {
@@ -1165,19 +1161,13 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 		writeJSONError(w, http.StatusNotFound, "route not found")
 		return
 	}
-	// Mark not-running *before* killing so the event-based exit handler treats
-	// this as an intentional stop (no failure seeded).
-	route.Running.Store(false)
-	// Try the ProcessManager first, then fall back to killing whatever is on the port.
-	if err := s.procs.Stop(name); err != nil {
-		s.killPort(route.Port)
+	if route.Type == RouteManaged {
+		s.stopManaged(route)
 	}
-	route.Ready.Store(false)
-	route.ClearPID()
 
 	// If request came from browser form, redirect back to dashboard.
 	if isBrowserFormRequest(r) {
-		http.Redirect(w, r, fmt.Sprintf("%s://local.%s/", s.vibeScheme(), s.cfg.Daemon.TLD), http.StatusSeeOther)
+		http.Redirect(w, r, s.routeURL("local")+"/", http.StatusSeeOther)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
@@ -1193,7 +1183,30 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request, name string)
 //	{ ok: true,  port: 3001, from: 3000 }    // auto-resolved
 //	{ ok: true,  port: 3000, note: "..." }   // nothing to fix, already reachable
 //	{ ok: false, port: 3000, reason: "...", restartable: true } // no candidate found
-func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name string) {
+//
+// markRestartable flags a repair response restartable when the managed child
+// is gone and no on-demand start is in flight, and attaches the recorded
+// failure when there is one. The failure is what makes a dead child
+// diagnosable from the starting page: a child that outlives Start's 1s
+// startup window and *then* dies (a login shell that takes over a second to
+// load, then a bunx whose quarantined .bin shim exits 1 silently) gets its
+// tailed log and recovery hint recorded by handleManagedExit, but the page
+// polls only this endpoint — without the failure here it could only say "no
+// listening port" and offer a Restart that repeats the same silent death.
+func (s *Server) markRestartable(resp map[string]any, r *http.Request, route *Route) {
+	if route.Type != RouteManaged {
+		return
+	}
+	pid, hasPID := route.PIDValue()
+	if (!hasPID || !processAlive(pid)) && !s.isAutoStarting(route.Name) {
+		resp["restartable"] = true
+		if f := route.LoadFailure(); f != nil && s.routeDetailsAllowed(r, route) {
+			resp["failure"] = f
+		}
+	}
+}
+
+func (s *Server) handleRepair(w http.ResponseWriter, r *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "route not found")
@@ -1229,12 +1242,7 @@ func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name strin
 		// Offer a restart affordance when the managed child is gone — but not
 		// while an on-demand start is in flight, where the process simply
 		// hasn't bound its port yet and the page should keep polling.
-		if route.Type == RouteManaged {
-			pid, hasPID := route.PIDValue()
-			if (!hasPID || !processAlive(pid)) && !s.isAutoStarting(route.Name) {
-				resp["restartable"] = true
-			}
-		}
+		s.markRestartable(resp, r, route)
 		json.NewEncoder(w).Encode(resp)
 		return
 	}
@@ -1253,12 +1261,7 @@ func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name strin
 					newPort, other.Name,
 				),
 			}
-			if route.Type == RouteManaged {
-				pid, hasPID := route.PIDValue()
-				if (!hasPID || !processAlive(pid)) && !s.isAutoStarting(route.Name) {
-					resp["restartable"] = true
-				}
-			}
+			s.markRestartable(resp, r, route)
 			json.NewEncoder(w).Encode(resp)
 			return
 		}
@@ -1280,7 +1283,7 @@ func (s *Server) handleRepair(w http.ResponseWriter, _ *http.Request, name strin
 	})
 }
 
-func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request, name string) {
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request, name string) {
 	route, ok := s.table.Get(name)
 	if !ok {
 		json.NewEncoder(w).Encode(map[string]any{"ready": false, "running": false})
@@ -1293,8 +1296,10 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request, name string
 	// Include diagnostics from the most recent failed start so the browser
 	// can render a "Kill PID X and retry" button when the process crashed
 	// asynchronously (after Start() returned success but before the port
-	// came up).
-	if f := route.LoadFailure(); f != nil {
+	// came up). The log tail and hints name the command line and paths, so
+	// only the route's own pages (and local clients) get them — see
+	// routeDetailsAllowed.
+	if f := route.LoadFailure(); f != nil && s.routeDetailsAllowed(r, route) {
 		resp["failure"] = f
 	}
 	json.NewEncoder(w).Encode(resp)
@@ -1318,7 +1323,11 @@ func (s *Server) handleSetPreferences(w http.ResponseWriter, r *http.Request) {
 // waitForReady polls the route's port until it accepts connections, then sets
 // Ready = true. If the process dies or the timeout expires, it marks the route
 // as not running so the dashboard reflects the failure immediately.
-func (s *Server) waitForReady(route *Route) {
+//
+// It is bound to the pid it was started for: a stop → start inside the window
+// leaves the first poller running, and without this check its deadline would
+// record "never bound the port" against the healthy new child.
+func (s *Server) waitForReady(route *Route, pid int) {
 	timeout := s.ReadyTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -1326,10 +1335,17 @@ func (s *Server) waitForReady(route *Route) {
 	deadline := time.After(timeout)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
+	superseded := func() bool {
+		cur, ok := route.PIDValue()
+		return !ok || cur != pid
+	}
 
 	for {
 		select {
 		case <-deadline:
+			if superseded() {
+				return
+			}
 			// Timed out — port never came up. Process may still be alive,
 			// so only mark Ready=false. Running reflects actual process state.
 			if !s.isPortReady(route.Port) {
@@ -1359,6 +1375,9 @@ func (s *Server) waitForReady(route *Route) {
 			}
 			return
 		case <-ticker.C:
+			if superseded() {
+				return
+			}
 			// Check if the process died (don't wait for the monitor sweep).
 			pid, ok := route.PIDValue()
 			if ok && !processAlive(pid) {
@@ -1377,6 +1396,9 @@ func (s *Server) waitForReady(route *Route) {
 			if s.isPortReady(route.Port) {
 				route.Ready.Store(true)
 				route.SetFailure(nil)
+				// Learn the app's scheme here, off the request path: the probe
+				// costs up to 800ms and sends a ClientHello the app may log.
+				routeUsesTLS(route)
 				// Try to auto-detect favicon if we haven't already.
 				if route.AutoIcon == "" {
 					go s.fetchFavicon(route)
@@ -1405,17 +1427,22 @@ func failureFromLog(routeName, message, cmd, dir string) *Failure {
 // data URI so it works even when the app is stopped. It checks /favicon.ico
 // first, then parses the HTML for a <link rel="icon"> tag.
 func (s *Server) fetchFavicon(route *Route) {
+	base, transport := localUpstream(route)
 	client := &http.Client{Timeout: 3 * time.Second}
+	if transport != nil {
+		client.Transport = transport
+	}
+	origin := base.String()
 
 	// Try /favicon.ico first — most frameworks serve one automatically.
-	if dataURI := downloadAsDataURI(client, fmt.Sprintf("http://localhost:%d/favicon.ico", route.Port)); dataURI != "" {
+	if dataURI := downloadAsDataURI(client, origin+"/favicon.ico"); dataURI != "" {
 		route.AutoIcon = dataURI
 		_ = s.saveStickyRoutes()
 		return
 	}
 
 	// Try parsing the homepage for a <link rel="icon"> tag.
-	resp, err := client.Get(fmt.Sprintf("http://localhost:%d/", route.Port))
+	resp, err := client.Get(origin + "/")
 	if err != nil {
 		return
 	}
@@ -1432,13 +1459,9 @@ func (s *Server) fetchFavicon(route *Route) {
 	if href == "" {
 		return
 	}
-	// Resolve relative URLs.
-	if strings.HasPrefix(href, "//") {
-		href = "http:" + href
-	} else if strings.HasPrefix(href, "/") {
-		href = fmt.Sprintf("http://localhost:%d%s", route.Port, href)
-	} else if !strings.HasPrefix(href, "http://") && !strings.HasPrefix(href, "https://") && !strings.HasPrefix(href, "data:") {
-		href = fmt.Sprintf("http://localhost:%d/%s", route.Port, href)
+	href, ok := resolveFaviconHref(href, base)
+	if !ok {
+		return
 	}
 	if strings.HasPrefix(href, "data:") {
 		route.AutoIcon = href
@@ -1449,6 +1472,29 @@ func (s *Server) fetchFavicon(route *Route) {
 		route.AutoIcon = dataURI
 		_ = s.saveStickyRoutes()
 	}
+}
+
+// resolveFaviconHref turns a <link rel="icon"> href into something the daemon
+// may fetch and store: a URL on the app's own origin, or an inline
+// data:image. Anything else — another host, a protocol-relative URL, a
+// non-image data URI — is refused, since the HTML is the app's and following
+// it would make the daemon fetch arbitrary external URLs on its behalf.
+func resolveFaviconHref(href string, base *url.URL) (string, bool) {
+	if strings.HasPrefix(href, "data:") {
+		if strings.HasPrefix(strings.ToLower(href), "data:image/") {
+			return href, true
+		}
+		return "", false
+	}
+	ref, err := url.Parse(href)
+	if err != nil {
+		return "", false
+	}
+	u := base.ResolveReference(ref)
+	if u.Scheme != base.Scheme || u.Host != base.Host {
+		return "", false
+	}
+	return u.String(), true
 }
 
 // downloadAsDataURI fetches a URL and returns its content as a data URI.

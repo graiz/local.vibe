@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/graiz/local.vibe/internal/client"
 	"github.com/spf13/cobra"
@@ -16,8 +15,7 @@ var openCmd = &cobra.Command{
 		c := client.New()
 		routes, err := c.List()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 		var url string
 		for _, r := range routes {
@@ -27,8 +25,7 @@ var openCmd = &cobra.Command{
 			}
 		}
 		if url == "" {
-			fmt.Fprintf(os.Stderr, "no route named %q\n", args[0])
-			os.Exit(1)
+			return fmt.Errorf("no route named %q", args[0])
 		}
 
 		fmt.Println(url)

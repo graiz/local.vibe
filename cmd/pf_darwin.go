@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/graiz/local.vibe/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -38,19 +39,14 @@ const (
 	pfLoadLine      = `load anchor "com.vibe" from "/etc/pf.anchors/com.vibe"`
 )
 
-const (
-	defaultPFHTTPPort = 7999
-	defaultPFTLSPort  = 7443
-)
-
 // pfHTTPPort/pfTLSPort are the redirect targets. They default to vibe's
 // standard ports and are overridden by `pf-apply --http-port/--tls-port`,
 // which the com.vibe.pf plist passes from the config that `vibe setup` read.
 // pf-apply runs as root, where config.Dir() would resolve to root's home
 // rather than the user's, so the ports are handed in rather than re-read.
 var (
-	pfHTTPPort = defaultPFHTTPPort
-	pfTLSPort  = defaultPFTLSPort
+	pfHTTPPort = config.DefaultPort
+	pfTLSPort  = config.DefaultTLSPort
 )
 
 // pfAnchorRules returns the anchor's contents: vibe's two redirects, 80→HTTP
@@ -74,8 +70,40 @@ func writePFAnchorFile() error {
 	if err := os.MkdirAll(filepath.Dir(pfAnchorFile), 0755); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(pfAnchorFile), err)
 	}
-	if err := os.WriteFile(pfAnchorFile, []byte(pfAnchorRules()), 0644); err != nil {
+	// Atomic: com.apple.pfctl loads this file at boot, and a crash mid-write
+	// would leave an empty anchor (no redirect) until the next pf-apply.
+	if err := writeFileAtomic(pfAnchorFile, []byte(pfAnchorRules()), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", pfAnchorFile, err)
+	}
+	return nil
+}
+
+// writeFileAtomic writes data to path via a uniquely named temp file in the
+// same directory and a rename, so concurrent writers (doctor --fix racing the
+// LaunchDaemon) never collide on one temp name or expose a torn file.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
 	}
 	return nil
 }
@@ -218,11 +246,23 @@ func ensurePFConfReferencesAnchor() (changed bool, err error) {
 	// Vet before swapping: a broken pf.conf would fail every future reload,
 	// including Apple's at boot. Write the candidate beside the real file so
 	// the rename is atomic (same filesystem).
-	tmp := pfConfPath + ".vibe.tmp"
-	if err := os.WriteFile(tmp, []byte(patched), 0644); err != nil {
+	tmpFile, err := os.CreateTemp(filepath.Dir(pfConfPath), "pf.conf.vibe.*.tmp")
+	if err != nil {
+		return false, fmt.Errorf("write pf.conf candidate: %w", err)
+	}
+	tmp := tmpFile.Name()
+	defer os.Remove(tmp) // no-op once renamed
+	if _, err := tmpFile.Write([]byte(patched)); err != nil {
+		tmpFile.Close()
 		return false, fmt.Errorf("write %s: %w", tmp, err)
 	}
-	defer os.Remove(tmp) // no-op once renamed
+	if err := tmpFile.Chmod(0644); err != nil {
+		tmpFile.Close()
+		return false, fmt.Errorf("chmod %s: %w", tmp, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return false, fmt.Errorf("write %s: %w", tmp, err)
+	}
 	if out, err := exec.Command("/sbin/pfctl", "-n", "-f", tmp).CombinedOutput(); err != nil {
 		return false, fmt.Errorf("patched %s failed validation (left unchanged): %w — %s",
 			pfConfPath, err, strings.TrimSpace(string(out)))
@@ -403,7 +443,7 @@ var pfApplyCmd = &cobra.Command{
 }
 
 func init() {
-	pfApplyCmd.Flags().IntVar(&pfHTTPPort, "http-port", defaultPFHTTPPort, "daemon HTTP port to redirect :80 to")
-	pfApplyCmd.Flags().IntVar(&pfTLSPort, "tls-port", defaultPFTLSPort, "daemon TLS port to redirect :443 to")
+	pfApplyCmd.Flags().IntVar(&pfHTTPPort, "http-port", config.DefaultPort, "daemon HTTP port to redirect :80 to")
+	pfApplyCmd.Flags().IntVar(&pfTLSPort, "tls-port", config.DefaultTLSPort, "daemon TLS port to redirect :443 to")
 	rootCmd.AddCommand(pfApplyCmd)
 }

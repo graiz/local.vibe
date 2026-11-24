@@ -12,7 +12,7 @@ import (
 // port-recovery page share the poll-and-reload mechanism but render distinct
 // copy: a fresh cold start must not read like error recovery.
 func TestStartingVsReconnectingCopy(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	route := &Route{Name: "apply", Type: RouteManaged, Port: 3005, RegisteredAt: time.Now()}
 
 	// Starting page (auto-start): start-flavored copy, no "logs" recovery text.

@@ -16,7 +16,7 @@ import (
 // trusted, any loopback port that renders attacker-controlled HTML can POST to
 // /_api/routes and get arbitrary cmd execution.
 func TestOriginPortIsCheckedOnVibeHosts(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.cfg.Daemon.Port = 7999
 	s.cfg.Daemon.TLS.Enabled = true
 	s.cfg.Daemon.TLS.Port = 7443
@@ -51,7 +51,7 @@ func TestOriginPortIsCheckedOnVibeHosts(t *testing.T) {
 // TestCrossSiteGuardRejectsForeignLoopbackPort exercises the hole end to end
 // through the real API handler, as the attack would arrive.
 func TestCrossSiteGuardRejectsForeignLoopbackPort(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.cfg.Daemon.Port = 7999
 	s.ConfigDir = t.TempDir()
 

@@ -192,26 +192,16 @@ func TestEnsureLeafRenewal(t *testing.T) {
 	}
 }
 
-func TestLoadTLSConfig(t *testing.T) {
-	dir := t.TempDir()
-	ca, caKey, _ := EnsureCA(dir)
-	certFile, keyFile, _ := EnsureLeaf(dir, ca, caKey, testHostnames)
-
-	tlsCfg, err := LoadTLSConfig(certFile, keyFile)
-	if err != nil {
-		t.Fatalf("LoadTLSConfig: %v", err)
-	}
-	if len(tlsCfg.Certificates) != 1 {
-		t.Errorf("expected 1 cert, got %d", len(tlsCfg.Certificates))
-	}
-}
-
 func TestTLSHandshake(t *testing.T) {
 	dir := t.TempDir()
 	ca, caKey, _ := EnsureCA(dir)
 	certFile, keyFile, _ := EnsureLeaf(dir, ca, caKey, testHostnames)
 
-	tlsCfg, _ := LoadTLSConfig(certFile, keyFile)
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("load keypair: %v", err)
+	}
+	tlsCfg := &tls.Config{Certificates: []tls.Certificate{pair}}
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", tlsCfg)
 	if err != nil {
 		t.Fatalf("TLS listen: %v", err)
@@ -355,5 +345,29 @@ func writeExpiringCert(t *testing.T, dir string, ca *x509.Certificate, caKey int
 	if err != nil {
 		t.Fatalf("create expiring cert: %v", err)
 	}
-	_ = writePEM(certPath, "CERTIFICATE", certDER, 0644)
+	_ = WritePEM(certPath, "CERTIFICATE", certDER, 0644)
+}
+
+// Leaf regeneration happens on every route change. The PEM files must be
+// replaced atomically so a concurrent reload never loads a half-written cert
+// or a cert/key pair from two different generations.
+func TestGenerateLeafWritesAtomically(t *testing.T) {
+	dir := t.TempDir()
+	ca, key, err := EnsureCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := GenerateLeaf(dir, ca, key, testHostnames); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+	info, err := os.Stat(filepath.Join(dir, "vibe-key.pem"))
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Errorf("vibe-key.pem mode %v err %v; want 0600", info.Mode().Perm(), err)
+	}
 }

@@ -13,7 +13,7 @@ import (
 // apply must return a clear 409 naming the conflict, not a generic failure (and
 // not — pre-fix — a daemon-killing port preflight).
 func TestHandleStartReportsOAuthPortCollision(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	edge := &Route{Name: "edge", Type: RouteManaged, Port: 3005, OAuthCallbackPort: 3000, RegisteredAt: time.Now()}
@@ -41,7 +41,7 @@ func TestHandleStartReportsOAuthPortCollision(t *testing.T) {
 
 // TestVibePortClaimSources covers each kind of vibe-internal port claim.
 func TestVibePortClaimSources(t *testing.T) {
-	s := testServer() // daemon Port defaults to 0 in testServer; set them explicitly
+	s := testServer(t) // daemon Port defaults to 0 in testServer; set them explicitly
 	s.cfg.Daemon.Port = 7999
 	s.cfg.Daemon.TLS.Enabled = true
 	s.cfg.Daemon.TLS.Port = 7443
@@ -75,7 +75,7 @@ func TestVibePortClaimSources(t *testing.T) {
 // another route's port AND with the daemon's own listener (which the old
 // standalone reservePortConflictsWith missed), and returns "" for a clean set.
 func TestReservePortsClaimSharesVibePortClaim(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.cfg.Daemon.Port = 7999
 	s.table.Add(&Route{Name: "other", Type: RouteManaged, Port: 4001, RegisteredAt: time.Now()})
 

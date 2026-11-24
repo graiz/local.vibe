@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/client"
@@ -16,8 +15,7 @@ var statusCmd = &cobra.Command{
 		c := client.New()
 		h, err := c.Health()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "daemon not running: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		uptime := time.Duration(h.Uptime) * time.Second
 		fmt.Printf("daemon:  %s\n", h.Status)

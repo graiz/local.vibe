@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func listTestServer() *Server {
-	s := testServer()
+func listTestServer(t testing.TB) *Server {
+	s := testServer(t)
 	s.cfg.Daemon.TLD = "vibe"
 	s.cfg.Daemon.Port = 7999
 	return s
@@ -33,7 +33,7 @@ func listRoutesAs(t *testing.T, s *Server, host, remoteAddr string) map[string]r
 
 // `vibe ls -l` reads a route's directory and command from the list API.
 func TestListRoutesIncludesDirAndCmd(t *testing.T) {
-	s := listTestServer()
+	s := listTestServer(t)
 	s.table.Add(&Route{Name: "app", Port: 3000, Type: RouteManaged, Cmd: "node server.js", Dir: "/work/app"})
 	s.table.Add(&Route{Name: "plain", Port: 3001, Type: RouteSticky})
 
@@ -58,7 +58,7 @@ func TestListRoutesIncludesDirAndCmd(t *testing.T) {
 // Paths and command lines — which can carry inline secrets — must only go to
 // the CLI and the dashboard.
 func TestListRoutesHidesDirAndCmdFromOtherHosts(t *testing.T) {
-	s := listTestServer()
+	s := listTestServer(t)
 	s.table.Add(&Route{Name: "app", Port: 3000, Type: RouteManaged, Cmd: "DATABASE_URL=secret npm run dev", Dir: "/work/app"})
 	s.table.Add(&Route{Name: "ha", Type: RouteBookmark, ExternalURL: "https://ha.example.com", Proxy: true})
 

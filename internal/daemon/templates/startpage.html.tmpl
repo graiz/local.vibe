@@ -7,6 +7,7 @@
 <head>
 {{.Head}}
 <style>{{.CSS}}</style>
+<script>{{.JS}}</script>
 </head>
 <body class="page-centered">
 <div class="card">
@@ -43,10 +44,10 @@
 function startWorktree(el,path){
   var hint=el.querySelector('.wt-hint');
   hint.textContent='starting…';
-  fetch('/_api/routes/'+{{.Name}}+'/worktrees',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:path})})
-    .then(function(r){return r.json()})
-    .then(function(d){ if(d.url){ window.location.href=d.url } else { hint.textContent=d.error||'failed' } })
-    .catch(function(){ hint.textContent='failed' });
+  vibeAPI('POST','/_api/routes/'+{{.Name}}+'/worktrees',{body:{path:path}},function(status,d){
+    if(d&&d.url){window.location.href=d.url;return;}
+    hint.textContent=(d&&d.error)||'failed';
+  });
 }
 var lastRecovery=null;
 var launchCanceled=false;
@@ -73,35 +74,34 @@ function handlePrimaryButton(){
   startApp();
 }
 
-function fetchFailureAndRender(tries){
+// showFailure renders a recorded failure: message, then the recovery
+// button or the bare log tail.
+function showFailure(f, fallback){
   var msg=document.getElementById('msg');
-  var spinner=document.getElementById('spinner');
-  var fx=new XMLHttpRequest();
-  fx.open('GET','/_api/routes/{{.Name}}/ready');
-  fx.timeout=2000;
-  fx.onload=function(){
-    var d=null;try{d=JSON.parse(fx.responseText);}catch(e){}
-    if(d&&d.failure){
-      setLaunchMode('retry');spinner.style.display='none';
-      msg.style.whiteSpace='pre-wrap';msg.style.textAlign='left';msg.style.fontSize='.75rem';
-      msg.textContent=d.failure.message||'Server never became ready';
-      msg.style.color='var(--red)';
-      if(d.failure.recovery){showRecovery(d.failure.recovery, d.failure.log||'');}
-      else if(d.failure.log){showFailureLog(d.failure.log);}
-      return;
-    }
-    if(tries<3){setTimeout(function(){fetchFailureAndRender(tries+1);},1000);return;}
-    setLaunchMode('retry');spinner.style.display='none';
+  setLaunchMode('retry');
+  document.getElementById('spinner').style.display='none';
+  msg.style.whiteSpace='pre-wrap';msg.style.textAlign='left';msg.style.fontSize='.75rem';
+  msg.textContent=(f&&f.message)||fallback;
+  msg.style.color='var(--red)';
+  if(f&&f.recovery){showRecovery(f.recovery, f.log||'');}
+  else if(f&&f.log){showFailureLog(f.log);}
+}
+
+// fetchFailureAndRender asks /ready a few times for the failure the daemon
+// recorded after the readiness window closed.
+function fetchFailureAndRender(){
+  vibePoll(function(next){
+    vibeAPI('GET','/_api/routes/{{.Name}}/ready',{timeout:2000},function(status,d){
+      if(d&&d.failure){showFailure(d.failure,'Server never became ready');return;}
+      next();
+    });
+  },1000,4,function(){
+    setLaunchMode('retry');
+    document.getElementById('spinner').style.display='none';
+    var msg=document.getElementById('msg');
     msg.textContent='Taking too long \u2014 check logs';
     msg.style.color='var(--yellow)';
-  };
-  fx.onerror=fx.ontimeout=function(){
-    if(tries<3){setTimeout(function(){fetchFailureAndRender(tries+1);},1000);return;}
-    setLaunchMode('retry');spinner.style.display='none';
-    msg.textContent='Taking too long \u2014 check logs';
-    msg.style.color='var(--yellow)';
-  };
-  fx.send();
+  });
 }
 
 function hideRecovery(){
@@ -154,39 +154,25 @@ function startApp(body){
   msg.style.whiteSpace='normal';msg.style.textAlign='center';msg.style.fontSize='.8rem';
   msg.textContent='Launching process\u2026';
 
-  var xhr=new XMLHttpRequest();
-  activeXHR=xhr;
-  xhr.open('POST','/_api/routes/{{.Name}}/start');
-  xhr.setRequestHeader('Accept','application/json');
-  if(body){xhr.setRequestHeader('Content-Type','application/json');}
-  xhr.onload=function(){
+  activeXHR=vibeAPI('POST','/_api/routes/{{.Name}}/start',{body:body||null},function(status,d){
     activeXHR=null;
     if(launchCanceled){return;}
-    if(xhr.status===200){
+    if(status===200){
       msg.textContent='Waiting for server\u2026';
-      pollUntilReady(0);
-    }else{
+      pollUntilReady();
+      return;
+    }
+    if(status===0){
       setLaunchMode('retry');
       spinner.style.display='none';
-      var errMsg='Failed to start';
-      var d=null;
-      try{d=JSON.parse(xhr.responseText);if(d&&d.error)errMsg=d.error;}catch(e){}
-      msg.style.whiteSpace='pre-wrap';msg.style.textAlign='left';msg.style.fontSize='.75rem';
-      msg.textContent=errMsg;
+      msg.textContent='Could not reach daemon';
       msg.style.color='var(--red)';
-      if(d&&d.recovery){showRecovery(d.recovery, d.log||'');}
-      else if(d&&d.log){showFailureLog(d.log);}
+      return;
     }
-  };
-  xhr.onerror=function(){
-    activeXHR=null;
-    if(launchCanceled){return;}
-    setLaunchMode('retry');
-    spinner.style.display='none';
-    msg.textContent='Could not reach daemon';
-    msg.style.color='var(--red)';
-  };
-  xhr.send(body?JSON.stringify(body):null);
+    // A start error carries the same shape as a failure: error text plus an
+    // optional recovery hint and log tail.
+    showFailure({message:(d&&d.error)||'Failed to start',recovery:d&&d.recovery,log:d&&d.log},'Failed to start');
+  });
 }
 
 function cancelLaunch(){
@@ -199,24 +185,14 @@ function cancelLaunch(){
   var spinner=document.getElementById('spinner');
   var msg=document.getElementById('msg');
   btn.disabled=true;
-  var stop=new XMLHttpRequest();
-  stop.open('DELETE','/_api/routes/{{.Name}}/stop');
-  stop.onload=function(){
+  vibeAPI('DELETE','/_api/routes/{{.Name}}/stop',{},function(status){
     spinner.style.display='none';
     msg.style.display='block';
     msg.style.whiteSpace='normal';msg.style.textAlign='center';msg.style.fontSize='.8rem';
-    msg.textContent='Start canceled';
+    msg.textContent=status?'Start canceled':'Could not cancel cleanly — safe to retry';
     msg.style.color='var(--yellow)';
     setLaunchMode('retry');
-  };
-  stop.onerror=function(){
-    spinner.style.display='none';
-    msg.style.display='block';
-    msg.textContent='Could not cancel cleanly — safe to retry';
-    msg.style.color='var(--yellow)';
-    setLaunchMode('retry');
-  };
-  stop.send();
+  });
 }
 
 function recoverAndRetry(){
@@ -224,34 +200,25 @@ function recoverAndRetry(){
   var rbtn=document.getElementById('recovery-btn');
   rbtn.disabled=true;
   if(lastRecovery.action==='restart'){
-    var stop=new XMLHttpRequest();
-    stop.open('DELETE','/_api/routes/{{.Name}}/stop');
-    stop.onload=function(){setTimeout(function(){startApp();},300);};
-    stop.onerror=function(){startApp();};
-    stop.send();
+    vibeAPI('DELETE','/_api/routes/{{.Name}}/stop',{},function(status){
+      setTimeout(startApp,status?300:0);
+    });
     return;
   }
   if(lastRecovery.action==='edit_cmd' && lastRecovery.suggested_cmd){
-    var put=new XMLHttpRequest();
-    put.open('PUT','/_api/routes/{{.Name}}');
-    put.setRequestHeader('Content-Type','application/json');
-    put.onload=function(){
-      if(put.status>=200&&put.status<300){
+    var suggested=lastRecovery.suggested_cmd;
+    vibeAPI('PUT','/_api/routes/{{.Name}}',{body:{cmd:suggested}},function(status){
+      if(status>=200&&status<300){
         var cmdEl=document.querySelector('.cmd');
-        if(cmdEl)cmdEl.textContent=lastRecovery.suggested_cmd;
+        if(cmdEl)cmdEl.textContent=suggested;
         startApp();
-      }else{
-        rbtn.disabled=false;
-        var em=document.getElementById('msg');
-        em.style.display='block';em.textContent='Failed to update command';em.style.color='var(--red)';
+        return;
       }
-    };
-    put.onerror=function(){
       rbtn.disabled=false;
       var em=document.getElementById('msg');
-      em.style.display='block';em.textContent='Could not reach daemon';em.style.color='var(--red)';
-    };
-    put.send(JSON.stringify({cmd:lastRecovery.suggested_cmd}));
+      em.style.display='block';em.style.color='var(--red)';
+      em.textContent=status?'Failed to update command':'Could not reach daemon';
+    });
     return;
   }
   var body={};
@@ -261,41 +228,23 @@ function recoverAndRetry(){
   startApp(body);
 }
 
-function pollUntilReady(attempts){
-  if(launchCanceled){return;}
-  if(attempts>70){
-    fetchFailureAndRender(0);
-    return;
-  }
-  var xhr=new XMLHttpRequest();
-  xhr.open('GET','/_api/routes/{{.Name}}/ready');
-  xhr.timeout=2000;
-  xhr.onload=function(){
-    try{
-      var d=JSON.parse(xhr.responseText);
-      if(d.ready){
+function pollUntilReady(){
+  vibePoll(function(next){
+    if(launchCanceled){return;}
+    vibeAPI('GET','/_api/routes/{{.Name}}/ready',{timeout:2000},function(status,d){
+      if(d&&d.ready){
         document.getElementById('msg').textContent='Ready';
         document.getElementById('msg').style.color='var(--green)';
-        setTimeout(function(){window.location.href=window.location.href;},300);
+        reloadSoon(300);
         return;
       }
-      if(d.running===false){
-        var msgEl=document.getElementById('msg');
-        msgEl.style.whiteSpace='pre-wrap';msgEl.style.textAlign='left';msgEl.style.fontSize='.75rem';
-        msgEl.textContent=(d.failure&&d.failure.message)?d.failure.message:'Process crashed \u2014 check logs at ~/.vibe/{{.Name}}.log';
-        msgEl.style.color='var(--red)';
-        setLaunchMode('retry');
-        document.getElementById('spinner').style.display='none';
-        if(d.failure&&d.failure.recovery){showRecovery(d.failure.recovery, d.failure.log||'');}
-        else if(d.failure&&d.failure.log){showFailureLog(d.failure.log);}
+      if(d&&d.running===false){
+        showFailure(d.failure,'Process crashed \u2014 check logs at ~/.vibe/{{.Name}}.log');
         return;
       }
-    }catch(e){}
-    setTimeout(function(){pollUntilReady(attempts+1);},500);
-  };
-  xhr.onerror=function(){setTimeout(function(){pollUntilReady(attempts+1);},500);};
-  xhr.ontimeout=function(){setTimeout(function(){pollUntilReady(attempts+1);},500);};
-  xhr.send();
+      next();
+    });
+  },500,70,fetchFailureAndRender);
 }
 {{.RecoveryInit}}
 {{if .AutoLaunch}}
