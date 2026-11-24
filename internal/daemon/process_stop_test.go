@@ -109,6 +109,10 @@ func TestStartDuringStopWaitsForOldTree(t *testing.T) {
 	go func() { stopped <- pm.Stop("flip") }()
 	time.Sleep(100 * time.Millisecond) // Stop is inside its grace window now
 	newPID, err := pm.Start(route)
+	// Checked before waiting on Stop: the old tree traps TERM and is only
+	// ~100ms into a 400ms grace window, so a Start that didn't wait would
+	// return here with the old tree still alive.
+	oldAliveAtStart := processAlive(oldPID)
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
@@ -119,8 +123,8 @@ func TestStartDuringStopWaitsForOldTree(t *testing.T) {
 	if newPID == oldPID {
 		t.Fatalf("Start during Stop returned the dying pid %d as already running", oldPID)
 	}
-	if processAlive(oldPID) {
-		t.Fatalf("old pid %d still alive when the new child was spawned", oldPID)
+	if oldAliveAtStart {
+		t.Fatalf("Start returned while the old tree (pid %d) was still alive — it didn't wait for Stop", oldPID)
 	}
 	if !pm.IsRunning("flip") {
 		t.Fatal("the new child is not tracked after the old Stop finished")

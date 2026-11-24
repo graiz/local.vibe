@@ -1150,14 +1150,19 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 	if rec.KillPID > 0 {
 		// From the route's own origin — which is also every third-party
 		// script its app loads — kill_pid may only name the PID the start
-		// page is offering to kill: the one in this route's current
-		// kill_pid recovery hint. Otherwise any page on the route could
-		// SIGTERM any of the user's processes (editor, browser, ssh-agent).
+		// page is offering to kill (this route's current kill_pid recovery
+		// hint), AND that PID must be listening on one of this route's own
+		// ports right now. The second check matters because hint PIDs are
+		// scraped from the app's log, which can echo attacker-chosen text
+		// (a logged request path like "/already running PID 4242"); a live
+		// lsof of the route's ports is the daemon's own evidence. Otherwise
+		// any page on the route could SIGTERM any of the user's processes.
 		// The dashboard and the CLI (no route Origin) are unrestricted, as
 		// before; safeKillPID's own guards still apply to everyone.
 		if _, fromRoute := s.originRouteName(r.Header.Get("Origin")); fromRoute {
 			f := route.LoadFailure()
-			if f == nil || f.Recovery == nil || f.Recovery.Action != "kill_pid" || f.Recovery.PID != rec.KillPID {
+			if f == nil || f.Recovery == nil || f.Recovery.Action != "kill_pid" || f.Recovery.PID != rec.KillPID ||
+				!pidHoldsRoutePort(route, rec.KillPID) {
 				writeJSONError(w, http.StatusForbidden, fmt.Sprintf("a route's own page may only kill the process vibe offered to kill for it, not PID %d", rec.KillPID))
 				return
 			}
@@ -1200,6 +1205,26 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request, name string
 
 // routeBindsPort reports whether port is the route's primary or one of its
 // reserve ports.
+// pidHoldsRoutePort reports whether pid is currently listening on the route's
+// primary port or one of its reserve ports.
+func pidHoldsRoutePort(route *Route, pid int) bool {
+	ports := []int{route.Port}
+	for _, p := range route.ReservePorts {
+		ports = append(ports, p)
+	}
+	for _, port := range ports {
+		if port <= 0 {
+			continue
+		}
+		for _, holder := range findPortHoldersFn(port) {
+			if holder == pid {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func routeBindsPort(route *Route, port int) bool {
 	if port == route.Port {
 		return true

@@ -89,11 +89,34 @@ func TestRouteOriginKillPIDLimitedToOfferedPID(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	// The offered PID is allowed — the start page's one-click recovery.
+	// Hint PIDs are scraped from the app's log, which can echo attacker text.
+	// An offered PID that does NOT hold one of the route's ports is refused.
+	bystander, bystanderExited := spawnVictim()
+	route.SetFailure(&Failure{Message: "logged", Recovery: &Recovery{Action: "kill_pid", PID: bystander.Process.Pid}})
+	prevHolders := findPortHoldersFn
+	t.Cleanup(func() { findPortHoldersFn = prevHolders })
+	findPortHoldersFn = func(int) []int { return nil }
+	if code := startFromRoute(bystander.Process.Pid); code != http.StatusForbidden {
+		t.Fatalf("kill_pid of a hinted PID that holds no route port = %d; want 403", code)
+	}
+	select {
+	case <-bystanderExited:
+		t.Fatal("route origin killed a log-hinted PID that doesn't hold the route's port")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// The offered PID that really holds the route's port is allowed — the
+	// start page's one-click recovery.
 	offered, offeredExited := spawnVictim()
 	route.SetFailure(&Failure{Message: "port held", Recovery: &Recovery{Action: "kill_pid", PID: offered.Process.Pid}})
+	findPortHoldersFn = func(port int) []int {
+		if port == route.Port {
+			return []int{offered.Process.Pid}
+		}
+		return nil
+	}
 	if code := startFromRoute(offered.Process.Pid); code == http.StatusForbidden {
-		t.Fatal("kill_pid of the offered recovery PID was refused")
+		t.Fatal("kill_pid of the offered recovery PID holding the route port was refused")
 	}
 	select {
 	case <-offeredExited:
