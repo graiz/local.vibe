@@ -138,6 +138,9 @@ type RegisterResponse struct {
 	OK   bool   `json:"ok"`
 	URL  string `json:"url"`
 	Port int    `json:"port,omitempty"`
+	// Warnings are non-fatal problems the daemon accepted the route despite,
+	// e.g. an oauth_callback_port that is also a stopped route's port.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type RouteInfo struct {

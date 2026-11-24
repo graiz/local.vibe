@@ -31,18 +31,80 @@ func (s *Server) validateOAuthBridgeConfig(routeName string, appPort, callbackPo
 	return nil
 }
 
+// oauthCallbackAppPortCollision checks a new or changed callback port against
+// the ports other routes' *apps* bind — their primary port and reserve_ports
+// (issue #10). validateOAuthBridgeConfig only compares callback ports to each
+// other, so a bridge could be configured on a port another route's server
+// uses:
+//
+//   - that route is running → error. The bridge listener would fail to bind,
+//     or worse, bind 127.0.0.1 alongside a wildcard listener and silently
+//     intercept the app's localhost traffic.
+//   - that route is stopped → warning, allowed. Nothing collides yet; once
+//     the bridge holds the port, vibePortClaim refuses to start the other
+//     route with an error naming this bridge, shown on its start page.
+//
+// Deliberately not part of validateOAuthBridgeConfig: that one also runs in
+// reconcileOAuthBridgeListeners on every route change, where a running-state
+// check would fail every bridge whenever any colliding route happened to come
+// up. Callers vet only a port that is being set or changed.
+func (s *Server) oauthCallbackAppPortCollision(routeName string, callbackPort int) (warning string, err error) {
+	if callbackPort <= 0 {
+		return "", nil
+	}
+	for _, r := range s.table.List() {
+		if r.Name == routeName || r.Type == RouteBookmark {
+			continue
+		}
+		what := ""
+		if r.Port == callbackPort {
+			what = "port"
+		}
+		for key, p := range r.ReservePorts {
+			if p == callbackPort {
+				what = fmt.Sprintf("reserve_ports[%q]", key)
+				break
+			}
+		}
+		if what == "" {
+			continue
+		}
+		if r.Running.Load() {
+			return "", fmt.Errorf("oauth_callback_port %d is route %q's %s, and %q is running — pick another callback port", callbackPort, r.Name, what, r.Name)
+		}
+		return fmt.Sprintf("oauth_callback_port %d is also route %q's %s; %q won't be able to start while this bridge holds the port", callbackPort, r.Name, what, r.Name), nil
+	}
+	return "", nil
+}
+
 // reconcileOAuthBridgeListeners binds a loopback bridge for every local
 // route's oauth_callback_port and — when peers are enabled — for every
-// peer route's advertised port that no local route claims. A local bind
-// failure is an error (the caller's config is unusable); a peer bind failure
-// is logged once and skipped, since a peer's choice of port must never break
-// this machine's own route changes.
-func (s *Server) reconcileOAuthBridgeListeners() error {
+// peer route's advertised port that no local route claims. It returns the
+// local failures keyed by callback port (nil when all succeeded); a peer bind
+// failure is logged once and skipped, since a peer's choice of port must
+// never break this machine's own route changes.
+//
+// It deliberately does not stop at the first local failure either. Every
+// register, update and deregister reconciles the whole table, so one route
+// whose callback port was grabbed by some unrelated process used to fail all
+// of them — rejecting a new route over a port it never asked for — and,
+// depending on map order, leave other routes' bridges unbound. Callers check
+// only the port they are responsible for (oauthBridgeErr) and log the rest;
+// failed ports are retried on the next reconcile.
+func (s *Server) reconcileOAuthBridgeListeners() map[int]error {
+	var errs map[int]error
+	fail := func(port int, err error) {
+		if errs == nil {
+			errs = make(map[int]error)
+		}
+		errs[port] = err
+	}
 	wanted := make(map[int]bool) // port -> owned by a local route
 	for _, r := range s.table.List() {
 		if r.OAuthCallbackPort > 0 {
 			if err := s.validateOAuthBridgeConfig(r.Name, r.Port, r.OAuthCallbackPort); err != nil {
-				return err
+				fail(r.OAuthCallbackPort, fmt.Errorf("route %q: %w", r.Name, err))
+				continue
 			}
 			wanted[r.OAuthCallbackPort] = true
 		}
@@ -73,7 +135,8 @@ func (s *Server) reconcileOAuthBridgeListeners() error {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
 			if local {
-				return fmt.Errorf("oauth_callback_port %d is not available: %w", port, err)
+				fail(port, fmt.Errorf("oauth_callback_port %d is not available: %w", port, err))
+				continue
 			}
 			if s.oauthPeerBindFailed == nil {
 				s.oauthPeerBindFailed = make(map[int]bool)
@@ -104,15 +167,29 @@ func (s *Server) reconcileOAuthBridgeListeners() error {
 		}(port, srv, ln)
 	}
 
-	return nil
+	return errs
+}
+
+// oauthBridgeErr returns the reconcile failure for port, if any, and logs the
+// failures belonging to other ports — they are another route's problem and
+// must not fail the caller's request. port <= 0 logs everything.
+func oauthBridgeErr(errs map[int]error, port int) error {
+	for p, err := range errs {
+		if p != port || port <= 0 {
+			fmt.Fprintf(os.Stderr, "warning: oauth callback bridge: %v\n", err)
+		}
+	}
+	if port <= 0 {
+		return nil
+	}
+	return errs[port]
 }
 
 // reconcileOAuthBridgeListenersLogged is reconcileOAuthBridgeListeners for
-// callers with no request to fail (peer sync, peer removal).
+// callers with no request to fail (peer sync, peer removal, deregister,
+// startup).
 func (s *Server) reconcileOAuthBridgeListenersLogged() {
-	if err := s.reconcileOAuthBridgeListeners(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: oauth bridge listener reconcile failed: %v\n", err)
-	}
+	_ = oauthBridgeErr(s.reconcileOAuthBridgeListeners(), 0)
 }
 
 // closeBridgeLocked shuts one bridge listener down. Caller holds oauthBridgeMu.

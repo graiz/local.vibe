@@ -619,10 +619,20 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "proxy requires a url")
 		return
 	}
+	var warnings []string
 	if req.OAuthCallbackPort != nil {
 		if err := s.validateOAuthBridgeConfig(req.Name, req.Port, *req.OAuthCallbackPort); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		warn, err := s.oauthCallbackAppPortCollision(req.Name, *req.OAuthCallbackPort)
+		if err != nil {
+			writeJSONError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if warn != "" {
+			fmt.Fprintf(os.Stderr, "warning: route %q: %s\n", req.Name, warn)
+			warnings = append(warnings, warn)
 		}
 	}
 	oauthCB := 0
@@ -759,7 +769,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+	if err := oauthBridgeErr(s.reconcileOAuthBridgeListeners(), route.OAuthCallbackPort); err != nil {
 		if route.Type == RouteManaged {
 			s.stopManaged(route)
 		}
@@ -772,11 +782,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		_ = s.saveStickyRoutes()
 	}
 
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"ok":   true,
 		"url":  s.routeURL(req.Name),
 		"port": route.Port,
-	})
+	}
+	if len(warnings) > 0 {
+		resp["warnings"] = warnings
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name string) {
@@ -789,9 +803,7 @@ func (s *Server) handleDeregister(w http.ResponseWriter, _ *http.Request, name s
 		s.stopManaged(route)
 	}
 	s.table.Remove(name)
-	if err := s.reconcileOAuthBridgeListeners(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: oauth bridge listener reconcile failed: %v\n", err)
-	}
+	s.reconcileOAuthBridgeListenersLogged()
 	_ = s.saveStickyRoutes()
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
@@ -974,10 +986,25 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	if req.OAuthCallbackPort != nil {
 		edit.OAuthCallbackPort = *req.OAuthCallbackPort
 	}
+	var warnings []string
 	if edit.OAuthCallbackPort > 0 {
 		if err := s.validateOAuthBridgeConfig(edit.Name, edit.Port, edit.OAuthCallbackPort); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		// Vet against other routes' app ports only when the callback port is
+		// new or changed — an unrelated edit (icon, idle timeout) must not be
+		// blocked by a collision that predates it.
+		if edit.OAuthCallbackPort != route.OAuthCallbackPort {
+			warn, err := s.oauthCallbackAppPortCollision(edit.Name, edit.OAuthCallbackPort)
+			if err != nil {
+				writeJSONError(w, http.StatusConflict, err.Error())
+				return
+			}
+			if warn != "" {
+				fmt.Fprintf(os.Stderr, "warning: route %q: %s\n", edit.Name, warn)
+				warnings = append(warnings, warn)
+			}
 		}
 	}
 
@@ -990,7 +1017,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 	}
 	s.table.apply(route, edit)
 	s.table.Add(route)
-	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+	if err := oauthBridgeErr(s.reconcileOAuthBridgeListeners(), route.OAuthCallbackPort); err != nil {
 		if renaming {
 			s.table.Remove(route.Name)
 		}
@@ -1000,7 +1027,11 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request, name strin
 		return
 	}
 	_ = s.saveStickyRoutes()
-	json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	resp := map[string]any{"ok": true}
+	if len(warnings) > 0 {
+		resp["warnings"] = warnings
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // routeOriginEditRefusal reports why a PUT from a route's own origin is
