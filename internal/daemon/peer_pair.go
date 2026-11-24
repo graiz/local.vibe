@@ -161,10 +161,9 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 		return
 	}
 
-	hostname, _ := os.Hostname()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(pairResponse{
-		Name:  peer.SanitizeName(hostname),
+		Name:  localPeerName(),
 		Port:  s.cfg.Daemon.Peers.Port,
 		Proof: peer.Proof(code, localFP, clientFP),
 	})
@@ -210,9 +209,9 @@ func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, er
 		Timeout:   5 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: pinned},
 	}
-	hostname, _ := os.Hostname()
+	hostname, _ := peerHostname()
 	body, err := json.Marshal(pairRequest{
-		Name:  peer.SanitizeName(hostname),
+		Name:  localPeerName(),
 		Host:  hostname,
 		Port:  s.cfg.Daemon.Peers.Port,
 		Proof: peer.Proof(code, localFP, serverFP),
@@ -261,6 +260,16 @@ func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, er
 // storePeer appends (or, matched by fingerprint, updates in place — a
 // re-pair refreshes host/port) and persists peers.json. Slice order is the
 // collision tie-break order, so updates never reorder.
+// peerHostname is os.Hostname, indirected so tests can simulate a rename.
+var peerHostname = os.Hostname
+
+// localPeerName is the name this daemon gives itself on the peer channel:
+// its hostname, sanitized the same way a receiving peer would.
+func localPeerName() string {
+	h, _ := peerHostname()
+	return peer.SanitizeName(h)
+}
+
 func (s *Server) storePeer(p peer.Peer) error {
 	s.peerMu.Lock()
 	defer s.peerMu.Unlock()

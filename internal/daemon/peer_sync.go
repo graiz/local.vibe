@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -147,6 +148,10 @@ func (s *Server) refreshPeerRoutes(p peer.Peer, force bool) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotModified {
+		s.adoptPeerName(p, resp.Header.Get(peerNameHeader))
+	}
+
 	switch resp.StatusCode {
 	case http.StatusNotModified:
 		s.peerMu.Lock()
@@ -181,6 +186,55 @@ func (s *Server) refreshPeerRoutes(p peer.Peer, force bool) {
 	default:
 		s.setPeerErr(st, fmt.Errorf("peer returned %d", resp.StatusCode))
 	}
+}
+
+// peerNameHeader carries a peer's current name on GET /peer/routes.
+const peerNameHeader = "X-Vibe-Peer-Name"
+
+// adoptPeerName picks up a paired peer's new name after the machine was
+// renamed. A peer's name was fixed at pairing (its hostname then), so a
+// rename left it listed under the old name forever. Safe because the claim
+// arrives over a connection already pinned to this peer's fingerprint — the
+// same machine holding the same key — and only the display name changes, never
+// the host or the pin. Skipped when another paired peer already uses the
+// name: names key `vibe peer remove` and the peers.json collision order.
+func (s *Server) adoptPeerName(p peer.Peer, raw string) {
+	// No header = a peer on an older build that doesn't advertise a name.
+	// Checked before sanitizing: SanitizeName maps "" to the placeholder
+	// "peer", which renamed every not-yet-updated peer to "peer".
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	name := peer.SanitizeName(raw)
+	if name == "" || name == p.Name {
+		return
+	}
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	idx := -1
+	for i := range s.peerList {
+		switch {
+		case s.peerList[i].Fingerprint == p.Fingerprint:
+			if s.peerList[i].Name != p.Name {
+				return // renamed concurrently; the next sync re-checks
+			}
+			idx = i
+		case s.peerList[i].Name == name:
+			return // taken by another peer
+		}
+	}
+	if idx < 0 {
+		return // removed while this sync was in flight
+	}
+	s.peerList[idx].Name = name
+	if st, ok := s.peerStates[p.Name]; ok {
+		delete(s.peerStates, p.Name)
+		s.peerStates[name] = st
+	}
+	if err := peer.SavePeers(s.configDir(), s.peerList); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not persist peer rename %s → %s: %v\n", p.Name, name, err)
+	}
+	fmt.Fprintf(os.Stderr, "vibe: peer %s is now called %s\n", p.Name, name)
 }
 
 func (s *Server) setPeerErr(st *peerState, err error) {

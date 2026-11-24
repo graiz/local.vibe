@@ -216,6 +216,11 @@ func (s *Server) handlePeerRoutes(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256(body)
 	etag := fmt.Sprintf("%q", hex.EncodeToString(sum[:]))
 	w.Header().Set("ETag", etag)
+	// Our current name, on 304s too: a machine renamed after pairing would
+	// otherwise be listed under its old hostname forever (peer_sync.go
+	// adoptPeerName). A header, not a body field, so the ETag — and the
+	// cheap 304 path — is unaffected.
+	w.Header().Set(peerNameHeader, localPeerName())
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
