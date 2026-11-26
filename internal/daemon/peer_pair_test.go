@@ -45,7 +45,7 @@ func TestPairingHappyPathIsMutual(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.peerLn.Close() })
+	t.Cleanup(func() { closePeerLn(b) })
 	host, port := splitAddr(t, b.peerLn.Addr().String())
 
 	a := newBareServer(t)
@@ -78,7 +78,7 @@ func TestPairingHappyPathIsMutual(t *testing.T) {
 	if a.peerLn == nil {
 		t.Fatal("A's peer listener not started after pairing")
 	}
-	a.peerLn.Close()
+	closePeerLn(a)
 }
 
 func TestPairingWrongCodeRejected(t *testing.T) {
@@ -86,7 +86,7 @@ func TestPairingWrongCodeRejected(t *testing.T) {
 	if _, _, err := b.openPeerInvite(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.peerLn.Close() })
+	t.Cleanup(func() { closePeerLn(b) })
 	host, port := splitAddr(t, b.peerLn.Addr().String())
 
 	a := newBareServer(t)
@@ -109,7 +109,7 @@ func TestPairingRequiresOpenInvite(t *testing.T) {
 	if err := b.ensurePeerListener(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.peerLn.Close() })
+	t.Cleanup(func() { closePeerLn(b) })
 	host, port := splitAddr(t, b.peerLn.Addr().String())
 	a := newBareServer(t)
 	if err := a.ensurePeerIdentity(); err != nil {

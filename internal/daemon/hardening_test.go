@@ -135,7 +135,7 @@ func TestPairingClosesInviteAfterFailedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.peerLn.Close() })
+	t.Cleanup(func() { closePeerLn(b) })
 	host, port := splitAddr(t, b.peerLn.Addr().String())
 
 	for i := 0; i < peerPairMaxAttempts; i++ {

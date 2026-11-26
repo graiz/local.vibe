@@ -63,7 +63,7 @@ func TestPeerEndToEnd(t *testing.T) {
 	}
 
 	// B goes dark: no bare 502, the page names the peer and the fix.
-	b.peerLn.Close()
+	closePeerLn(b)
 	rec = browse(nil)
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "vibe peers") {
 		t.Fatalf("unreachable peer: code=%d body has hint=%v", rec.Code, strings.Contains(rec.Body.String(), "vibe peers"))

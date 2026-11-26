@@ -22,7 +22,7 @@ import (
 	"github.com/graiz/local.vibe/internal/peer"
 )
 
-const peerInviteTTL = 5 * time.Minute
+var peerInviteTTL = 5 * time.Minute // var so tests can shorten it
 
 // peerPairMaxAttempts is how many proof checks one invite allows. The
 // code is six digits; with the window open for five minutes and no cap, a LAN
@@ -52,19 +52,30 @@ func (s *Server) openPeerInvite() (string, time.Time, error) {
 	if err := s.ensurePeerIdentity(); err != nil {
 		return "", time.Time{}, err
 	}
-	if err := s.ensurePeerListener(); err != nil {
-		return "", time.Time{}, err
-	}
 	code, err := peer.NewInviteCode()
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	// Open the code BEFORE ensuring the listener: a maybeStopPeerListener
+	// racing us (an old code's expiry timer, a last-peer removal) then sees
+	// an open code and leaves the listener alone.
 	expires := time.Now().Add(peerInviteTTL)
 	s.peerMu.Lock()
 	s.peerInviteCode = code
 	s.peerInviteExpires = expires
 	s.peerPairAttempts = 0
 	s.peerMu.Unlock()
+	if err := s.ensurePeerListener(); err != nil {
+		s.peerMu.Lock()
+		if s.peerInviteCode == code {
+			s.peerInviteCode = ""
+		}
+		s.peerMu.Unlock()
+		return "", time.Time{}, err
+	}
+	// Findable only while showing a code: once it lapses, an unpaired
+	// machine stops listening again (a few ms of slack past the expiry).
+	time.AfterFunc(time.Until(expires)+20*time.Millisecond, s.maybeStopPeerListener)
 	return code, expires, nil
 }
 
@@ -129,6 +140,9 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 	if !peer.VerifyProof(req.Proof, code, clientFP, localFP) {
 		s.peerPairFailed(code)
 		deny()
+		// If that closed the invite on an unpaired machine, stop listening —
+		// after this 403 has been written, not from under it.
+		time.AfterFunc(200*time.Millisecond, s.maybeStopPeerListener)
 		return
 	}
 	// One-time: consume the invite before pinning, so two concurrent correct
@@ -176,6 +190,13 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 // role-swapped proof in the reply — which fails if any relay substituted a
 // certificate in either direction.
 func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, error) {
+	return s.pairWithPeerExpecting(host, port, code, "")
+}
+
+// pairWithPeerExpecting is pairWithPeer that also refuses, before sending
+// any proof, when the machine answering has a different key than expectFP
+// (the key the dashboard showed the user). "" skips the check (CLI).
+func (s *Server) pairWithPeerExpecting(host string, port int, code, expectFP string) (peer.Peer, error) {
 	if err := s.ensurePeerIdentity(); err != nil {
 		return peer.Peer{}, err
 	}
@@ -197,6 +218,10 @@ func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, er
 		return peer.Peer{}, fmt.Errorf("pairing: cannot reach %s: %w", addr, err)
 	}
 	conn.Close()
+
+	if expectFP != "" && !strings.EqualFold(serverFP, expectFP) {
+		return peer.Peer{}, fmt.Errorf("the machine at %s now has a different key than the one shown (%s) — not pairing; check the key on its screen", host, peer.ShortKey(expectFP))
+	}
 
 	// Step 2: the pairing request, pinned to the fingerprint just observed.
 	pinned := peer.ClientTLSConfig(id, func(fp string) error {
@@ -225,7 +250,7 @@ func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return peer.Peer{}, fmt.Errorf("pairing rejected — check the invite code and that `vibe peer invite` is still open on the other machine")
+		return peer.Peer{}, fmt.Errorf("pairing failed — check the code, that it's still showing on the other machine, and that both machines run the same vibe version")
 	}
 	var pr pairResponse
 	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
@@ -272,11 +297,13 @@ func localPeerName() string {
 
 func (s *Server) storePeer(p peer.Peer) error {
 	s.peerMu.Lock()
-	defer s.peerMu.Unlock()
 	replaced := false
 	for i := range s.peerList {
 		if s.peerList[i].Fingerprint == p.Fingerprint {
 			p.AddedAt = s.peerList[i].AddedAt
+			if s.peerList[i].NameSetByUser { // a name the user typed sticks
+				p.Name, p.NameSetByUser = s.peerList[i].Name, true
+			}
 			s.peerList[i] = p
 			replaced = true
 			break
@@ -285,5 +312,10 @@ func (s *Server) storePeer(p peer.Peer) error {
 	if !replaced {
 		s.peerList = append(s.peerList, p)
 	}
-	return peer.SavePeers(s.configDir(), s.peerList)
+	err := peer.SavePeers(s.configDir(), s.peerList)
+	s.peerMu.Unlock()
+	// A first pairing made at runtime must start the periodic sync; it used
+	// to start only at daemon startup. Idempotent.
+	s.startPeerSync(false)
+	return err
 }

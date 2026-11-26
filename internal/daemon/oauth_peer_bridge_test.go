@@ -174,7 +174,7 @@ func TestPeerOAuthBridgesLocalWins(t *testing.T) {
 		t.Fatal("port reserved by a local route must not be bridged for a peer")
 	}
 
-	s.cfg.Daemon.Peers.Enabled = false
+	s.peersOn.Store(false)
 	if len(s.peerOAuthBridges()) != 0 {
 		t.Fatal("peer bridges must be off when peers are disabled")
 	}

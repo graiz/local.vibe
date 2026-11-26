@@ -65,7 +65,7 @@ func TestLocalRouteShadowsPeerRoute(t *testing.T) {
 
 func TestPeerUnreachableServesErrorPageNotBare502(t *testing.T) {
 	a, b := peerABWithBackend(t)
-	b.peerLn.Close()
+	closePeerLn(b)
 
 	req := httptest.NewRequest("GET", "http://face.vibe/", nil)
 	req.Host = "face.vibe"

@@ -364,9 +364,13 @@ var apiRoutes = []apiRoute{
 	{method: http.MethodPost, pattern: "/routes/{name}/worktrees", ownRoute: true, handler: (*Server).handleAdoptWorktree},
 	{method: http.MethodPut, pattern: "/preferences", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handleSetPreferences(w, r) }},
 	{method: http.MethodGet, pattern: "/peers", localOnly: true, handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeersList(w, r) }},
+	{method: http.MethodPost, pattern: "/peers/discover", localOnly: true, handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerDiscover(w, r) }},
+	{method: http.MethodPost, pattern: "/peers/probe", localOnly: true, handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerProbe(w, r) }},
+	{method: http.MethodPost, pattern: "/peers/enabled", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeersSetEnabled(w, r) }},
 	{method: http.MethodPost, pattern: "/peers/invite", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerInvite(w, r) }},
 	{method: http.MethodPost, pattern: "/peers", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerAdd(w, r) }},
 	{method: http.MethodDelete, pattern: "/peers/{name}", handler: (*Server).handlePeerRemove},
+	{method: http.MethodPut, pattern: "/peers/{name}", handler: (*Server).handlePeerUpdate},
 }
 
 // match reports whether path (already stripped of /_api) fits the pattern,
@@ -1410,7 +1414,7 @@ func (s *Server) handleSetPreferences(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.View == "list" || req.View == "grid" {
 		s.cfg.Dashboard.View = req.View
-		s.saveConfig()
+		_ = s.saveConfig()
 	}
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }
