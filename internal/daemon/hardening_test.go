@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -232,6 +233,9 @@ func TestBookmarkTransportCached(t *testing.T) {
 // routes.json carries command lines (users put tokens inline) and per-route
 // logs carry whatever the app prints. Neither is other local users' business.
 func TestStateFilesArePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits; Windows reports 0666 for writable files (ACLs govern access)")
+	}
 	dir := t.TempDir()
 	table := NewRouteTable()
 	table.Add(&Route{Name: "x", Type: RouteSticky, Port: 4100, RegisteredAt: time.Now()})

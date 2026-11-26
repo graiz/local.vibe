@@ -366,6 +366,11 @@ func TestGenerateLeafWritesAtomically(t *testing.T) {
 			t.Errorf("temp file left behind: %s", e.Name())
 		}
 	}
+	// Unix permission bits only: Windows reports 0666 for any writable file
+	// (access there is governed by ACLs on the user's profile directory).
+	if runtime.GOOS == "windows" {
+		return
+	}
 	info, err := os.Stat(filepath.Join(dir, "vibe-key.pem"))
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Errorf("vibe-key.pem mode %v err %v; want 0600", info.Mode().Perm(), err)
