@@ -48,6 +48,19 @@ func (s *Server) recoverManagedRoute(w http.ResponseWriter, r *http.Request, rou
 		return true
 	}
 
+	// A child the daemon still tracks and that is still alive is not dead —
+	// its port flapped (an HMR full reload closes the socket for a moment).
+	// Resetting Running here would send a healthy app through adoption and
+	// spawn, and with any stale Failure on the route (a slow first compile
+	// that outlasted the readiness window) leave it on the start page for
+	// good while the child served fine. Keep it running and let the
+	// reconnecting page retry.
+	if pid, ok := route.PIDValue(); ok && route.Running.Load() && processAlive(pid) && s.procs.IsRunning(route.Name) {
+		route.Ready.Store(false)
+		s.serveRepairPage(w, r, route)
+		return true
+	}
+
 	// Normalize stale state: a dead PID shouldn't linger on the route.
 	if pid, ok := route.PIDValue(); ok && !processAlive(pid) {
 		route.ClearPID()
@@ -128,8 +141,7 @@ func (s *Server) pruneGoneWorktree(w http.ResponseWriter, r *http.Request, route
 	if !worktreeDirGone(route) {
 		return false
 	}
-	route.Running.Store(false) // intentional stop: no failure seeded by the exit handler
-	_ = s.procs.Stop(route.Name)
+	s.stopManaged(route)
 	s.table.Remove(route.Name)
 	if err := s.saveStickyRoutes(); err != nil {
 		fmt.Fprintf(os.Stderr, "vibe: failed to persist worktree prune of %s: %v\n", route.Name, err)
@@ -139,48 +151,117 @@ func (s *Server) pruneGoneWorktree(w http.ResponseWriter, r *http.Request, route
 	return true
 }
 
-// startManagedNow spawns a managed route's process synchronously (mirroring
-// handleStart's success path) and kicks off the background readiness poll.
-// It blocks briefly while ProcessManager.Start watches for an immediate crash,
-// so the caller can distinguish "started, booting" from "failed to start"
-// before choosing which page to render. The PID is persisted so a subsequent
-// daemon restart can re-adopt this process.
+// startFailure is why startManaged could not bring a route up, typed so the
+// HTTP handlers can answer with the same shape they always have (a 409 with a
+// recovery hint for a held port, a 500 with the log tail for a crashed spawn,
+// a plain error otherwise) while every spawn path shares one engine. The same
+// Failure is recorded on the route so the start page can render it.
+type startFailure struct {
+	status   int
+	message  string
+	port     int       // the held port, for conflicts
+	recovery *Recovery // kill-and-retry hint, for conflicts
+	err      error     // the spawn error (a *StartError when the child died)
+}
+
+func (f *startFailure) Error() string {
+	if f.err != nil {
+		return f.err.Error()
+	}
+	return f.message
+}
+
+func (f *startFailure) Unwrap() error { return f.err }
+
+// write answers an API request with the failure in its established shape.
+func (f *startFailure) write(w http.ResponseWriter, route *Route) {
+	switch {
+	case f.err != nil:
+		writeStartFailure(w, f.status, f.err, route.Cmd, route.Dir)
+	case f.port > 0:
+		writePortConflict(w, f.port, f.recovery)
+	default:
+		writeJSONError(w, f.status, f.message)
+	}
+}
+
+// startManagedNow spawns a managed route's process after re-reading its
+// vibe.json, so config edits take effect on every kind of start: CLI, dashboard,
+// on-demand recovery, and the lost-access restart all come through here.
 func (s *Server) startManagedNow(route *Route) error {
+	return s.startManaged(route, true)
+}
+
+// startManaged is the one spawn engine. In order: optionally sync vibe.json,
+// assign a port if none, refuse vibe-internal port collisions, clear or report
+// strangers on every port the command binds, spawn through the ProcessManager
+// (which watches the first second for an immediate crash), then record the
+// running state, persist the PID for re-adoption after a daemon restart, and
+// start the readiness poll. Every failure is recorded on the route as its
+// Failure and returned as a *startFailure. Three hand-copied variants of this
+// sequence (register, start, recovery) had drifted; one of them is how a
+// register whose port another route held reached killPort against that route.
+// prepareManagedStart is the engine's first step — re-read vibe.json (when
+// syncConfig) and require a launch command — split out so handleStart can
+// run it BEFORE its destructive kill_pid/kill_port recovery: a start that is
+// going to fail on config anyway must not kill anything first. Failures are
+// recorded on the route like every other engine failure.
+func (s *Server) prepareManagedStart(route *Route, syncConfig bool) error {
+	if syncConfig {
+		if err := s.syncRouteFromVibeJSON(route); err != nil {
+			route.SetFailure(&Failure{Message: err.Error()})
+			return &startFailure{status: http.StatusConflict, message: err.Error()}
+		}
+	}
+	if route.Cmd == "" {
+		msg := "route has no launch command"
+		route.SetFailure(&Failure{Message: msg})
+		return &startFailure{status: http.StatusBadRequest, message: msg}
+	}
+	return nil
+}
+
+func (s *Server) startManaged(route *Route, syncConfig bool) error {
+	fail := func(f *startFailure, failure *Failure) error {
+		route.SetFailure(failure)
+		return f
+	}
+	if err := s.prepareManagedStart(route, syncConfig); err != nil {
+		return err
+	}
 	if route.Port == 0 {
 		port, err := findFreePort(s.table)
 		if err != nil {
-			f := &Failure{Message: "could not find a free port"}
-			route.SetFailure(f)
-			return fmt.Errorf("%s", f.Message)
+			msg := "could not find a free port"
+			return fail(&startFailure{status: http.StatusInternalServerError, message: msg}, &Failure{Message: msg})
 		}
 		route.Port = port
 	}
 
 	// Fail fast with a clear message on a vibe-internal port collision (daemon
-	// listeners, or another route's primary/oauth/reserve port) — mirrors
-	// handleStart, so the start page shows the real cause instead of a generic
-	// EADDRINUSE the user can't act on.
+	// listeners, or another route's primary/oauth/reserve port): a
+	// misconfiguration no amount of killing or retrying can fix, distinct from
+	// an external process squatting the port.
 	if msg := s.checkVibePortCollisions(route); msg != "" {
-		route.SetFailure(&Failure{Message: msg})
-		return fmt.Errorf("%s", msg)
+		return fail(&startFailure{status: http.StatusConflict, message: msg}, &Failure{Message: msg})
 	}
 
-	// Clear any stale listener still holding a port the command will bind
-	// (e.g. a half-dead child from a prior run), mirroring handleStart. If the
-	// port can't be freed it's held by an unrelated process — record the
-	// conflict and bail so the start page surfaces a kill-and-retry hint
-	// instead of the child crash-looping on EADDRINUSE.
+	// Pre-flight every port the cmd will bind: each reserve_port first, so a
+	// multi-port app surfaces the right collision, then the primary. A port
+	// that can't be cleared is held by an unrelated process — record the
+	// conflict so the start page offers kill-and-retry instead of the child
+	// crash-looping on EADDRINUSE.
 	for _, kv := range reservePortValuesSorted(route.ReservePorts) {
 		if rec := s.preflightPort(kv.Port); rec != nil {
-			f := &Failure{Message: fmt.Sprintf("reserve_ports[%q] = %d is already in use by another process", kv.Name, kv.Port), Recovery: rec}
-			route.SetFailure(f)
-			return fmt.Errorf("%s", f.Message)
+			msg := fmt.Sprintf("reserve_ports[%q] = %d is already in use by another process", kv.Name, kv.Port)
+			return fail(&startFailure{status: http.StatusConflict, message: msg, port: kv.Port, recovery: rec},
+				&Failure{Message: msg, Recovery: rec})
 		}
 	}
 	if rec := s.preflightPort(route.Port); rec != nil {
-		f := &Failure{Message: fmt.Sprintf("port %d is already in use by another process", route.Port), Recovery: rec}
-		route.SetFailure(f)
-		return fmt.Errorf("%s", f.Message)
+		msg := fmt.Sprintf("port %d is already in use by another process", route.Port)
+		return fail(&startFailure{status: http.StatusConflict, message: msg, port: route.Port, recovery: rec},
+			&Failure{Message: msg, Recovery: rec})
 	}
 
 	s.prepareWorktreeEnv(route)
@@ -188,18 +269,19 @@ func (s *Server) startManagedNow(route *Route) error {
 	if err != nil {
 		route.Running.Store(false)
 		route.Ready.Store(false)
-		route.SetFailure(failureFromError(err, route.Cmd, route.Dir))
-		return err
+		return fail(&startFailure{status: http.StatusInternalServerError, err: err}, failureFromError(err, route.Cmd, route.Dir))
 	}
 	route.SetPID(pid)
 	route.Running.Store(true)
 	route.Ready.Store(false)
 	route.SetFailure(nil)
+	// Seed LastActivity so the idle timer has a baseline even if the process
+	// never receives a proxy request.
 	route.TouchActivity()
 	if err := s.saveStickyRoutes(); err != nil {
 		fmt.Fprintf(os.Stderr, "vibe: failed to persist pid for %s: %v\n", route.Name, err)
 	}
-	go s.waitForReady(route)
+	go s.waitForReady(route, pid)
 	return nil
 }
 

@@ -5,7 +5,6 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 )
@@ -21,27 +20,19 @@ func terminateProcess(pid int) error {
 	return proc.Signal(syscall.SIGTERM)
 }
 
-// findPortHoldersDefault runs `lsof -ti tcp:PORT` and returns the listening
-// PIDs. Returns nil on lsof error or when no process is bound to the port.
+// findPortHoldersDefault returns the PIDs LISTENING on a TCP port. It is the
+// kill target for preflightPort/killPort, so the LISTEN filter is
+// load-bearing: a bare `lsof -i tcp:PORT` also matches sockets whose remote
+// port is PORT — a browser tab keeping a connection to a stale server, or
+// the daemon's own health dial — and those were being SIGTERMed as "holders".
 func findPortHoldersDefault(port int) []int {
-	out, err := exec.Command("lsof", "-ti", fmt.Sprintf("tcp:%d", port)).Output()
-	if err != nil {
-		return nil
-	}
-	var pids []int
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		var pid int
-		if _, err := fmt.Sscan(line, &pid); err == nil && pid > 0 {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
+	return pidsListeningOnPort(port)
 }
 
 // pidCommandDefault returns a short command name for a pid via
 // `ps -p PID -o comm=`. Best-effort: returns "" on error or empty output.
 func pidCommandDefault(pid int) string {
-	out, err := exec.Command("ps", "-p", fmt.Sprintf("%d", pid), "-o", "comm=").Output()
+	out, err := runTool("ps", "-p", fmt.Sprintf("%d", pid), "-o", "comm=")
 	if err != nil {
 		return ""
 	}

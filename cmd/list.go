@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/graiz/local.vibe/internal/client"
+	"github.com/graiz/local.vibe/internal/peer"
 	"github.com/spf13/cobra"
 )
 
@@ -31,8 +32,7 @@ Flags follow ls(1): -l adds each route's directory and start command, and
 		c := client.New()
 		routes, err := c.List()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 		if len(routes) == 0 {
 			fmt.Println("no routes registered")
@@ -100,21 +100,26 @@ func writeRouteTable(out io.Writer, routes []client.RouteInfo, worktrees []clien
 		for _, r := range routes {
 			localNames[r.Name] = true
 		}
-		seenPeerNames := make(map[string]bool)
+		claimedBy := make(map[string]string) // route name → winning peer
 		for _, p := range peers.Peers {
 			for _, pr := range p.Routes {
-				status := "stopped"
-				if pr.Ready {
-					status = "ready"
-				} else if pr.Running {
-					status = "starting"
+				// A shadowed row's status says it lost, not the peer's own run
+				// state: "stopped" beside a running local route of the same
+				// name read as that route being down, and the name never
+				// reaches the peer's copy anyway.
+				status := peer.Status(pr.Running, pr.Ready, p.Reachable)
+				note := "on " + p.Name
+				if localNames[pr.Name] {
+					status = peer.StatusShadowed
+					note += ", shadowed by this machine"
+				} else if winner, taken := claimedBy[pr.Name]; taken {
+					status = peer.StatusShadowed
+					note += ", shadowed by " + winner
+				} else {
+					claimedBy[pr.Name] = p.Name
 				}
-				if localNames[pr.Name] || seenPeerNames[pr.Name] {
-					status = "shadowed"
-				}
-				seenPeerNames[pr.Name] = true
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s",
-					pr.Name, "https://"+pr.Name+".vibe", "—", "peer", status, "—", "on "+p.Name)
+					pr.Name, "https://"+pr.Name+".vibe", "—", "peer", status, "—", note)
 				if long {
 					fmt.Fprint(w, "\t—\t—")
 				}
@@ -126,8 +131,8 @@ func writeRouteTable(out io.Writer, routes []client.RouteInfo, worktrees []clien
 }
 
 // displayPath abbreviates home to "~", as shells do. Only a whole leading
-// path component matches, so /Users/greg is not abbreviated inside
-// /Users/gregory.
+// path component matches, so /Users/al is not abbreviated inside
+// /Users/alice.
 func displayPath(p, home string) string {
 	if p == "" || home == "" {
 		return p

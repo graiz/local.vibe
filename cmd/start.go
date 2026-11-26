@@ -16,7 +16,7 @@ type vibeConfig struct {
 	Port              int            `json:"port"`
 	Cmd               string         `json:"cmd"`
 	OAuthCallbackPort int            `json:"oauth_callback_port,omitempty"`
-	ReservePorts        map[string]int `json:"reserve_ports,omitempty"`
+	ReservePorts      map[string]int `json:"reserve_ports,omitempty"`
 }
 
 var startCmd = &cobra.Command{
@@ -162,10 +162,10 @@ func startNew(name string, port int, command string, oauthCallbackPort int, rese
 
 	c := client.New()
 	req := client.RegisterRequest{
-		Name:       name,
-		Port:       port,
-		Cmd:        command,
-		Dir:        dir,
+		Name:         name,
+		Port:         port,
+		Cmd:          command,
+		Dir:          dir,
 		ReservePorts: reservePorts,
 	}
 	if oauthCallbackPort > 0 {

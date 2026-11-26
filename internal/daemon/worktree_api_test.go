@@ -27,17 +27,17 @@ func postRegister(t *testing.T, s *Server, body string) *httptest.ResponseRecord
 }
 
 func TestRegisterWorktreeRejectsBadShapes(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	cases := []struct {
 		body string
 		want int
 	}{
-		{`{"name":"wt.app","url":"https://example.com"}`, http.StatusBadRequest},              // bookmark
-		{`{"name":"wt.app","port":3000}`, http.StatusBadRequest},                              // no cmd
+		{`{"name":"wt.app","url":"https://example.com"}`, http.StatusBadRequest},                // bookmark
+		{`{"name":"wt.app","port":3000}`, http.StatusBadRequest},                                // no cmd
 		{`{"name":"wt.app","cmd":"sleep 9","oauth_callback_port":8123}`, http.StatusBadRequest}, // oauth bridge
-		{`{"name":"a.b.c","cmd":"sleep 9"}`, http.StatusBadRequest},                           // nesting
-		{`{"name":"wt.local","cmd":"sleep 9"}`, http.StatusBadRequest},                        // reserved
+		{`{"name":"a.b.c","cmd":"sleep 9"}`, http.StatusBadRequest},                             // nesting
+		{`{"name":"wt.local","cmd":"sleep 9"}`, http.StatusBadRequest},                          // reserved
 	}
 	for _, c := range cases {
 		if w := postRegister(t, s, c.body); w.Code != c.want {
@@ -47,7 +47,7 @@ func TestRegisterWorktreeRejectsBadShapes(t *testing.T) {
 }
 
 func TestRegisterWorktreeOverrides(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	// Port 3200 is what the copied vibe.json would claim; it must be ignored.
@@ -105,7 +105,7 @@ func TestRegisterWorktreeOverrides(t *testing.T) {
 // instead of silently auto-starting; with no worktrees at all the existing
 // auto-start behavior is untouched.
 func TestRecoverPrefersPickerWhenWorktreeExists(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	main := &Route{Name: "app", Type: RouteManaged, Port: 3800, Cmd: "sleep 30", RegisteredAt: time.Now()}
@@ -151,7 +151,7 @@ func TestRecoverPrefersPickerWhenWorktreeExists(t *testing.T) {
 // An unregistered on-disk worktree also suppresses auto-start — the magic
 // case: an agent created a git worktree but never ran vibe start in it.
 func TestRecoverPrefersPickerForDiscoveredWorktree(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	repo, _ := initGitRepoWithWorktree(t, "feature/magic")
 
@@ -178,7 +178,7 @@ func TestRecoverPrefersPickerForDiscoveredWorktree(t *testing.T) {
 // the daemon restart — dropping the routes.json entry alone would orphan a
 // running server nobody tracks.
 func TestLoadPruneKillsSurvivingWorktreeChild(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	cfgDir := t.TempDir()
 	s.ConfigDir = cfgDir
 
@@ -227,7 +227,7 @@ func TestLoadPruneKillsSurvivingWorktreeChild(t *testing.T) {
 // POST /_api/routes/{app}/worktrees registers a discovered worktree with the
 // parent's cmd and starts it.
 func TestAdoptWorktreeEndpoint(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	repo, wtDir := initGitRepoWithWorktree(t, "feature/magic")
 
@@ -299,7 +299,7 @@ func waitPortListening(t *testing.T, port int) {
 // the OS recycles pids, and killAdoptedProcess signals an entire process
 // group, so acting on an unproven pid can SIGTERM a stranger's whole tree.
 func TestLoadPruneSparesUnprovenPID(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	cfgDir := t.TempDir()
 	s.ConfigDir = cfgDir
 

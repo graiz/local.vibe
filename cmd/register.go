@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/graiz/local.vibe/internal/client"
 	"github.com/spf13/cobra"
@@ -36,8 +35,7 @@ var registerCmd = &cobra.Command{
 		c := client.New()
 		resp, err := c.Register(req)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Printf("registered: %s → %s\n", name, resp.URL)
 		return nil

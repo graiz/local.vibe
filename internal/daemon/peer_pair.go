@@ -24,6 +24,12 @@ import (
 
 const peerInviteTTL = 5 * time.Minute
 
+// peerPairMaxAttempts is how many proof checks one invite allows. The
+// code is six digits; with the window open for five minutes and no cap, a LAN
+// client at ~1k requests/s had a real chance of guessing it and getting its
+// certificate pinned as a peer.
+const peerPairMaxAttempts = 5
+
 type pairRequest struct {
 	Name  string `json:"name"`
 	Host  string `json:"host"`
@@ -57,8 +63,38 @@ func (s *Server) openPeerInvite() (string, time.Time, error) {
 	s.peerMu.Lock()
 	s.peerInviteCode = code
 	s.peerInviteExpires = expires
+	s.peerPairAttempts = 0
 	s.peerMu.Unlock()
 	return code, expires, nil
+}
+
+// peerPairReserve re-reads the invite and claims one of its
+// peerPairMaxAttempts proof checks, atomically. It runs AFTER the request body
+// has been read: a handler that snapshotted the code at entry and verified it
+// after a slow body could check a guess against an invite the cap had already
+// closed — holding K bodies open turned a 5-guess invite into a K-guess one.
+// Counting attempts at reservation (not failures after the fact) bounds the
+// checks per invite no matter how many requests are in flight.
+func (s *Server) peerPairReserve() (code string, ok bool) {
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	code = s.peerInviteCode
+	if code == "" || !time.Now().Before(s.peerInviteExpires) || s.peerPairAttempts >= peerPairMaxAttempts {
+		return "", false
+	}
+	s.peerPairAttempts++
+	return code, true
+}
+
+// peerPairFailed closes the invite once its attempts are spent. The caller
+// still answers the generic 403.
+func (s *Server) peerPairFailed(code string) {
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	if s.peerPairAttempts >= peerPairMaxAttempts && s.peerInviteCode == code && code != "" {
+		s.peerInviteCode = ""
+		fmt.Fprintf(os.Stderr, "vibe: peer invite closed after %d failed pairing attempts — run `vibe peer invite` again\n", s.peerPairAttempts)
+	}
 }
 
 // handlePeerPair answers a pairing request on the LAN listener. Every
@@ -69,9 +105,10 @@ func (s *Server) openPeerInvite() (string, time.Time, error) {
 func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP string) {
 	deny := func() { http.Error(w, "pairing failed", http.StatusForbidden) }
 
+	// Cheap early exit only — the authoritative check is peerPairReserve,
+	// after the body.
 	s.peerMu.Lock()
-	code := s.peerInviteCode
-	open := code != "" && time.Now().Before(s.peerInviteExpires)
+	open := s.peerInviteCode != "" && time.Now().Before(s.peerInviteExpires)
 	localFP := s.peerFP
 	s.peerMu.Unlock()
 	if !open {
@@ -80,11 +117,29 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 	}
 
 	var req pairRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, apiMaxBodyBytes)).Decode(&req); err != nil {
+		deny()
+		return
+	}
+	code, ok := s.peerPairReserve()
+	if !ok {
 		deny()
 		return
 	}
 	if !peer.VerifyProof(req.Proof, code, clientFP, localFP) {
+		s.peerPairFailed(code)
+		deny()
+		return
+	}
+	// One-time: consume the invite before pinning, so two concurrent correct
+	// proofs can't both pair off one code.
+	s.peerMu.Lock()
+	consumed := s.peerInviteCode == code
+	if consumed {
+		s.peerInviteCode = ""
+	}
+	s.peerMu.Unlock()
+	if !consumed {
 		deny()
 		return
 	}
@@ -106,15 +161,9 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 		return
 	}
 
-	// The invite is one-time: consumed by the first successful pairing.
-	s.peerMu.Lock()
-	s.peerInviteCode = ""
-	s.peerMu.Unlock()
-
-	hostname, _ := os.Hostname()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(pairResponse{
-		Name:  peer.SanitizeName(hostname),
+		Name:  localPeerName(),
 		Port:  s.cfg.Daemon.Peers.Port,
 		Proof: peer.Proof(code, localFP, clientFP),
 	})
@@ -160,9 +209,9 @@ func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, er
 		Timeout:   5 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: pinned},
 	}
-	hostname, _ := os.Hostname()
+	hostname, _ := peerHostname()
 	body, err := json.Marshal(pairRequest{
-		Name:  peer.SanitizeName(hostname),
+		Name:  localPeerName(),
 		Host:  hostname,
 		Port:  s.cfg.Daemon.Peers.Port,
 		Proof: peer.Proof(code, localFP, serverFP),
@@ -193,7 +242,7 @@ func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, er
 		peerPort = port
 	}
 	newPeer := peer.Peer{
-		Name:        pr.Name,
+		Name:        peer.SanitizeName(pr.Name), // the responder's claim is data, not a key
 		Host:        host,
 		Port:        peerPort,
 		Fingerprint: serverFP,
@@ -211,6 +260,16 @@ func (s *Server) pairWithPeer(host string, port int, code string) (peer.Peer, er
 // storePeer appends (or, matched by fingerprint, updates in place — a
 // re-pair refreshes host/port) and persists peers.json. Slice order is the
 // collision tie-break order, so updates never reorder.
+// peerHostname is os.Hostname, indirected so tests can simulate a rename.
+var peerHostname = os.Hostname
+
+// localPeerName is the name this daemon gives itself on the peer channel:
+// its hostname, sanitized the same way a receiving peer would.
+func localPeerName() string {
+	h, _ := peerHostname()
+	return peer.SanitizeName(h)
+}
+
 func (s *Server) storePeer(p peer.Peer) error {
 	s.peerMu.Lock()
 	defer s.peerMu.Unlock()

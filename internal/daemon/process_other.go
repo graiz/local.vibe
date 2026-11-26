@@ -37,3 +37,12 @@ func killProcessTree(name string, cmd *exec.Cmd) error {
 func killAdoptedProcess(pid int) error {
 	return terminateProcess(pid)
 }
+
+// Process.Kill is already unconditional here; the force variants are the
+// same operation.
+func killProcessTreeForce(name string, cmd *exec.Cmd) error { return killProcessTree(name, cmd) }
+func killAdoptedProcessForce(pid int) error                 { return killAdoptedProcess(pid) }
+
+// treeAlive: no process groups on this build (Setpgid is skipped), so the
+// tree is just the PID.
+func treeAlive(pid int) bool { return processAlive(pid) }

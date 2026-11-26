@@ -116,7 +116,7 @@ func TestWorktreeDirGone(t *testing.T) {
 // is the "process outlives the worktree" case: the child keeps serving from a
 // deleted checkout until someone visits.
 func TestRunningWorktreeRoutePrunedOnRequest(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	dir := mkWorktreeDir(t)
@@ -196,7 +196,7 @@ func TestPersistenceWorktreeRoundTripAndPrune(t *testing.T) {
 }
 
 func TestGoneWorktreeHostRedirectsToParent(t *testing.T) {
-	s := testServer() // TLD "test", TLS disabled → scheme http
+	s := testServer(t) // TLD "test", TLS disabled → scheme http
 
 	parentRoute := &Route{Name: "app", Type: RouteSticky, Port: 3300, RegisteredAt: time.Now()}
 	parentRoute.Running.Store(true)
@@ -234,7 +234,7 @@ func TestGoneWorktreeHostRedirectsToParent(t *testing.T) {
 }
 
 func TestRecoverManagedRoutePrunesGoneWorktree(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	dir := t.TempDir()
@@ -264,7 +264,7 @@ func TestRecoverManagedRoutePrunesGoneWorktree(t *testing.T) {
 }
 
 func TestSyncWorktreeRouteSyncsCmdOnly(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	dir := t.TempDir()
@@ -303,7 +303,7 @@ func TestSyncWorktreeRouteSyncsCmdOnly(t *testing.T) {
 }
 
 func TestStartPageListsWorktrees(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	main := &Route{Name: "app", Type: RouteManaged, Port: 3600, Cmd: "npm run dev", RegisteredAt: time.Now()}
@@ -347,7 +347,7 @@ func TestStartPageListsWorktrees(t *testing.T) {
 }
 
 func TestDiscoverUnregisteredWorktrees(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	repo, wtDir := initGitRepoWithWorktree(t, "feature/magic")
 
 	parent := &Route{Name: "app", Type: RouteManaged, Port: 3900, Cmd: "x", Dir: repo, RegisteredAt: time.Now()}
@@ -379,7 +379,7 @@ func TestDiscoverUnregisteredWorktrees(t *testing.T) {
 }
 
 func TestStartPageListsDiscoveredWorktrees(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	repo, _ := initGitRepoWithWorktree(t, "feature/magic")
 
@@ -400,7 +400,7 @@ func TestStartPageListsDiscoveredWorktrees(t *testing.T) {
 }
 
 func TestDashboardGroupsWorktreesUnderParent(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// Deliberately name the worktree so a plain name sort would NOT place it
 	// after its parent ("aaa.zapp" < "other" < "zapp").

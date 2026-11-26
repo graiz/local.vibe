@@ -8,7 +8,7 @@ import (
 )
 
 func TestServeServiceWorker(t *testing.T) {
-	s := testServer() // TLD "test"
+	s := testServer(t) // TLD "test"
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
 

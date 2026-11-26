@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/graiz/local.vibe/internal/client"
 	"github.com/spf13/cobra"
@@ -16,8 +15,7 @@ var deregisterCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c := client.New()
 		if err := c.Deregister(args[0]); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Printf("deregistered: %s\n", args[0])
 		return nil

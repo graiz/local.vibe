@@ -8,7 +8,7 @@ import (
 // TestTTLTimerRemovesRoute verifies a TTL route is removed by its own timer at
 // expiry — no sweep involved.
 func TestTTLTimerRemovesRoute(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	exp := time.Now().Add(120 * time.Millisecond)
@@ -34,7 +34,7 @@ func TestTTLTimerRemovesRoute(t *testing.T) {
 // TestIdleCheckStopsIdleRoute verifies idleCheck stops a managed route that has
 // been idle past its timeout.
 func TestIdleCheckStopsIdleRoute(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	r := &Route{Name: "idle", Type: RouteManaged, Port: 1, IdleTimeout: 1, RegisteredAt: time.Now().Add(-10 * time.Minute)}
@@ -52,7 +52,7 @@ func TestIdleCheckStopsIdleRoute(t *testing.T) {
 // TestIdleCheckKeepsActiveRoute verifies idleCheck leaves a recently-active
 // route running.
 func TestIdleCheckKeepsActiveRoute(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	r := &Route{Name: "busy", Type: RouteManaged, Port: 1, IdleTimeout: 5, RegisteredAt: time.Now()}
@@ -71,7 +71,7 @@ func TestIdleCheckKeepsActiveRoute(t *testing.T) {
 // started but never received a request: with no LastActivity, idleness is
 // measured from RegisteredAt so it still auto-stops instead of running forever.
 func TestIdleCheckNeverVisitedFallsBackToRegisteredAt(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	r := &Route{Name: "never", Type: RouteManaged, Port: 1, IdleTimeout: 1, RegisteredAt: time.Now().Add(-5 * time.Minute)}
@@ -92,7 +92,7 @@ func TestIdleCheckNeverVisitedFallsBackToRegisteredAt(t *testing.T) {
 // used to overwrite the map entry without firing the remove hook, leaving the
 // orphaned timer live.
 func TestReregisterCancelsStaleTTLTimer(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	exp := time.Now().Add(80 * time.Millisecond)
@@ -123,7 +123,7 @@ func TestReregisterCancelsStaleTTLTimer(t *testing.T) {
 // TestRemoveCancelsTimers verifies removing a route cancels its timers (no
 // leaked firing against a gone route).
 func TestRemoveCancelsTimers(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.table.SetHooks(s.onRouteAdded, s.onRouteRemoved)
 
 	exp := time.Now().Add(time.Hour)

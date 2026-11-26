@@ -26,7 +26,7 @@ import (
 // Windows builds, where this file is excluded by build tag.
 
 func TestAPIRegisterAndList(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// Register a sticky route
 	body, _ := json.Marshal(map[string]any{"name": "myapp", "port": 3000})
@@ -54,7 +54,7 @@ func TestAPIRegisterAndList(t *testing.T) {
 }
 
 func TestAPIRegisterValidation(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	tests := []struct {
 		name string
@@ -82,7 +82,7 @@ func TestAPIRegisterValidation(t *testing.T) {
 }
 
 func TestAPIDeregister(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// Register
 	body, _ := json.Marshal(map[string]any{"name": "temp", "port": 5000})
@@ -109,7 +109,7 @@ func TestAPIDeregister(t *testing.T) {
 }
 
 func TestAPIUpdate(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// Register
 	body, _ := json.Marshal(map[string]any{"name": "app", "port": 3000})
@@ -138,7 +138,7 @@ func TestAPIUpdate(t *testing.T) {
 // + later validation failure (bad URL) removed the old key from the table
 // but never re-added it, silently deleting the route.
 func TestAPIUpdateRenameWithValidationFailure(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	body, _ := json.Marshal(map[string]any{"name": "foo", "port": 3000})
 	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
@@ -163,7 +163,7 @@ func TestAPIUpdateRenameWithValidationFailure(t *testing.T) {
 }
 
 func TestAPIUpdateIdleTimeout(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// Register managed route (no cmd so it won't try to start a process)
 	body, _ := json.Marshal(map[string]any{"name": "svc", "port": 5000})
@@ -186,8 +186,8 @@ func TestAPIUpdateIdleTimeout(t *testing.T) {
 }
 
 func TestAPIHealth(t *testing.T) {
-	s := testServer()
-	// startedAt is set by testServer()
+	s := testServer(t)
+	// startedAt is set by testServer(t)
 
 	req := httptest.NewRequest("GET", "/_api/health", nil)
 	w := httptest.NewRecorder()
@@ -204,7 +204,7 @@ func TestAPIHealth(t *testing.T) {
 }
 
 func TestAPIBookmarkRoute(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	body, _ := json.Marshal(map[string]any{"name": "ext", "url": "https://example.com"})
 	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
@@ -245,7 +245,7 @@ func TestAPIBookmarkURLValidation(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := testServer()
+			s := testServer(t)
 			name := fmt.Sprintf("bm%d", i)
 			body, _ := json.Marshal(map[string]any{"name": name, "url": tc.url})
 			req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
@@ -263,7 +263,7 @@ func TestAPIBookmarkURLValidation(t *testing.T) {
 // does NOT fall through to the start handler — prior to the fix the route
 // pattern matched on suffix only.
 func TestAPIStartStopAnchoring(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	for _, path := range []string{"/_api/something/stop", "/_api/something/start"} {
 		req := httptest.NewRequest("POST", path, nil)
 		w := httptest.NewRecorder()
@@ -278,7 +278,7 @@ func TestAPIStartStopAnchoring(t *testing.T) {
 // the switch to writeJSONError, error messages with quotes or newlines
 // (e.g. tailed process output) could break the {"error":"..."} structure.
 func TestAPIErrorResponseIsValidJSON(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	// invalid name — exercises the error path
 	body, _ := json.Marshal(map[string]any{"name": "Bad Name!", "port": 3000})
 	req := httptest.NewRequest("POST", "/_api/routes", bytes.NewReader(body))
@@ -303,7 +303,7 @@ func TestAPIErrorResponseIsValidJSON(t *testing.T) {
 // iex -S mix phx.server) where the process is Running before the port is Ready.
 func TestManagedRouteReadyWaitsForPort(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 
 	// Pick a free port by briefly listening, then closing.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -315,7 +315,10 @@ func TestManagedRouteReadyWaitsForPort(t *testing.T) {
 
 	// Register a managed route whose command sleeps 3s before starting a listener.
 	// This simulates a REPL wrapper that's alive before the server is ready.
-	cmd := fmt.Sprintf("sleep 3 && nc -l %d", port)
+	// -k keeps nc listening: the readiness dial is a real connection, and a
+	// one-shot nc would exit on it, which the exit handler reports as the
+	// child dying (Ready flips back to false before the poll below sees it).
+	cmd := fmt.Sprintf("sleep 3 && nc -lk %d", port)
 	body, _ := json.Marshal(map[string]any{
 		"name": "delayed",
 		"port": port,
@@ -364,7 +367,7 @@ func TestManagedRouteReadyWaitsForPort(t *testing.T) {
 // port quickly (normal case), Ready becomes true within the polling window.
 func TestManagedRouteReadyImmediatePort(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -374,7 +377,7 @@ func TestManagedRouteReadyImmediatePort(t *testing.T) {
 	ln.Close()
 
 	// Start a listener immediately via nc.
-	cmd := fmt.Sprintf("nc -l %d", port)
+	cmd := fmt.Sprintf("nc -lk %d", port)
 	body, _ := json.Marshal(map[string]any{
 		"name": "quick",
 		"port": port,
@@ -415,7 +418,7 @@ func TestManagedRouteReadyImmediatePort(t *testing.T) {
 // short ReadyTimeout so the test completes quickly.
 func TestManagedRouteNeverBindsPort(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 	s.ReadyTimeout = 2 * time.Second
 
 	// Pick a port that nothing will bind.
@@ -468,7 +471,7 @@ func TestManagedRouteNeverBindsPort(t *testing.T) {
 // killPort's SIGTERM hits the child rather than the test process itself.
 func TestStartManagedRoutePortOccupied(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 	s.ReadyTimeout = 2 * time.Second
 
 	// Pick a free port.
@@ -554,7 +557,7 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 	t.Logf("got expected error+recovery: status=%d error=%q recovery=%v", w.Code, errMsg, rec)
 }
 
-// TestHandleStartPortOccupiedAttachesRecovery is the screener.vibe regression:
+// TestHandleStartPortOccupiedAttachesRecovery is a real-world regression:
 // a stale dev-server process holds the route's port, the user clicks Start
 // from the not-running page, the daemon can't free the port, and we MUST
 // surface a recovery hint with the offending PID so the startpage can offer
@@ -563,7 +566,7 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 // Failure so a page reload rehydrates the button.
 func TestHandleStartPortOccupiedAttachesRecovery(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 	s.ReadyTimeout = 2 * time.Second
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -604,7 +607,7 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 	// matches the state after a daemon restart with persisted routes, before
 	// the user clicks Start.
 	route := &Route{
-		Name:         "screener-repro",
+		Name:         "billing-repro",
 		Port:         port,
 		Type:         RouteManaged,
 		Cmd:          "sleep 60",
@@ -659,7 +662,7 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 func TestBuildPortConflictRecoveryFiltersAndShape(t *testing.T) {
 	// NOT t.Parallel(): mutates package-level findPortHoldersFn / pidCommandFn,
 	// which the integration-style port-occupied tests read via the real handler.
-	s := testServer()
+	s := testServer(t)
 
 	origHolders := findPortHoldersFn
 	origCmd := pidCommandFn
@@ -763,17 +766,17 @@ func equalIntMaps(a, b map[string]int) bool {
 }
 
 // TestFindFreePortSkipsReservePorts is the core invariant that prevents the
-// screener.vibe / task-tracker collision from happening at config time:
+// two-apps-one-port collision from happening at config time:
 // when route A reserves port 3001 via reserve_ports, the auto-assigner must
 // not hand 3001 to route B.
 func TestFindFreePortSkipsReservePorts(t *testing.T) {
 	t.Parallel()
 	table := NewRouteTable()
 	table.Add(&Route{
-		Name:         "screener",
+		Name:         "billing",
 		Port:         3012,
 		Type:         RouteManaged,
-		ReservePorts:   map[string]int{"server": 3001, "metrics": 3002, "admin": 3000},
+		ReservePorts: map[string]int{"server": 3001, "metrics": 3002, "admin": 3000},
 		RegisteredAt: time.Now(),
 	})
 
@@ -788,16 +791,16 @@ func TestFindFreePortSkipsReservePorts(t *testing.T) {
 	}
 }
 
-// TestHandleStartReservePortConflictAttachesRecovery is the screener.vibe
+// TestHandleStartReservePortConflictAttachesRecovery is the real-world
 // regression for the multi-port case: a stale process (e.g. another app's
-// NextAuth) holds one of the route's reserve_ports. Without this, screener's
+// NextAuth) holds one of the route's reserve_ports. Without this, the app's
 // bun server silently fails to bind its named "server" port and Vite's
 // proxy bleeds traffic into the wrong app. With this, the user gets a
 // clear "Kill PID X (node) and retry" recovery — same UX as the primary
 // port case — and the persisted Failure references the offending name.
 func TestHandleStartReservePortConflictAttachesRecovery(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 	s.ReadyTimeout = 2 * time.Second
 
 	// Pick two distinct free ports: one for the route's primary (will be
@@ -844,9 +847,9 @@ with socketserver.TCPServer(("127.0.0.1", %d), http.server.BaseHTTPRequestHandle
 	}
 
 	route := &Route{
-		Name:         "screener-multi",
+		Name:         "billing-multi",
 		Port:         primary,
-		ReservePorts:   map[string]int{"server": reservePort},
+		ReservePorts: map[string]int{"server": reservePort},
 		Type:         RouteManaged,
 		Cmd:          "sleep 60",
 		Dir:          t.TempDir(),
@@ -933,7 +936,7 @@ func TestWriteStartFailureIncludesRecoveryHint(t *testing.T) {
 // TestHandleStartSafeKillPIDRejectsDaemon ensures the recovery flow can't be
 // used to SIGTERM the daemon's own PID via a crafted kill_pid payload.
 func TestAPINonLocalHostKnownDaemonPathStillHitsDaemonAPI(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	body, _ := json.Marshal(map[string]any{"name": "app", "port": 4444})
 	req := httptest.NewRequest(http.MethodPost, "/_api/routes", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -965,7 +968,7 @@ func TestAPINonLocalHostUnknownPathProxiesUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "app",
 		Type:         RouteSticky,
@@ -988,7 +991,7 @@ func TestAPINonLocalHostUnknownPathProxiesUpstream(t *testing.T) {
 
 func TestHandleStartSafeKillPIDRejectsDaemon(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 
 	// Register a managed route so there's a target for /start.
 	body, _ := json.Marshal(map[string]any{"name": "owned", "port": 5555})
@@ -1023,7 +1026,7 @@ func TestHandleStartSafeKillPIDRejectsDaemon(t *testing.T) {
 // and a CLI-shaped DELETE with no Accept header gets a JSON 200.
 func TestHandleStopNoAcceptHeaderReturnsJSON(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 
 	// Seed a managed route so /stop has a target.
 	s.table.Add(&Route{
@@ -1060,7 +1063,7 @@ func TestHandleStopNoAcceptHeaderReturnsJSON(t *testing.T) {
 // path still gets the 303-redirect back to the dashboard.
 func TestHandleStopBrowserFormStillRedirects(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 	s.table.Add(&Route{
 		Name:         "form-stop",
 		Type:         RouteManaged,
@@ -1084,14 +1087,14 @@ func TestHandleStopBrowserFormStillRedirects(t *testing.T) {
 
 // TestHandleStartSyncsVibeJSON verifies that an edit to vibe.json (adding
 // oauth_callback_port) takes effect on the next vibe start <name> without
-// requiring deregister + re-register. This was the screener.vibe bug:
+// requiring deregister + re-register. This was a real-world bug:
 // `startExisting` used to bypass the register flow entirely, so fields the
 // user added to vibe.json after first registration never made it onto the
 // route.
 func TestHandleStartSyncsVibeJSON(t *testing.T) {
 	// Not t.Parallel: this test takes a free TCP port and probes the OAuth
 	// bridge bind, which races with other parallel tests grabbing random ports.
-	s := testServer()
+	s := testServer(t)
 
 	dir := t.TempDir()
 
@@ -1144,7 +1147,7 @@ func TestHandleStartSyncsVibeJSON(t *testing.T) {
 // running `vibe start <other>` from the wrong directory.
 func TestSyncRouteFromVibeJSONIgnoresWrongName(t *testing.T) {
 	t.Parallel()
-	s := testServer()
+	s := testServer(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "vibe.json"),
 		[]byte(`{"name":"different","cmd":"sleep 60","oauth_callback_port":9999}`), 0644); err != nil {

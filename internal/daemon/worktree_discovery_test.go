@@ -48,7 +48,7 @@ func makeRepoWithWorktree(t *testing.T, branch string) (string, string) {
 func TestListWorktreesEndpoint(t *testing.T) {
 	mainDir, wtDir := makeRepoWithWorktree(t, "feature/x")
 
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	s.table.Add(&Route{
 		Name: "app", Type: RouteManaged, Port: 3300,
@@ -56,7 +56,7 @@ func TestListWorktreesEndpoint(t *testing.T) {
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/_api/worktrees", nil)
-	req.Host = "local.test"
+	req.Host = "local.test" // the dashboard's call; paths are local-only detail
 	w := httptest.NewRecorder()
 	s.apiHandler(w, req)
 
@@ -86,7 +86,9 @@ func TestListWorktreesEndpoint(t *testing.T) {
 		Port: 3301, Cmd: "sleep 30", Dir: wtDir, RegisteredAt: time.Now(),
 	})
 	w2 := httptest.NewRecorder()
-	s.apiHandler(w2, httptest.NewRequest(http.MethodGet, "/_api/worktrees", nil))
+	req2 := httptest.NewRequest(http.MethodGet, "/_api/worktrees", nil)
+	req2.Host = "local.test"
+	s.apiHandler(w2, req2)
 	var after []worktreeResponse
 	_ = json.Unmarshal(w2.Body.Bytes(), &after)
 	if len(after) != 0 {
@@ -97,12 +99,14 @@ func TestListWorktreesEndpoint(t *testing.T) {
 // An app with no worktrees must produce an empty array, not null — the CLI and
 // dashboard both decode this directly.
 func TestListWorktreesEndpointEmpty(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	s.table.Add(&Route{Name: "plain", Type: RouteManaged, Port: 3310, Dir: t.TempDir(), RegisteredAt: time.Now()})
 
 	w := httptest.NewRecorder()
-	s.apiHandler(w, httptest.NewRequest(http.MethodGet, "/_api/worktrees", nil))
+	req := httptest.NewRequest(http.MethodGet, "/_api/worktrees", nil)
+	req.Host = "local.test"
+	s.apiHandler(w, req)
 	if body := strings.TrimSpace(w.Body.String()); body != "[]" {
 		t.Errorf("body = %q, want []", body)
 	}
@@ -113,7 +117,7 @@ func TestListWorktreesEndpointEmpty(t *testing.T) {
 func TestDashboardShowsDiscoveredWorktree(t *testing.T) {
 	mainDir, wtDir := makeRepoWithWorktree(t, "feature/y")
 
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	s.table.Add(&Route{
 		Name: "app", Type: RouteManaged, Port: 3320,

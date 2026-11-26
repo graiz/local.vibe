@@ -11,9 +11,9 @@ import (
 // listener — everything the user actually uses still works.
 func TestClassifyListener(t *testing.T) {
 	cases := []struct {
-		name                          string
+		name                           string
 		direct, redirectOpen, daemonUp bool
-		want                          checkStatus
+		want                           checkStatus
 	}{
 		{"direct dial works", true, true, true, statusOK},
 		{"direct works even with redirect down", true, false, true, statusOK},

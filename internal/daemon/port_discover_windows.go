@@ -61,10 +61,10 @@ type netstatListener struct {
 // parseNetstatListeners scans netstat -ano output and returns every TCP
 // listener row's (port, pid) pair. Sample output:
 //
-//	  Proto  Local Address          Foreign Address        State           PID
-//	  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1024
-//	  TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       9876
-//	  TCP    [::]:135               [::]:0                 LISTENING       1024
+//	Proto  Local Address          Foreign Address        State           PID
+//	TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1024
+//	TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       9876
+//	TCP    [::]:135               [::]:0                 LISTENING       1024
 //
 // We accept both TCP and TCPv6 rows. The state column is locale-translated
 // on non-English Windows installs ("ABHÖREN" on German, "ÉCOUTE" on French,

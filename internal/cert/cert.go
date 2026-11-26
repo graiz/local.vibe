@@ -5,7 +5,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha1"
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -63,7 +62,7 @@ func EnsureCA(certsDir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 		return nil, nil, fmt.Errorf("create CA cert: %w", err)
 	}
 
-	if err := writePEM(certPath, "CERTIFICATE", certDER, 0644); err != nil {
+	if err := WritePEM(certPath, "CERTIFICATE", certDER, 0644); err != nil {
 		return nil, nil, err
 	}
 
@@ -71,7 +70,7 @@ func EnsureCA(certsDir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal CA key: %w", err)
 	}
-	if err := writePEM(keyPath, "EC PRIVATE KEY", keyDER, 0600); err != nil {
+	if err := WritePEM(keyPath, "EC PRIVATE KEY", keyDER, 0600); err != nil {
 		return nil, nil, err
 	}
 
@@ -146,7 +145,7 @@ func generateLeaf(certFile, keyFile string, caCert *x509.Certificate, caKey *ecd
 		return "", "", fmt.Errorf("create leaf cert: %w", err)
 	}
 
-	if err := writePEM(certFile, "CERTIFICATE", certDER, 0644); err != nil {
+	if err := WritePEM(certFile, "CERTIFICATE", certDER, 0644); err != nil {
 		return "", "", err
 	}
 
@@ -154,7 +153,7 @@ func generateLeaf(certFile, keyFile string, caCert *x509.Certificate, caKey *ecd
 	if err != nil {
 		return "", "", fmt.Errorf("marshal leaf key: %w", err)
 	}
-	if err := writePEM(keyFile, "EC PRIVATE KEY", keyDER, 0600); err != nil {
+	if err := WritePEM(keyFile, "EC PRIVATE KEY", keyDER, 0600); err != nil {
 		return "", "", err
 	}
 
@@ -192,17 +191,6 @@ func CAThumbprint(certsDir string) (string, error) {
 	}
 	sum := sha1.Sum(cert.Raw)
 	return strings.ToUpper(hex.EncodeToString(sum[:])), nil
-}
-
-// LoadTLSConfig returns a tls.Config loaded from the given cert and key files.
-func LoadTLSConfig(certFile, keyFile string) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load TLS keypair: %w", err)
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-	}, nil
 }
 
 // TrustCA installs the CA certificate into the OS-level trust store.
@@ -246,13 +234,37 @@ func loadCert(path string) (*x509.Certificate, error) {
 	return x509.ParseCertificate(block.Bytes)
 }
 
-func writePEM(path, blockType string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+// WritePEM writes a PEM file through a temp file in the same directory and
+// an atomic rename. The leaf pair is regenerated on every route change, and
+// a reader (the TLS listener's reload, or a second concurrent regeneration)
+// must never see a truncated file or a cert and key from two generations.
+func WritePEM(path, blockType string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	defer f.Close()
-	return pem.Encode(f, &pem.Block{Type: blockType, Bytes: data})
+	tmpPath := tmp.Name()
+	cleanup := func(err error) error {
+		tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := pem.Encode(tmp, &pem.Block{Type: blockType, Bytes: data}); err != nil {
+		return cleanup(err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		return cleanup(err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }
 
 func randomSerial() (*big.Int, error) {

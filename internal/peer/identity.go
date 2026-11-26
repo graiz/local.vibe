@@ -13,12 +13,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/pem"
-	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/graiz/local.vibe/internal/cert"
 )
 
 // EnsureIdentity loads or creates the daemon's peer identity: a self-signed
@@ -62,10 +62,10 @@ func EnsureIdentity(certsDir string) (tls.Certificate, error) {
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	if err := writePEM(certPath, "CERTIFICATE", der, 0644); err != nil {
+	if err := cert.WritePEM(certPath, "CERTIFICATE", der, 0644); err != nil {
 		return tls.Certificate{}, err
 	}
-	if err := writePEM(keyPath, "EC PRIVATE KEY", keyDER, 0600); err != nil {
+	if err := cert.WritePEM(keyPath, "EC PRIVATE KEY", keyDER, 0600); err != nil {
 		return tls.Certificate{}, err
 	}
 	return tls.LoadX509KeyPair(certPath, keyPath)
@@ -85,16 +85,4 @@ func IdentityFingerprint(c tls.Certificate) string {
 		return ""
 	}
 	return Fingerprint(c.Certificate[0])
-}
-
-func writePEM(path, blockType string, der []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := pem.Encode(f, &pem.Block{Type: blockType, Bytes: der}); err != nil {
-		return fmt.Errorf("encode %s: %w", path, err)
-	}
-	return nil
 }

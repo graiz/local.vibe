@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -29,7 +30,11 @@ func openDashboard() {
 		url = "https://local.vibe"
 	}
 	if _, err := net.LookupHost("local.vibe"); err != nil {
-		url = "http://localhost:7999"
+		port := config.DefaultPort
+		if cfg != nil && cfg.Daemon.Port > 0 {
+			port = cfg.Daemon.Port
+		}
+		url = fmt.Sprintf("http://localhost:%d", port)
 	}
 	fmt.Printf("opening %s\n", url)
 	_ = openURL(url)
@@ -65,11 +70,7 @@ var daemonStartCmd = &cobra.Command{
 				openDashboard()
 				return nil
 			}
-			logPath := filepath.Join(config.Dir(), "daemon.log")
-			if tail := tailFile(logPath, 20); tail != "" {
-				return fmt.Errorf("daemon did not start — last lines of %s:\n%s", logPath, tail)
-			}
-			return fmt.Errorf("daemon did not start — check %s", logPath)
+			return daemonStartFailed(filepath.Join(config.Dir(), "daemon.log"))
 		}
 
 		// Fallback: fork-based start
@@ -134,6 +135,43 @@ var daemonStatusCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// forkDaemon spawns `vibe serve` detached from this process (per-OS
+// detachAttrs: a new session on unix, a detached no-window process on
+// Windows) and waits for it to answer HTTP. Used when no platform autostart
+// hook is installed — before `vibe setup`, or on platforms without one.
+//
+// Readiness is an actual /_api/health response, not the pidfile: the daemon
+// writes its pidfile before binding, and may still fail to bind (:53 on
+// Windows, say) after writing it.
+func forkDaemon() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	_ = os.MkdirAll(config.Dir(), 0755)
+	logPath := filepath.Join(config.Dir(), "daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open log file: %w", err)
+	}
+	proc := exec.Command(self, "serve")
+	proc.Stdout = logFile
+	proc.Stderr = logFile
+	proc.SysProcAttr = detachAttrs()
+	if err := proc.Start(); err != nil {
+		logFile.Close()
+		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+	logFile.Close()
+	if waitForDaemonReady(5 * time.Second) {
+		fmt.Printf("daemon started (pid %d)\n", proc.Process.Pid)
+		fmt.Printf("log: %s\n", logPath)
+		openDashboard()
+		return nil
+	}
+	return daemonStartFailed(logPath)
 }
 
 // tailFile returns the last n lines of the file at path, or "" if unreadable.

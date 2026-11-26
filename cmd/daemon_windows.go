@@ -6,12 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/graiz/local.vibe/internal/config"
 	"github.com/graiz/local.vibe/internal/winutil"
 	"golang.org/x/sys/windows"
 )
@@ -79,55 +76,14 @@ func scheduledTaskExists(name string) bool {
 	return cmd.Run() == nil
 }
 
-// forkDaemon spawns the daemon detached so it survives the CLI exit.
-// Used when no Scheduled Task is installed yet (e.g. before `vibe setup`)
-// or when the user explicitly runs `vibe serve` themselves.
-func forkDaemon() error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	_ = os.MkdirAll(config.Dir(), 0755)
-	logPath := filepath.Join(config.Dir(), "daemon.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("open log file: %w", err)
-	}
-	proc := exec.Command(self, "serve")
-	proc.Stdout = logFile
-	proc.Stderr = logFile
-	proc.SysProcAttr = &syscall.SysProcAttr{
+// detachAttrs starts the forked daemon as a detached, windowless process so
+// it survives the CLI's console closing and never pops a console of its own.
+func detachAttrs() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW,
 	}
-	if err := proc.Start(); err != nil {
-		logFile.Close()
-		return fmt.Errorf("failed to start daemon: %w", err)
-	}
-	logFile.Close()
-	// Wait up to 5s for the daemon to actually accept HTTP. Pidfile presence
-	// alone is misleading: the daemon may write its pidfile, then crash when
-	// it tries to bind :53. A successful HTTP request to /_api/health is the
-	// real "this thing is up" signal.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(200 * time.Millisecond)
-		if !isDaemonRunning() {
-			continue
-		}
-		if daemonHTTPResponding() {
-			fmt.Printf("daemon started (pid %d)\n", proc.Process.Pid)
-			fmt.Printf("log: %s\n", logPath)
-			openDashboard()
-			return nil
-		}
-	}
-	if tail := tailFile(logPath, 20); tail != "" {
-		return fmt.Errorf("daemon did not start — last lines of %s:\n%s", logPath, tail)
-	}
-	return fmt.Errorf("daemon did not start — check %s", logPath)
 }
-
 
 // cliProcessAlive on Windows opens a query handle and reads the exit code.
 // STILL_ACTIVE means the process hasn't exited yet — same trick the daemon

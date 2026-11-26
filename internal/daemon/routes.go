@@ -26,9 +26,8 @@ type Route struct {
 	// The name of a worktree route is always "<worktree>.<Parent>", so Parent
 	// is derivable from Name; it's stored for cheap filtering (dashboard
 	// grouping, dir-gone pruning, picker) without re-parsing.
-	Parent string `json:"parent,omitempty"`
+	Parent       string     `json:"parent,omitempty"`
 	Port         int        `json:"port"`
-	TTL          *int       `json:"ttl,omitempty"`
 	Cmd          string     `json:"cmd,omitempty"`
 	Dir          string     `json:"dir,omitempty"`
 	ExternalURL  string     `json:"external_url,omitempty"`
@@ -78,6 +77,12 @@ type Route struct {
 	ownerForeign         atomic.Bool  `json:"-"`
 	ownerCheckedUnixNano atomic.Int64 `json:"-"`
 	ownerChecking        atomic.Bool  `json:"-"`
+
+	// upstreamTLS caches whether the app's local listener speaks TLS;
+	// upstreamTLSKey records the port+PID it was measured against (0 = not
+	// probed). See upstream_tls.go.
+	upstreamTLS    atomic.Bool  `json:"-"`
+	upstreamTLSKey atomic.Int64 `json:"-"`
 }
 
 // Failure captures why a managed route's most recent start attempt failed,
@@ -225,13 +230,6 @@ func (t *RouteTable) ManagedCmd(r *Route) string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return r.Cmd
-}
-
-// SetManagedCmd writes r.Cmd under the table lock, pairing with ManagedCmd.
-func (t *RouteTable) SetManagedCmd(r *Route, cmd string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	r.Cmd = cmd
 }
 
 // UpdatePort rewrites an existing route's Port field under the table lock.

@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"net/http"
 	"strings"
 )
 
@@ -11,10 +12,50 @@ import (
 var templateFS embed.FS
 
 var (
-	tmplDashboard  = template.Must(parse("dashboard.html.tmpl"))
-	tmplStartPage  = template.Must(parse("startpage.html.tmpl"))
-	tmplRepairPage = template.Must(parse("repairpage.html.tmpl"))
+	tmplDashboard   = template.Must(parse("dashboard.html.tmpl"))
+	tmplStartPage   = template.Must(parse("startpage.html.tmpl"))
+	tmplRepairPage  = template.Must(parse("repairpage.html.tmpl"))
+	tmplMessagePage = template.Must(parse("message.html.tmpl"))
+	tmplOAuthPeer   = template.Must(parse("oauth_peer.html.tmpl"))
 )
+
+// pageShell is the head/style/script preamble every page template renders.
+// Page view models embed it; renderPage fills it.
+type pageShell struct {
+	Head template.HTML
+	CSS  template.CSS
+	JS   template.JS
+}
+
+func (p *pageShell) setShell(sh pageShell) { *p = sh }
+
+// page is any view model that embeds pageShell.
+type page interface{ setShell(pageShell) }
+
+// renderPage is the one place a daemon-served HTML page is written: it sets
+// the content type and status, fills the shared shell (fonts, the theme
+// stylesheet, the helper script) and executes the template. Headers are
+// already out if Execute fails, so the error can only be logged inline.
+func renderPage(w http.ResponseWriter, status int, tmpl *template.Template, title string, data page) {
+	data.setShell(pageShell{
+		Head: template.HTML(themeHead(title)),
+		CSS:  template.CSS(themeCSS),
+		JS:   template.JS(pagesJS),
+	})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := tmpl.Execute(w, data); err != nil {
+		fmt.Fprintf(w, "\n<!-- template error: %v -->\n", err)
+	}
+}
+
+// messagePageData feeds templates/message.html.tmpl.
+type messagePageData struct {
+	pageShell
+	Heading        string
+	Lines          []string
+	RefreshSeconds int // 0 = no auto-refresh
+}
 
 // templateFuncs are the helpers exposed to all dashboard/startpage/repair templates.
 // iconHTML decides whether to inline an emoji or emit an <img> for data:/http(s)

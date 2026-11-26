@@ -70,6 +70,7 @@ type discoveredWorktree struct {
 	Path   string
 	Branch string
 	Slug   string // proposed subdomain label
+	Name   string // the full route name it would get: <Slug>.<app>
 }
 
 // discoverUnregisteredWorktrees shells out to `git worktree list` in a
@@ -110,7 +111,7 @@ func (s *Server) discoverUnregisteredWorktrees(route *Route) []discoveredWorktre
 		if slug == "" || names[slug+"."+route.Name] {
 			continue
 		}
-		out = append(out, discoveredWorktree{Path: wt.Path, Branch: wt.Branch, Slug: slug})
+		out = append(out, discoveredWorktree{Path: wt.Path, Branch: wt.Branch, Slug: slug, Name: slug + "." + route.Name})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
 	return out

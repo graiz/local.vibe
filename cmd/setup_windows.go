@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/graiz/local.vibe/internal/cert"
 	"github.com/graiz/local.vibe/internal/vibeskill"
 	"github.com/graiz/local.vibe/internal/winutil"
 	"golang.org/x/sys/windows"
@@ -37,7 +36,7 @@ func installVibeSkillBestEffort() {
 // agents discover local.vibe. Windows setup runs as the user (medium
 // integrity), so no ownership fixups are needed.
 func installVibeSkillWindows() error {
-	home, err := vibeHomeDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
@@ -64,7 +63,7 @@ func setupPlatform() error {
 	steps := []setupStep{
 		{"Generating TLS certificates (*.vibe)", generateCertsWindows},
 		{"Trusting CA in Windows root store", trustCAWindows},
-		{"Installing netsh portproxy rules (80→7999, 443→7443)", installPortProxy},
+		{"Installing netsh portproxy rules (80→HTTP, 443→HTTPS ports)", installPortProxy},
 		{"Snapshotting current adapter DNS (for clean uninstall)", backupAdapterDNS},
 		{"Repointing active adapters' DNS to 127.0.0.1", configureDNS},
 		{"Enabling TLS and DNS in daemon config", enableTLSAndDNSWindows},
@@ -112,51 +111,38 @@ func isElevated() bool {
 	return token.IsElevated()
 }
 
-// vibeHomeDir returns the user's home directory. On Windows, %USERPROFILE%
-// is the canonical source — os.UserHomeDir already prefers it.
-func vibeHomeDir() (string, error) {
-	return os.UserHomeDir()
-}
-
 func generateCertsWindows() error {
-	home, err := vibeHomeDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	vibeDir := filepath.Join(home, ".vibe")
-	certsDir := filepath.Join(vibeDir, "certs")
-
-	if err := os.MkdirAll(vibeDir, 0755); err != nil {
-		return fmt.Errorf("create %s: %w", vibeDir, err)
-	}
-
-	caCert, caKey, err := cert.EnsureCA(certsDir)
-	if err != nil {
-		return err
-	}
-	if _, _, err := cert.EnsureLeaf(certsDir, caCert, caKey, []string{"local.vibe"}); err != nil {
-		return err
-	}
-	return nil
+	return generateCertsIn(home)
 }
 
 func trustCAWindows() error {
-	home, err := vibeHomeDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	return cert.TrustCA(filepath.Join(home, ".vibe", "certs"))
+	return trustCAIn(home)
 }
 
-// installPortProxy adds netsh forwarding rules so 80 → 7999 and 443 → 7443
-// on 127.0.0.1. Idempotent: netsh's `add` rejects an existing identical
-// rule, so we delete-then-add to make re-running setup cheap. The rules
-// persist across reboots automatically (they live in registry under the
-// IP Helper service).
+// installPortProxy adds netsh forwarding rules so 80 → the daemon's HTTP
+// port and 443 → its HTTPS port on 127.0.0.1, read from the user's config
+// (defaults 7999/7443) — forwarding to the defaults regardless of config left
+// a user on a non-default port with every *.vibe URL pointing at a dead
+// port. Idempotent: netsh's `add` rejects an existing identical rule, so we
+// delete-then-add to make re-running setup cheap. The rules persist across
+// reboots automatically (they live in registry under the IP Helper service).
 func installPortProxy() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	httpPort, tlsPort := configuredDaemonPortsIn(home)
 	pairs := [][2]string{
-		{"80", "7999"},
-		{"443", "7443"},
+		{"80", fmt.Sprint(httpPort)},
+		{"443", fmt.Sprint(tlsPort)},
 	}
 	for _, pair := range pairs {
 		listen, connect := pair[0], pair[1]
@@ -310,34 +296,9 @@ func parseConnectedAdaptersJSON(data []byte) []string {
 // TLS listener and the embedded DNS resolver. Cross-platform JSON edit —
 // preserves any unknown fields the user added by hand.
 func enableTLSAndDNSWindows() error {
-	home, err := vibeHomeDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
-	}
-	cfgPath := filepath.Join(home, ".vibe", "config.json")
-
-	var cfgMap map[string]interface{}
-	data, err := os.ReadFile(cfgPath)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &cfgMap); err != nil {
-			return fmt.Errorf("parse config: %w", err)
-		}
-	}
-	if cfgMap == nil {
-		cfgMap = make(map[string]interface{})
-	}
-
-	daemon, _ := cfgMap["daemon"].(map[string]interface{})
-	if daemon == nil {
-		daemon = make(map[string]interface{})
-	}
-	daemon["tls"] = map[string]interface{}{
-		"enabled":   true,
-		"port":      7443,
-		"certs_dir": filepath.Join(home, ".vibe", "certs"),
 	}
 	// Pick the upstream the resolver should forward non-.vibe queries to.
 	// Prefer whatever the user already had configured (probed for liveness)
@@ -346,18 +307,14 @@ func enableTLSAndDNSWindows() error {
 	// which runs as its own setup step before adapters are repointed.
 	snap, _ := loadDNSBackup()
 	upstream := pickUpstreamResolver(snap)
-	daemon["dns"] = map[string]interface{}{
-		"enabled":  true,
-		"listen":   "127.0.0.1:53",
-		"upstream": upstream,
-	}
-	cfgMap["daemon"] = daemon
-
-	out, err := json.MarshalIndent(cfgMap, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(cfgPath, out, 0644)
+	return updateConfigJSON(filepath.Join(home, ".vibe", "config.json"), func(daemon map[string]any) {
+		daemon["tls"] = tlsConfigFor(home, daemon["tls"])
+		daemon["dns"] = map[string]any{
+			"enabled":  true,
+			"listen":   "127.0.0.1:53",
+			"upstream": upstream,
+		}
+	})
 }
 
 // installScheduledTask creates a logon-triggered task that runs the daemon

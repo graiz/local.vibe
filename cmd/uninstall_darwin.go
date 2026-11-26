@@ -24,15 +24,17 @@ func uninstallPlatform() error {
 	fmt.Println("Removing local.vibe from macOS...")
 	fmt.Println()
 
-	// LaunchAgent (user)
-	if path := launchAgentPlist(); path != "" {
-		_ = exec.Command("launchctl", "unload", path).Run()
+	// LaunchAgent (user). Resolve the real user's home: under sudo,
+	// os.UserHomeDir is root's, and the agent setup installed would survive.
+	if _, agentDir := realUserHomeAndAgentDir(); agentDir != "" {
+		path := filepath.Join(agentDir, "com.vibe.daemon.plist")
+		_ = exec.Command(launchctlPath, "unload", path).Run()
 		_ = os.Remove(path)
 		fmt.Println("  LaunchAgent removed")
 	}
 
 	// LaunchDaemon (root, pf rules)
-	_ = exec.Command("launchctl", "unload", launchDaemonPlist).Run()
+	_ = exec.Command(launchctlPath, "unload", launchDaemonPlist).Run()
 	_ = os.Remove(launchDaemonPlist)
 	// Root-owned pf helper copy the LaunchDaemon executed (see stagePFHelper).
 	_ = os.RemoveAll(pfHelperDir)
@@ -71,10 +73,10 @@ func uninstallPlatform() error {
 	if home, _ := realUserHome(); home != "" {
 		certsDir := filepath.Join(home, ".vibe", "certs")
 		if thumb, err := cert.CAThumbprint(certsDir); err == nil {
-			_ = exec.Command("security", "delete-certificate", "-Z", thumb,
+			_ = exec.Command(securityPath, "delete-certificate", "-Z", thumb,
 				"/Library/Keychains/System.keychain").Run()
 		} else {
-			_ = exec.Command("security", "delete-certificate", "-c", "local.vibe CA",
+			_ = exec.Command(securityPath, "delete-certificate", "-c", "local.vibe CA",
 				"/Library/Keychains/System.keychain").Run()
 		}
 		fmt.Println("  Trusted CA removed from Keychain")

@@ -9,8 +9,10 @@ package daemon
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"time"
 
+	"github.com/graiz/local.vibe/internal/config"
 	"github.com/graiz/local.vibe/internal/peer"
 )
 
@@ -32,6 +34,16 @@ type peerResponse struct {
 	Reachable   bool                `json:"reachable"`
 	LastError   string              `json:"last_error,omitempty"`
 	Routes      []peerRouteResponse `json:"routes"`
+	// OAuthBridges lists the localhost ports this machine holds on the
+	// peer's behalf (oauth_peer_bridge.go). Surfaced so a local server that
+	// hits EADDRINUSE on one of them has somewhere to find out why.
+	OAuthBridges []peerBridgeResponse `json:"oauth_bridges,omitempty"`
+}
+
+type peerBridgeResponse struct {
+	Port  int    `json:"port"`
+	Route string `json:"route"`
+	Bound bool   `json:"bound"` // false: some other process already holds the port
 }
 
 type peersListResponse struct {
@@ -44,18 +56,28 @@ type peersListResponse struct {
 // poll intervals), so the CLI/doctor need no probing of their own.
 func (s *Server) handlePeersList(w http.ResponseWriter, _ *http.Request) {
 	resp := peersListResponse{Enabled: s.peersEnabled(), Peers: []peerResponse{}}
+	// Before peerMu: peerOAuthBridges takes it itself.
+	bridges := map[string][]peerBridgeResponse{}
+	held := s.oauthBridgePortsHeld()
+	for port, b := range s.peerOAuthBridges() {
+		bridges[b.peer.Name] = append(bridges[b.peer.Name], peerBridgeResponse{Port: port, Route: b.route, Bound: held[port]})
+	}
+	for _, bs := range bridges {
+		sort.Slice(bs, func(i, j int) bool { return bs[i].Port < bs[j].Port })
+	}
 	s.peerMu.Lock()
 	for _, p := range s.peerList {
 		pr := peerResponse{
-			Name:        p.Name,
-			Host:        p.Host,
-			Port:        p.Port,
-			Fingerprint: p.Fingerprint,
-			AddedAt:     p.AddedAt,
-			Routes:      []peerRouteResponse{},
+			Name:         p.Name,
+			Host:         p.Host,
+			Port:         p.Port,
+			Fingerprint:  p.Fingerprint,
+			AddedAt:      p.AddedAt,
+			Routes:       []peerRouteResponse{},
+			OAuthBridges: bridges[p.Name],
 		}
 		if st, ok := s.peerStates[p.Name]; ok {
-			pr.Reachable = time.Since(st.lastOK) < 2*peerSyncInterval
+			pr.Reachable = st.reachable()
 			pr.LastError = st.lastErr
 			for _, rt := range st.routes {
 				pr.Routes = append(pr.Routes, peerRouteResponse{
@@ -105,7 +127,7 @@ func (s *Server) handlePeerAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Port == 0 {
-		req.Port = 7444
+		req.Port = config.DefaultPeerPort
 	}
 	p, err := s.pairWithPeer(req.Host, req.Port, req.Code)
 	if err != nil {
@@ -141,5 +163,7 @@ func (s *Server) handlePeerRemove(w http.ResponseWriter, _ *http.Request, name s
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// The removed peer's OAuth bridges (if any) must close with it.
+	s.reconcileOAuthBridgeListenersLogged()
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }

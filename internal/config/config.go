@@ -14,14 +14,21 @@ type Config struct {
 	Logging   LoggingConfig   `json:"logging"`
 }
 
+// Default ports. Every place that spells a port — setup's pf/portproxy rules,
+// the peer CLI, the client's TCP fallback — reads these, so a change here is
+// a change everywhere.
+const (
+	DefaultPort     = 7999 // daemon HTTP
+	DefaultTLSPort  = 7443 // daemon HTTPS
+	DefaultPeerPort = 7444 // experimental LAN peer listener
+)
+
 type DaemonConfig struct {
-	Port             int       `json:"port"`
-	Socket           string    `json:"socket"`
-	TLD              string    `json:"tld"`
-	Mode             string    `json:"mode"`
-	PIDCheckInterval int       `json:"pid_check_interval"`
-	TLS              TLSConfig `json:"tls"`
-	DNS              DNSConfig `json:"dns"`
+	Port   int       `json:"port"`
+	Socket string    `json:"socket"`
+	TLD    string    `json:"tld"`
+	TLS    TLSConfig `json:"tls"`
+	DNS    DNSConfig `json:"dns"`
 	// Peers configures the EXPERIMENTAL cross-machine peer feature: paired
 	// vibe daemons on a LAN can browse each other's routes through an mTLS
 	// relay listener on Port. Off by default; an absent key means disabled —
@@ -70,15 +77,13 @@ type PeersConfig struct {
 }
 
 type DashboardConfig struct {
-	Enabled bool   `json:"enabled"`
-	Theme   string `json:"theme"`
-	View    string `json:"view"` // "list" or "grid"
+	View string `json:"view"` // "list" or "grid"
 }
 
+// LoggingConfig controls per-route process logs (~/.vibe/<name>.log).
+// MaxSizeMB rotates a log at the next start once it has grown past this.
 type LoggingConfig struct {
-	Level     string `json:"level"`
-	File      string `json:"file"`
-	MaxSizeMB int    `json:"max_size_mb"`
+	MaxSizeMB int `json:"max_size_mb"`
 }
 
 // DefaultConfig returns a Config with production defaults (port 7999, TLD "vibe").
@@ -87,15 +92,13 @@ func DefaultConfig() *Config {
 	autoStart := true
 	return &Config{
 		Daemon: DaemonConfig{
-			Port:             7999,
-			Socket:           filepath.Join(dir, "vibe.sock"),
-			TLD:              "vibe",
-			Mode:             "redirect",
-			PIDCheckInterval: 5,
-			AutoStart:        &autoStart,
+			Port:      DefaultPort,
+			Socket:    filepath.Join(dir, "vibe.sock"),
+			TLD:       "vibe",
+			AutoStart: &autoStart,
 			TLS: TLSConfig{
 				Enabled:  false,
-				Port:     7443,
+				Port:     DefaultTLSPort,
 				CertsDir: filepath.Join(dir, "certs"),
 			},
 			DNS: DNSConfig{
@@ -103,18 +106,10 @@ func DefaultConfig() *Config {
 				Listen:   "127.0.0.1:53",
 				Upstream: "8.8.8.8:53",
 			},
-			Peers: PeersConfig{Enabled: false, Port: 7444},
+			Peers: PeersConfig{Enabled: false, Port: DefaultPeerPort},
 		},
-		Dashboard: DashboardConfig{
-			Enabled: true,
-			Theme:   "dark",
-			View:    "list",
-		},
-		Logging: LoggingConfig{
-			Level:     "warn",
-			File:      filepath.Join(dir, "daemon.log"),
-			MaxSizeMB: 10,
-		},
+		Dashboard: DashboardConfig{View: "list"},
+		Logging:   LoggingConfig{MaxSizeMB: 10},
 	}
 }
 

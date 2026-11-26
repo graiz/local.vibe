@@ -11,7 +11,7 @@ import (
 // killPort must never signal the daemon itself, nor a process owned by another
 // managed route — only genuine external holders.
 func TestKillPortRefusesDaemonAndManaged(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// A managed (adopted) route process the daemon owns. It must be a LIVE
 	// pid: Adopt starts a watcher that removes the adoption as soon as the

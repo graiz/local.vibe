@@ -12,7 +12,7 @@ import (
 // helper: it fails the moment a render path starts sourcing a tail some other
 // way, which is how raw "[2m"/"[37m" text reached the start page before.
 func TestStartPageRecoveryJSCarriesNoEscapeBytes(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 
 	route := &Route{Name: "ansi-route", Cmd: "bun run dev"}

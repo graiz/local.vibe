@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/client"
@@ -26,16 +25,14 @@ variable changes) or when recovering from a stuck child process.`,
 		// child process isn't tracked, so a route that's already stopped
 		// is fine here.
 		if err := c.Stop(name); err != nil {
-			fmt.Fprintln(os.Stderr, "error stopping:", err)
-			os.Exit(1)
+			return fmt.Errorf("stopping: %w", err)
 		}
 		// Brief settle so the port releases before the daemon's preflight
 		// re-checks it on Start. Without this, a fast restart can hit a
 		// spurious "port in use" recovery prompt.
 		time.Sleep(300 * time.Millisecond)
 		if err := c.Start(name); err != nil {
-			fmt.Fprintln(os.Stderr, "error starting:", err)
-			os.Exit(1)
+			return fmt.Errorf("starting: %w", err)
 		}
 		fmt.Printf("restarted: %s\n", name)
 		return nil

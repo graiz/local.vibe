@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -14,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/graiz/local.vibe/internal/cert"
+	"github.com/graiz/local.vibe/internal/config"
 	"github.com/graiz/local.vibe/internal/vibeskill"
 )
 
@@ -61,16 +60,22 @@ func installVibeSkill() error {
 const launchDaemonPlist = "/Library/LaunchDaemons/com.vibe.pf.plist"
 
 // launchAgentPlist is a user-level LaunchAgent that keeps the daemon running.
+// System tools invoked while running as root are addressed by absolute
+// path. `sudo vibe setup` keeps the caller's PATH on macOS, so a bare name
+// would let a user-writable PATH entry run as root — the same hijack class
+// winutil.Sys32 closes on Windows.
+const (
+	launchctlPath = "/bin/launchctl"
+	securityPath  = "/usr/bin/security"
+	sudoPath      = "/usr/bin/sudo"
+)
+
 func launchAgentPlist() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Library", "LaunchAgents", "com.vibe.daemon.plist")
 }
 
 func setupPlatform() error {
-	return setupMacOS()
-}
-
-func setupMacOS() error {
 	if os.Getuid() != 0 {
 		return fmt.Errorf("setup requires root — run: sudo vibe setup")
 	}
@@ -78,13 +83,17 @@ func setupMacOS() error {
 	fmt.Println("Setting up local.vibe on macOS...")
 	fmt.Println()
 
+	// Label with the ports pf will actually forward to (installPFLaunchDaemon
+	// reads the real user's config), not the defaults.
+	labelHome, _ := realUserHome()
+	httpPort, tlsPort := configuredDaemonPortsIn(labelHome)
 	steps := []setupStep{
 		{"Checking for Homebrew", checkHomebrew},
 		{"Installing dnsmasq", installDNSMasq},
 		{"Configuring dnsmasq (*.vibe → 127.0.0.1)", configureDNSMasq},
 		{"Creating /etc/resolver/vibe", createResolver},
 		{"Starting dnsmasq as system service", startDNSMasq},
-		{"Installing pf forwarding rules (80→7999, 443→7443)", installPFLaunchDaemon},
+		{fmt.Sprintf("Installing pf forwarding rules (80→%d, 443→%d)", httpPort, tlsPort), installPFLaunchDaemon},
 		{"Generating TLS certificates (*.vibe)", generateCerts},
 		{"Trusting CA in macOS Keychain", trustCA},
 		{"Enabling TLS in daemon config", enableTLSConfig},
@@ -119,15 +128,9 @@ func setupMacOS() error {
 func brewCmd(args ...string) *exec.Cmd {
 	brewBin := brewBinary()
 	if os.Getuid() == 0 {
-		sudoUser := os.Getenv("SUDO_USER")
-		if sudoUser == "" {
-			if u, err := user.Current(); err == nil {
-				sudoUser = u.Username
-			}
-		}
-		if sudoUser != "" && sudoUser != "root" {
-			fullArgs := append([]string{"-u", sudoUser, "-i", brewBin}, args...)
-			return exec.Command("sudo", fullArgs...)
+		if u, ok := sudoUser(); ok {
+			fullArgs := append([]string{"-u", u.Username, "-i", brewBin}, args...)
+			return exec.Command(sudoPath, fullArgs...)
 		}
 	}
 	return exec.Command(brewBin, args...)
@@ -204,7 +207,7 @@ func createResolver() error {
 func startDNSMasq() error {
 	brew := brewBinary()
 	_ = exec.Command(brew, "services", "stop", "dnsmasq").Run()
-	cmd := exec.Command("sudo", brew, "services", "start", "dnsmasq")
+	cmd := exec.Command(sudoPath, brew, "services", "start", "dnsmasq")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -264,32 +267,11 @@ func stagePFHelper(src string) (string, error) {
 // the defaults. A user on a non-default port would then get a redirect
 // pointing at a dead port that `vibe doctor --fix` could never repair.
 func configuredDaemonPorts() (httpPort, tlsPort int) {
-	httpPort, tlsPort = 7999, 7443
 	home, err := realUserHome()
 	if err != nil {
-		return httpPort, tlsPort
+		return config.DefaultPort, config.DefaultTLSPort
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".vibe", "config.json"))
-	if err != nil {
-		return httpPort, tlsPort
-	}
-	var cfgMap map[string]interface{}
-	if json.Unmarshal(data, &cfgMap) != nil {
-		return httpPort, tlsPort
-	}
-	daemon, _ := cfgMap["daemon"].(map[string]interface{})
-	if daemon == nil {
-		return httpPort, tlsPort
-	}
-	if p, ok := daemon["port"].(float64); ok && int(p) > 0 {
-		httpPort = int(p)
-	}
-	if tls, ok := daemon["tls"].(map[string]interface{}); ok {
-		if p, ok := tls["port"].(float64); ok && int(p) > 0 {
-			tlsPort = int(p)
-		}
-	}
-	return httpPort, tlsPort
+	return configuredDaemonPortsIn(home)
 }
 
 // installPFLaunchDaemon writes vibe's pf anchor, references it from
@@ -373,8 +355,8 @@ func installPFLaunchDaemon() error {
 	// launchctl load against an already-loaded label silently no-ops, so any
 	// updated plist content wouldn't activate until reboot. Unload unconditionally
 	// first (ignore error: not-loaded is fine) so the new content takes effect now.
-	_ = exec.Command("launchctl", "unload", launchDaemonPlist).Run()
-	out, err := exec.Command("launchctl", "load", "-w", launchDaemonPlist).CombinedOutput()
+	_ = exec.Command(launchctlPath, "unload", launchDaemonPlist).Run()
+	out, err := exec.Command(launchctlPath, "load", "-w", launchDaemonPlist).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl load: %w — %s", err, strings.TrimSpace(string(out)))
 	}
@@ -429,7 +411,7 @@ func installLaunchAgent() error {
 	agentPlist := filepath.Join(agentDir, "com.vibe.daemon.plist")
 
 	// Unload existing agent before overwriting
-	_ = exec.Command("launchctl", "unload", agentPlist).Run()
+	_ = exec.Command(launchctlPath, "unload", agentPlist).Run()
 
 	if err := os.WriteFile(agentPlist, []byte(plist), 0644); err != nil {
 		return fmt.Errorf("write agent plist: %w", err)
@@ -438,16 +420,8 @@ func installLaunchAgent() error {
 }
 
 func realUserHomeAndAgentDir() (home, agentDir string) {
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
-		if u, err := user.Lookup(sudoUser); err == nil {
-			home = u.HomeDir
-			agentDir = filepath.Join(home, "Library", "LaunchAgents")
-			return
-		}
-	}
-	home, _ = os.UserHomeDir()
-	agentDir = filepath.Join(home, "Library", "LaunchAgents")
-	return
+	home, _ = realUserHome()
+	return home, filepath.Join(home, "Library", "LaunchAgents")
 }
 
 // startDaemonAsUser runs `vibe daemon start` as the real (non-root) user.
@@ -458,9 +432,8 @@ func startDaemonAsUser() error {
 	binary, _ = filepath.EvalSymlinks(binary)
 
 	if os.Getuid() == 0 {
-		sudoUser := os.Getenv("SUDO_USER")
-		if sudoUser != "" && sudoUser != "root" {
-			cmd := exec.Command("sudo", "-u", sudoUser, binary, "daemon", "start")
+		if u, ok := sudoUser(); ok {
+			cmd := exec.Command(sudoPath, "-u", u.Username, binary, "daemon", "start")
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			cmd.Stdin = os.Stdin
@@ -493,7 +466,6 @@ func verifyDNS() error {
 func generateCerts() error {
 	home, _ := realUserHome()
 	vibeDir := filepath.Join(home, ".vibe")
-	certsDir := filepath.Join(vibeDir, "certs")
 
 	// Ensure ~/.vibe/ exists and is owned by the real user before any cert
 	// work. Without this, cert.EnsureCA's MkdirAll creates ~/.vibe/ as root,
@@ -503,64 +475,25 @@ func generateCerts() error {
 		return fmt.Errorf("create %s: %w", vibeDir, err)
 	}
 	chownToUser(vibeDir)
-
-	caCert, caKey, err := cert.EnsureCA(certsDir)
-	if err != nil {
+	if err := generateCertsIn(home); err != nil {
 		return err
 	}
-	// Generate initial cert with local.vibe — daemon will regenerate with
-	// actual route names on startup and whenever routes change.
-	if _, _, err := cert.EnsureLeaf(certsDir, caCert, caKey, []string{"local.vibe"}); err != nil {
-		return err
-	}
-
 	// Chown cert files to real user when running as sudo
-	chownCertsToUser(certsDir)
+	chownCertsToUser(filepath.Join(vibeDir, "certs"))
 	return nil
 }
 
 func trustCA() error {
 	home, _ := realUserHome()
-	certsDir := filepath.Join(home, ".vibe", "certs")
-	return cert.TrustCA(certsDir)
+	return trustCAIn(home)
 }
 
 func enableTLSConfig() error {
 	home, _ := realUserHome()
 	cfgPath := filepath.Join(home, ".vibe", "config.json")
-
-	// Load existing config as a map to preserve unknown fields
-	var cfgMap map[string]interface{}
-	data, err := os.ReadFile(cfgPath)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if len(data) > 0 {
-		if err := json.Unmarshal(data, &cfgMap); err != nil {
-			return fmt.Errorf("parse config: %w", err)
-		}
-	}
-	if cfgMap == nil {
-		cfgMap = make(map[string]interface{})
-	}
-
-	daemon, _ := cfgMap["daemon"].(map[string]interface{})
-	if daemon == nil {
-		daemon = make(map[string]interface{})
-	}
-
-	daemon["tls"] = map[string]interface{}{
-		"enabled":   true,
-		"port":      7443,
-		"certs_dir": filepath.Join(home, ".vibe", "certs"),
-	}
-	cfgMap["daemon"] = daemon
-
-	out, err := json.MarshalIndent(cfgMap, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(cfgPath, out, 0644); err != nil {
+	if err := updateConfigJSON(cfgPath, func(daemon map[string]any) {
+		daemon["tls"] = tlsConfigFor(home, daemon["tls"])
+	}); err != nil {
 		return err
 	}
 
@@ -568,46 +501,49 @@ func enableTLSConfig() error {
 	return nil
 }
 
+// sudoUser returns the account that invoked `sudo vibe setup`, when there is
+// one other than root. Everything setup writes into the user's home — certs,
+// config, the LaunchAgent, the agent skill — resolves and chowns through it.
+func sudoUser() (*user.User, bool) {
+	name := os.Getenv("SUDO_USER")
+	if name == "" || name == "root" {
+		return nil, false
+	}
+	u, err := user.Lookup(name)
+	if err != nil {
+		return nil, false
+	}
+	return u, true
+}
+
+// realUserHome is the invoking user's home: the sudo caller's under sudo,
+// else the current user's.
 func realUserHome() (string, error) {
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
-		if u, err := user.Lookup(sudoUser); err == nil {
-			return u.HomeDir, nil
-		}
+	if u, ok := sudoUser(); ok {
+		return u.HomeDir, nil
 	}
 	return os.UserHomeDir()
 }
 
-func chownCertsToUser(dir string) {
-	sudoUser := os.Getenv("SUDO_USER")
-	if sudoUser == "" || sudoUser == "root" {
-		return
-	}
-	u, err := user.Lookup(sudoUser)
-	if err != nil {
-		return
-	}
-	uid, _ := strconv.Atoi(u.Uid)
-	gid, _ := strconv.Atoi(u.Gid)
-
-	_ = os.Chown(dir, uid, gid)
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		_ = os.Chown(filepath.Join(dir, e.Name()), uid, gid)
-	}
-}
-
+// chownToUser hands a path setup created as root back to the sudo caller.
+// No-op when not running under sudo.
 func chownToUser(path string) {
-	sudoUser := os.Getenv("SUDO_USER")
-	if sudoUser == "" || sudoUser == "root" {
-		return
-	}
-	u, err := user.Lookup(sudoUser)
-	if err != nil {
+	u, ok := sudoUser()
+	if !ok {
 		return
 	}
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
 	_ = os.Chown(path, uid, gid)
+}
+
+// chownCertsToUser is chownToUser over a directory and its direct entries.
+func chownCertsToUser(dir string) {
+	chownToUser(dir)
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		chownToUser(filepath.Join(dir, e.Name()))
+	}
 }
 
 func openTTYPlatform() (*os.File, error) {

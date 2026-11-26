@@ -4,11 +4,13 @@
 package gitwt
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Worktree is one linked git worktree of a repository.
@@ -23,7 +25,11 @@ func ListLinked(dir string) ([]Worktree, error) {
 	if !mayHaveLinkedWorktrees(dir) {
 		return nil, nil
 	}
-	out, err := exec.Command("git", "-C", dir, "worktree", "list", "--porcelain").Output()
+	// Bounded: a repo on a file-sync mount that is still syncing can make
+	// git hang, and this runs on the start page's render path.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return nil, err
 	}

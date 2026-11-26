@@ -6,6 +6,7 @@
 <head>
 {{.Head}}
 <style>{{.CSS}}</style>
+<script>{{.JS}}</script>
 </head>
 <body>
 <nav class="navbar">
@@ -103,9 +104,10 @@
 
 <div class="empty" id="search-empty" style="display:none">No routes match &ldquo;<span id="search-empty-q"></span>&rdquo;</div>
 
-{{if .PeerGroups}}
+{{if or .PeerGroups .PeerAdmin}}
 <section class="peer-section" id="peer-list" style="display:{{.ListDisplay}}">
-  <h2>Peers<span class="tag">experimental</span></h2>
+  <h2>Peers<span class="tag">experimental</span>{{if $.PeerAdmin}}<button type="button" class="btn btn-sm peer-add-btn" onclick="openPeerModal()">Add peer</button>{{end}}</h2>
+  {{if not .PeerGroups}}<p class="peer-empty">No machines paired yet. Add one to browse its routes from here.</p>{{end}}
   {{range .PeerGroups}}
   <div class="peer-group">
     <div class="peer-group-title">on {{.Peer}}</div>
@@ -114,11 +116,11 @@
     <tbody>
     {{range .Routes}}
     <tr>
-      <td>{{if .ShadowedBy}}<div class="route-name-cell"><span class="led row-led led-gray"></span><span class="route-icon">{{iconHTML .Icon}}</span><div><span class="route-name-link" style="opacity:.5">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></div>{{else}}<a class="route-name-cell" href="{{.VibeURL}}" target="_blank"><span class="led row-led {{if .Ready}}led-green{{else}}led-yellow{{end}}"></span><span class="route-icon">{{iconHTML .Icon}}</span><div><span class="route-name-link">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></a>{{end}}</td>
+      <td>{{if .ShadowedBy}}<div class="route-name-cell"><span class="led row-led {{.LEDClass}}"></span><span class="route-icon route-icon-stopped">{{iconHTML .Icon}}</span><div><span class="route-name-link" style="opacity:.5">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></div>{{else}}<a class="route-name-cell" href="{{.VibeURL}}" target="_blank"><span class="led row-led {{.LEDClass}}"></span><span class="{{if .Live}}route-icon{{else}}route-icon route-icon-stopped{{end}}">{{iconHTML .Icon}}</span><div><span class="route-name-link">{{.Name}}</span><span class="route-url">{{.Name}}.{{$.TLD}}</span></div></a>{{end}}</td>
       <td class="td-type">peer</td>
       <td class="td-port">&mdash;</td>
       <td class="td-age hide-mobile">&mdash;</td>
-      <td>{{if .ShadowedBy}}<div class="td-actions"><span class="peer-shadow">shadowed by {{.ShadowedBy}}</span></div>{{end}}</td>
+      <td><div class="td-actions">{{if .ShadowedBy}}<span class="peer-shadow">shadowed by {{.ShadowedBy}}</span>{{else}}<span class="peer-status peer-status-{{.Status}}">{{.Status}}</span>{{end}}</div></td>
     </tr>
     {{end}}
     </tbody></table>
@@ -126,7 +128,8 @@
   {{end}}
 </section>
 <section class="peer-section" id="peer-grid" style="display:{{.GridDisplay}}">
-  <h2>Peers<span class="tag">experimental</span></h2>
+  <h2>Peers<span class="tag">experimental</span>{{if $.PeerAdmin}}<button type="button" class="btn btn-sm peer-add-btn" onclick="openPeerModal()">Add peer</button>{{end}}</h2>
+  {{if not .PeerGroups}}<p class="peer-empty">No machines paired yet. Add one to browse its routes from here.</p>{{end}}
   {{range .PeerGroups}}
   <div class="peer-grid-group">
     <div class="peer-grid-title">on {{.Peer}}</div>
@@ -139,10 +142,10 @@
       <div class="tile-url">shadowed by {{.ShadowedBy}}</div>
     </div>
     {{else}}
-    <a href="{{.VibeURL}}" target="_blank" class="{{if .Ready}}grid-tile{{else}}grid-tile tile-stopped{{end}}">
+    <a href="{{.VibeURL}}" target="_blank" title="{{.Status}}" class="{{if .Live}}grid-tile{{else}}grid-tile tile-stopped{{end}}">
       <div class="tile-icon">{{iconHTML .Icon}}</div>
       <div class="tile-name">{{.Name}}</div>
-      <div class="tile-url">{{.Name}}.{{$.TLD}}</div>
+      <div class="tile-url">{{if .Live}}{{.Name}}.{{$.TLD}}{{else}}{{.Status}}{{end}}</div>
     </a>
     {{end}}
     {{end}}
@@ -198,6 +201,44 @@ Or open in a browser: {{.Scheme}}://local.{{.TLD}}/setup.md</textarea>
   </div>
 </div>
 </div>
+
+<!-- Add peer (experimental) -->
+{{if .PeerAdmin}}
+<div class="modal-overlay" id="peer-overlay" onclick="if(event.target===this)closePeerModal()">
+<div class="modal" role="dialog" aria-labelledby="peer-modal-heading">
+  <div class="modal-header">
+    <div class="modal-header-text">
+      <div class="modal-eyebrow">Peers · experimental</div>
+      <h3 id="peer-modal-heading">Add peer</h3>
+      <div class="modal-sub">Pair with another machine running local.vibe to browse its routes from here.</div>
+    </div>
+  </div>
+  <div class="modal-body">
+    <p class="hint" style="margin:0 0 14px">On the other machine, click <strong>Add peer → Generate invite code</strong> in its dashboard (or run <code>vibe peer invite</code>), then enter its address and the code here. Codes expire after five minutes.</p>
+    <div class="field-row">
+      <div class="field">
+        <label for="peer-host">Host</label>
+        <input id="peer-host" type="text" placeholder="imac.local or 100.x.y.z" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field" style="max-width:110px">
+        <label for="peer-code">Code</label>
+        <input id="peer-code" type="text" inputmode="numeric" placeholder="123456" autocomplete="off" maxlength="6">
+      </div>
+    </div>
+    <div class="peer-invite">
+      <div class="peer-invite-text">Adding <em>this</em> machine from another one?</div>
+      <button type="button" class="btn btn-sm" id="peer-invite-btn" onclick="generatePeerInvite()">Generate invite code</button>
+      <div class="peer-invite-code" id="peer-invite-code" style="display:none"></div>
+    </div>
+    <div class="peer-msg" id="peer-msg" style="display:none"></div>
+  </div>
+  <div class="modal-actions">
+    <button class="btn" onclick="closePeerModal()">Cancel</button>
+    <button class="btn-add" id="peer-add-submit" onclick="submitPeerAdd()">Pair</button>
+  </div>
+</div>
+</div>
+{{end}}
 
 <!-- Right-click context menu for list rows -->
 <div class="ctx-menu" id="ctx-menu"></div>
@@ -627,6 +668,62 @@ function deleteRoute(){
 }
 function openGetStarted(){document.getElementById('getstarted-overlay').classList.add('active')}
 function closeGetStarted(){document.getElementById('getstarted-overlay').classList.remove('active')}
+
+// Add peer (experimental). Pairing needs a one-time code from the other
+// machine; the same modal can generate this machine's code for the reverse.
+function peerMsg(text,isErr){
+  var m=document.getElementById('peer-msg');
+  m.style.display=text?'block':'none';
+  m.className='peer-msg'+(isErr?' peer-msg-err':'');
+  m.textContent=text||'';
+}
+function openPeerModal(){
+  var o=document.getElementById('peer-overlay');if(!o)return;
+  peerMsg('');
+  document.getElementById('peer-invite-code').style.display='none';
+  o.classList.add('active');
+  setTimeout(function(){document.getElementById('peer-host').focus()},50);
+}
+function closePeerModal(){var o=document.getElementById('peer-overlay');if(o)o.classList.remove('active')}
+function submitPeerAdd(){
+  var host=document.getElementById('peer-host').value.trim();
+  var code=document.getElementById('peer-code').value.trim();
+  if(!host||!/^[0-9]{6}$/.test(code)){peerMsg('Enter the other machine\'s host and its 6-digit code.',true);return}
+  var btn=document.getElementById('peer-add-submit');
+  btn.disabled=true;btn.textContent='Pairing…';peerMsg('');
+  vibeAPI('POST','/_api/peers',{body:{host:host,code:code}},function(status,data){
+    btn.disabled=false;btn.textContent='Pair';
+    if(status>=200&&status<300){
+      peerMsg('Paired with '+((data&&data.name)||host)+'. Loading its routes…',false);
+      reloadSoon(1200);
+      return;
+    }
+    peerMsg((data&&data.error)||(status?'Pairing failed':'Could not reach the vibe daemon'),true);
+  });
+}
+function generatePeerInvite(){
+  var btn=document.getElementById('peer-invite-btn'),out=document.getElementById('peer-invite-code');
+  btn.disabled=true;
+  vibeAPI('POST','/_api/peers/invite',{},function(status,data){
+    btn.disabled=false;
+    if(status>=200&&status<300&&data&&data.code){
+      var mins=Math.max(1,Math.round((new Date(data.expires_at)-Date.now())/60000));
+      out.textContent='';
+      var c=document.createElement('code');c.textContent=data.code;
+      out.appendChild(c);
+      out.appendChild(document.createTextNode(' — enter this on the other machine within '+mins+' min (peer port '+data.port+').'));
+      out.style.display='block';
+      return;
+    }
+    peerMsg((data&&data.error)||'Could not open an invite',true);
+  });
+}
+document.addEventListener('keydown',function(e){
+  var o=document.getElementById('peer-overlay');
+  if(!o||!o.classList.contains('active'))return;
+  if(e.key==='Escape'){closePeerModal()}
+  else if(e.key==='Enter'&&(e.target.id==='peer-host'||e.target.id==='peer-code')){submitPeerAdd()}
+});
 function copyText(taId,btnId){
   var ta=document.getElementById(taId);
   var btn=document.getElementById(btnId);
@@ -737,8 +834,8 @@ function routeAction(btn,name,action){
       return r.json();
     })
     .then(function(){
-      if(action==='start'){pollReady(name,0)}
-      else{pollStopped(name,0)}
+      if(action==='start'){pollReady(name)}
+      else{pollStopped(name)}
     })
     .catch(function(e){
       btn.disabled=false;btn.textContent=origText;
@@ -767,32 +864,22 @@ function startDiscoveredWorktree(btn,parent,path){
       showToast(e.message||'Could not start worktree');
     });
 }
-function pollStopped(name,n){
-  if(n>20){location.reload();return}
-  fetch('/_api/routes/'+encodeURIComponent(name)+'/ready')
-    .then(function(r){return r.json()})
-    .then(function(d){
-      if(!d.ready){location.reload()}
-      else{setTimeout(function(){pollStopped(name,n+1)},300)}
-    })
-    .catch(function(){location.reload()});
+function pollStopped(name){
+  vibePoll(function(next){
+    vibeAPI('GET','/_api/routes/'+encodeURIComponent(name)+'/ready',{},function(status,d){
+      if(!d||!d.ready){reloadSoon();return}
+      next();
+    });
+  },300,21,reloadSoon);
 }
-function pollReady(name,n){
-  if(n>60){location.reload();return}
-  fetch('/_api/routes/'+encodeURIComponent(name)+'/ready')
-    .then(function(r){return r.json()})
-    .then(function(d){
-      if(d.ready){location.reload()}
-      else if(d.running===false){showToast(name+' crashed during startup');location.reload()}
-      else{setTimeout(function(){pollReady(name,n+1)},500)}
-    })
-    .catch(function(){setTimeout(function(){pollReady(name,n+1)},500)});
-}
-function showToast(msg){
-  var el=document.createElement('div');el.className='toast';el.textContent=msg;
-  document.body.appendChild(el);
-  setTimeout(function(){el.classList.add('show')},10);
-  setTimeout(function(){el.classList.remove('show');setTimeout(function(){el.remove()},300)},4000);
+function pollReady(name){
+  vibePoll(function(next){
+    vibeAPI('GET','/_api/routes/'+encodeURIComponent(name)+'/ready',{},function(status,d){
+      if(d&&d.ready){reloadSoon();return}
+      if(d&&d.running===false){showToast(name+' crashed during startup');reloadSoon();return}
+      next();
+    });
+  },500,61,reloadSoon);
 }
 document.addEventListener('keydown',function(e){
   if(e.key!=='Escape')return;

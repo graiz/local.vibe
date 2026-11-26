@@ -72,7 +72,7 @@ func startManagedListener(t *testing.T, s *Server, name string, port int) (*Rout
 }
 
 func TestAdoptOrphanReattachesProcessGroup(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	port := freeTCPPort(t)
 	_, pid := startManagedListener(t, s, "adopt", port)
@@ -103,7 +103,7 @@ func TestAdoptOrphanReattachesProcessGroup(t *testing.T) {
 // spawned): adoption must not succeed when the route's *registered* port isn't
 // the one being served, even if the group is listening on some other port.
 func TestAdoptOrphanIgnoresForeignGroupListener(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	port := freeTCPPort(t)
 	_, pid := startManagedListener(t, s, "anchor", port)
@@ -120,7 +120,7 @@ func TestAdoptOrphanIgnoresForeignGroupListener(t *testing.T) {
 }
 
 func TestAdoptOrphanRejectsDeadOrMissingPID(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	// No PID → nothing to adopt.
 	none := &Route{Name: "n", Type: RouteManaged, Port: 12345, RegisteredAt: time.Now()}
@@ -137,7 +137,7 @@ func TestAdoptOrphanRejectsDeadOrMissingPID(t *testing.T) {
 }
 
 func TestRecoverManagedRouteAdoptsSurvivingChild(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	port := freeTCPPort(t)
 	_, pid := startManagedListener(t, s, "adopt2", port)
@@ -168,7 +168,7 @@ func TestRecoverManagedRouteAdoptsSurvivingChild(t *testing.T) {
 // not be killed: adoption sets route.PID but the process was never registered
 // with ProcessManager, so Stop/Deregister left it running and holding its port.
 func TestAdoptedRouteIsStoppable(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	port := freeTCPPort(t)
 	_, pid := startManagedListener(t, s, "stopme", port)
@@ -197,7 +197,7 @@ func TestAdoptedRouteIsStoppable(t *testing.T) {
 }
 
 func TestRecoverManagedRouteAutoStartDisabledShowsStartPage(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	off := false
 	s.cfg.Daemon.AutoStart = &off
 
@@ -221,7 +221,7 @@ func TestRecoverManagedRouteAutoStartDisabledShowsStartPage(t *testing.T) {
 }
 
 func TestRecoverManagedRouteCrashLoopShowsStartPage(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	port := freeTCPPort(t)
 	route := &Route{Name: "crashy", Type: RouteManaged, Port: port, Cmd: "nc -l 1", RegisteredAt: time.Now()}
 	route.SetFailure(&Failure{Message: "process exited immediately"})
@@ -243,7 +243,7 @@ func TestRecoverManagedRouteCrashLoopShowsStartPage(t *testing.T) {
 }
 
 func TestRecoverManagedRouteAutoSpawnsOnFreePort(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	s.ConfigDir = t.TempDir()
 	port := freeTCPPort(t)
 	route := &Route{

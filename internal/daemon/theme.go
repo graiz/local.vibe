@@ -22,3 +22,9 @@ func themeHead(title string) string {
 //
 //go:embed templates/theme.css
 var themeCSS string
+
+// pagesJS is the shared browser-side helper set (API calls, polling, toasts)
+// for every daemon-served page, inlined via template.JS the same way.
+//
+//go:embed templates/pages.js
+var pagesJS string

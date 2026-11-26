@@ -29,17 +29,17 @@ func TestRouteRequestNoOAuthFallbackRedirect(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	s := testServer()
+	s := testServer(t)
 	port := testPortFromURL(t, upstream.URL)
 	s.table.Add(&Route{
-		Name:         "screener",
+		Name:         "billing",
 		Port:         port,
 		Type:         RouteSticky,
 		RegisteredAt: time.Now(),
 	})
 
 	req := httptest.NewRequest("GET", "/auth/google", nil)
-	req.Host = "screener.test"
+	req.Host = "billing.test"
 	w := httptest.NewRecorder()
 	s.routeRequest(w, req)
 
@@ -52,14 +52,14 @@ func TestRouteRequestNoOAuthFallbackRedirect(t *testing.T) {
 }
 
 func TestOAuthCallbackBridgeListenerRedirectsToVibeHost(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	defer s.stopOAuthBridgeListeners()
 
 	appPort := pickFreePort(t)
 	callbackPort := pickFreePort(t)
 
 	body, _ := json.Marshal(map[string]any{
-		"name":                "screener",
+		"name":                "billing",
 		"port":                appPort,
 		"oauth_callback_port": callbackPort,
 	})
@@ -83,13 +83,13 @@ func TestOAuthCallbackBridgeListenerRedirectsToVibeHost(t *testing.T) {
 	if resp.StatusCode != http.StatusTemporaryRedirect {
 		t.Fatalf("status = %d; want 307", resp.StatusCode)
 	}
-	if got := resp.Header.Get("Location"); got != "http://screener.test/auth/google/callback?code=abc&state=xyz" {
-		t.Errorf("Location = %q; want redirect to screener.test callback", got)
+	if got := resp.Header.Get("Location"); got != "http://billing.test/auth/google/callback?code=abc&state=xyz" {
+		t.Errorf("Location = %q; want redirect to billing.test callback", got)
 	}
 }
 
 func TestOAuthCallbackBridgeForwardsArbitraryPath(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 	defer s.stopOAuthBridgeListeners()
 
 	appPort := pickFreePort(t)
@@ -127,10 +127,10 @@ func TestOAuthCallbackBridgeForwardsArbitraryPath(t *testing.T) {
 }
 
 func TestAPIRejectsOAuthCallbackPortMatchingRoutePort(t *testing.T) {
-	s := testServer()
+	s := testServer(t)
 
 	body, _ := json.Marshal(map[string]any{
-		"name":                "screener",
+		"name":                "billing",
 		"port":                8787,
 		"oauth_callback_port": 8787,
 	})

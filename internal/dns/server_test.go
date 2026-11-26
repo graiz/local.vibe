@@ -75,7 +75,7 @@ func buildQuery(name string, qtype uint16) []byte {
 		q = append(q, byte(len(label)))
 		q = append(q, []byte(label)...)
 	}
-	q = append(q, 0)                                                              // null terminator
+	q = append(q, 0)                                                                      // null terminator
 	q = append(q, byte(qtype>>8), byte(qtype&0xff), byte(classIN>>8), byte(classIN&0xff)) // QTYPE, QCLASS
 	return q
 }
@@ -360,7 +360,7 @@ func FuzzParseQuestion(f *testing.F) {
 	// Seed with a few well-formed and pathological inputs.
 	f.Add(buildQuery("foo.vibe", typeA))
 	f.Add(buildQuery("a.b.c.d.e.f.g.vibe", typeAAAA))
-	f.Add([]byte{}) // empty
+	f.Add([]byte{})         // empty
 	f.Add(make([]byte, 12)) // header only, all zero
 	// Header claims 1 question but body is the header alone.
 	hdrOnly := make([]byte, 12)
@@ -385,4 +385,16 @@ func FuzzParseQuestion(f *testing.F) {
 		// last-ditch error response).
 		_ = servfail(data)
 	})
+}
+
+// Stop on a server that never started must return, not block forever on a
+// read loop that doesn't exist.
+func TestStopBeforeStartReturns(t *testing.T) {
+	done := make(chan struct{})
+	go func() { New(Config{}).Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop blocked on a never-started server")
+	}
 }

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -58,8 +59,7 @@ fine. Run with --fix to re-apply the redirect.`,
 			fmt.Printf("\nThe %s redirect is down — run `vibe doctor --fix` to restore it.\n", redirectMechanismName())
 		}
 
-		os.Exit(1)
-		return nil
+		return errors.New("some checks failed")
 	},
 }
 

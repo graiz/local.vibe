@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html/template"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -45,13 +44,13 @@ func (s *Server) proxyToPeer(w http.ResponseWriter, r *http.Request, p peer.Peer
 // servePeerUnreachablePage is the no-bare-502 stance applied to the relay:
 // name which machine has the route, what failed, and what to check.
 func (s *Server) servePeerUnreachablePage(w http.ResponseWriter, p peer.Peer, name string, err error) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusBadGateway)
-	esc := template.HTMLEscapeString
-	fmt.Fprintf(w, `<!doctype html><html><head>%s<style>%s</style></head>
-<body><div class="wrap"><h1>%s lives on %s</h1>
-<p>%s isn't answering (%s). Check that the machine is awake and its vibe daemon is running, then run <code>vibe peers</code> on both machines. If it was reinstalled, <code>vibe peer remove %s</code> and pair again.</p>
-</div></body></html>`,
-		themeHead(esc(name)+"."+s.cfg.Daemon.TLD), themeCSS,
-		esc(name), esc(p.Name), esc(p.Name), esc(err.Error()), esc(p.Name))
+	data := messagePageData{
+		Heading: fmt.Sprintf("%s lives on %s", name, p.Name),
+		Lines: []string{
+			fmt.Sprintf("%s is not answering (%s).", p.Name, err.Error()),
+			"Check that the machine is awake and its vibe daemon is running, then run `vibe peers` on both machines.",
+			fmt.Sprintf("If it was reinstalled, `vibe peer remove %s` and pair again.", p.Name),
+		},
+	}
+	renderPage(w, http.StatusBadGateway, tmplMessagePage, s.routeHost(name), &data)
 }

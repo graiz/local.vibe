@@ -99,9 +99,10 @@ func (s *Server) Start() error {
 // Stop closes the UDP socket and waits for the read loop to exit.
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
-		if s.conn != nil {
-			_ = s.conn.Close()
+		if s.conn == nil {
+			return // never started: there is no read loop to wait for
 		}
+		_ = s.conn.Close()
 		<-s.done
 	})
 }
@@ -131,6 +132,9 @@ func (s *Server) serve() {
 				return
 			}
 			fmt.Fprintf(os.Stderr, "dns: read error: %v\n", err)
+			// A persistent error (the interface went away) would otherwise
+			// spin this loop at full speed, logging a line per iteration.
+			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 		go s.handle(append([]byte(nil), buf[:n]...), src)

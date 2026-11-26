@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +35,10 @@ type ProcessManager struct {
 	mu      sync.Mutex
 	procs   map[string]*exec.Cmd // keyed by route name; spawned by this daemon
 	adopted map[string]int       // keyed by route name; pid of a child re-adopted after a daemon restart (no *exec.Cmd)
+	// stopping holds a channel per route name whose Stop is in flight,
+	// closed once the old tree is gone. Start waits on it so a restart
+	// never races the process it is replacing.
+	stopping map[string]chan struct{}
 
 	// onExit is invoked (event-based, no polling) when a managed child exits
 	// after having started running — from cmd.Wait for spawned children, and
@@ -47,12 +52,30 @@ type ProcessManager struct {
 	// table (which the ProcessManager can't see) without threading the
 	// Server through Start.
 	envHook func(*Route) []string
+
+	// stopGrace is how long Stop waits for a SIGTERM'd child to exit before
+	// escalating to SIGKILL. A child that traps TERM would otherwise keep its
+	// port while the route read "stopped".
+	stopGrace time.Duration
+
+	// maxLogBytes rotates a route's log at spawn once it exceeds this size.
+	// Logs are append-only across restarts and were never rotated; the tail
+	// readers only need the recent end.
+	maxLogBytes int64
 }
+
+const (
+	defaultStopGrace   = 3 * time.Second
+	defaultMaxLogBytes = 10 << 20
+)
 
 func NewProcessManager() *ProcessManager {
 	return &ProcessManager{
-		procs:   make(map[string]*exec.Cmd),
-		adopted: make(map[string]int),
+		procs:       make(map[string]*exec.Cmd),
+		adopted:     make(map[string]int),
+		stopping:    make(map[string]chan struct{}),
+		stopGrace:   defaultStopGrace,
+		maxLogBytes: defaultMaxLogBytes,
 	}
 }
 
@@ -123,6 +146,15 @@ func (pm *ProcessManager) Adopt(name string, pid int) {
 // It returns the PID of the child process.
 func (pm *ProcessManager) Start(route *Route) (int, error) {
 	pm.mu.Lock()
+	for {
+		ch, ok := pm.stopping[route.Name]
+		if !ok {
+			break
+		}
+		pm.mu.Unlock()
+		<-ch
+		pm.mu.Lock()
+	}
 
 	if cmd, ok := pm.procs[route.Name]; ok && cmd.Process != nil {
 		if processAlive(cmd.Process.Pid) {
@@ -169,7 +201,8 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	logDir := config.Dir()
 	_ = os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, fmt.Sprintf("%s.log", route.Name))
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	rotateLog(logPath, pm.maxLogBytes)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		pm.mu.Unlock()
 		return 0, fmt.Errorf("open log %s: %w", logPath, err)
@@ -210,19 +243,30 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		err := cmd.Wait()
 		logFile.Close()
 		pm.mu.Lock()
+		// Only the child still tracked under this name owns the per-name
+		// hooks. After a Stop → Start the name belongs to a NEW child; running
+		// afterExit for the old one here would, on Windows, close the new
+		// child's Job Object (KILL_ON_JOB_CLOSE) and kill the app that was
+		// just started.
+		tracked := false
 		if cur, ok := pm.procs[route.Name]; ok && cur == cmd {
 			delete(pm.procs, route.Name)
+			tracked = true
 		}
 		if state == stRunning {
 			pm.mu.Unlock()
-			afterExit(route.Name)
+			if tracked {
+				afterExit(route.Name)
+			}
 			pm.fireExit(route.Name, pid) // runtime death → notify
 			return
 		}
 		state = stExitedEarly
 		earlyErr = err
 		pm.mu.Unlock()
-		afterExit(route.Name)
+		if tracked {
+			afterExit(route.Name)
+		}
 		close(exitedEarly)
 	}()
 
@@ -256,10 +300,16 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	return pid, nil
 }
 
+// tailLogWindow bounds how much of a log file tailLogFile reads: the last
+// 64 KiB, far more than a dozen lines of any dev server's output. Logs are
+// append-only and never rotated by the app, so reading the whole file here
+// made every start-page render and every 5xx page load allocate the file.
+const tailLogWindow = 64 * 1024
+
 // tailLogFile reads the last n non-empty lines from a log file to provide
 // context when a managed process crashes on startup.
 func tailLogFile(path string, n int) string {
-	data, err := os.ReadFile(path)
+	data, err := readTail(path, tailLogWindow)
 	if err != nil || len(data) == 0 {
 		return ""
 	}
@@ -285,31 +335,150 @@ func tailLogFile(path string, n int) string {
 	return strings.Join(meaningful[start:], "\n")
 }
 
+// readTail returns the last max bytes of the file at path (the whole file
+// when smaller), starting at a line boundary when the window cut one.
+func readTail(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	start := int64(0)
+	if size > max {
+		start = size - max
+	}
+	buf := make([]byte, size-start)
+	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+		return nil, err
+	}
+	if start > 0 {
+		// Drop the partial first line the window sliced through.
+		if i := strings.IndexByte(string(buf), '\n'); i >= 0 {
+			buf = buf[i+1:]
+		}
+	}
+	return buf, nil
+}
+
 // Stop terminates the managed process tree for the given route name.
-// On unix this sends SIGTERM to the process group; on Windows (Phase 2) it
-// terminates the Job Object containing the child and its descendants.
+// On unix this sends SIGTERM to the process group, waits up to stopGrace for
+// the leader to exit, and escalates to SIGKILL if it hasn't; on Windows it
+// terminates the Job Object containing the child and its descendants (which
+// is already immediate). It returns once the process is gone, so callers can
+// rely on the port being released.
+//
+// The kill runs outside the lock — a 3s grace period must not serialize every
+// other ProcessManager caller — but the child stays tracked until it is gone,
+// with an entry in pm.stopping that a concurrent Start (or Stop) waits on.
 func (pm *ProcessManager) Stop(name string) error {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	if cmd, ok := pm.procs[name]; ok && cmd.Process != nil {
-		_ = killProcessTree(name, cmd)
-		delete(pm.procs, name)
-		delete(pm.adopted, name)
-		afterExit(name)
+	if ch, ok := pm.stopping[name]; ok {
+		// Another Stop already owns this teardown (the idle timer racing
+		// handleStop, say). Wait for it rather than registering a second
+		// entry: the first Stop's cleanup would then delete ours, and a Start
+		// arriving mid-escalation would spawn alongside the dying tree.
+		pm.mu.Unlock()
+		<-ch
 		return nil
 	}
+	cmd, hasCmd := pm.procs[name]
+	adoptedPID, hasAdopted := pm.adopted[name]
+	hasCmd = hasCmd && cmd.Process != nil
+	if !hasCmd && !hasAdopted {
+		pm.mu.Unlock()
+		return fmt.Errorf("%s is not running", name)
+	}
+	// Keep the child tracked until it is actually gone. Dropping it up front
+	// let a concurrent Start for the same name spawn a second copy while the
+	// first still held the port, and — on Windows — this Stop's trailing
+	// afterExit then closed the NEW child's Job Object. Start waits on this
+	// channel instead.
+	done := make(chan struct{})
+	pm.stopping[name] = done
+	pm.mu.Unlock()
+	defer func() {
+		pm.mu.Lock()
+		if pm.stopping[name] == done {
+			delete(pm.stopping, name)
+		}
+		pm.mu.Unlock()
+		close(done)
+	}()
 
+	if hasCmd {
+		pid := cmd.Process.Pid
+		_ = killProcessTree(name, cmd)
+		if !pm.waitGone(pid) {
+			_ = killProcessTreeForce(name, cmd)
+			pm.waitGone(pid)
+		}
+		// The Wait goroutine may already have untracked it (and run
+		// afterExit) when the leader exited; only the side that removes the
+		// entry runs the per-name hook.
+		pm.mu.Lock()
+		cur, ok := pm.procs[name]
+		mine := ok && cur == cmd
+		if mine {
+			delete(pm.procs, name)
+		}
+		pm.mu.Unlock()
+		if mine {
+			afterExit(name)
+		}
+		return nil
+	}
 	// A child re-adopted after a daemon restart has no *exec.Cmd; kill it by
 	// its process-group leader PID instead.
-	if pid, ok := pm.adopted[name]; ok {
-		_ = killAdoptedProcess(pid)
-		delete(pm.adopted, name)
-		afterExit(name)
-		return nil
+	_ = killAdoptedProcess(adoptedPID)
+	if !pm.waitGone(adoptedPID) {
+		_ = killAdoptedProcessForce(adoptedPID)
+		pm.waitGone(adoptedPID)
 	}
+	pm.mu.Lock()
+	cur, ok := pm.adopted[name]
+	mine := ok && cur == adoptedPID
+	if mine {
+		delete(pm.adopted, name)
+	}
+	pm.mu.Unlock()
+	if mine {
+		afterExit(name)
+	}
+	return nil
+}
 
-	return fmt.Errorf("%s is not running", name)
+// waitGone polls until the process tree led by pid has exited or the grace
+// period lapses. The whole tree, not the leader: see treeAlive. Polling, not
+// cmd.Wait: the Wait goroutine owns that call, and an adopted child has no
+// Cmd at all. 20ms steps keep a prompt exit prompt.
+func (pm *ProcessManager) waitGone(pid int) bool {
+	deadline := time.Now().Add(pm.stopGrace)
+	for time.Now().Before(deadline) {
+		if !treeAlive(pid) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return !treeAlive(pid)
+}
+
+// rotateLog moves path to path.1 (replacing any previous rotation) once it
+// has grown past max. Called at spawn, so a route's log never holds more than
+// one old generation plus the current run.
+func rotateLog(path string, max int64) {
+	if max <= 0 {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= max {
+		return
+	}
+	_ = os.Rename(path, path+".1")
 }
 
 // IsRunning checks if the managed process for the given route is alive.

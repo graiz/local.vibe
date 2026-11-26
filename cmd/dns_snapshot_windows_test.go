@@ -219,10 +219,10 @@ func TestAdaptersNeedingDHCPReset(t *testing.T) {
 // TestIsLoopbackServer covers the prefix matcher for both v4 and v6.
 func TestIsLoopbackServer(t *testing.T) {
 	cases := map[string]bool{
-		"127.0.0.1": true,
-		"127.1.2.3": true,
-		"::1":       true,
-		"8.8.8.8":   false,
+		"127.0.0.1":   true,
+		"127.1.2.3":   true,
+		"::1":         true,
+		"8.8.8.8":     false,
 		"192.168.1.1": false,
 		"":            false,
 		// Whitespace tolerance — defense in depth.

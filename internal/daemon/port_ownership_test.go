@@ -49,7 +49,7 @@ func TestLsofListenPortRestrictsToGivenPIDs(t *testing.T) {
 // a managed route whose child is still alive must NOT have its registration
 // rewritten to a port merely because the route's log names it and something
 // answers there. That "something" is exactly the squatter (Superhuman/Beeper on
-// a recycled ephemeral port) that hijacked foundersedge. A live child's real
+// a recycled ephemeral port) that hijacked a managed route. A live child's real
 // port is authoritative via its process group; a stale log line is not.
 func TestDiscoverRoutePortIgnoresLogForLiveManagedChild(t *testing.T) {
 	tmp := t.TempDir()
@@ -66,7 +66,7 @@ func TestDiscoverRoutePortIgnoresLogForLiveManagedChild(t *testing.T) {
 	s := NewServer(&config.Config{Daemon: config.DaemonConfig{Port: 0, TLD: "test"}})
 	s.ConfigDir = tmp
 
-	name := "founders"
+	name := "marketing"
 	if err := os.WriteFile(filepath.Join(tmp, name+".log"),
 		[]byte(fmt.Sprintf("Server running at http://localhost:%d\n", squatPort)), 0644); err != nil {
 		t.Fatalf("write log: %v", err)
@@ -127,7 +127,7 @@ func TestManagedRouteDoesNotProxyStrangerThatSpeaksHTTP(t *testing.T) {
 	}))
 	defer stranger.Close()
 
-	s := testServer()
+	s := testServer(t)
 	port := testPortFromURL(t, stranger.URL)
 
 	route := &Route{Name: "sq", Type: RouteManaged, Port: port, Cmd: "jekyll serve", RegisteredAt: time.Now()}
@@ -178,7 +178,7 @@ func TestHandleRepairRediscoversWhenPortForeign(t *testing.T) {
 	route.Running.Store(true)
 	s.table.Add(route)
 
-	req := httptest.NewRequest("GET", "/_api/routes/sq/repair", nil)
+	req := httptest.NewRequest("POST", "/_api/routes/sq/repair", nil)
 	w := httptest.NewRecorder()
 	s.apiHandler(w, req)
 

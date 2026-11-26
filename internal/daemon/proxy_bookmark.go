@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -65,7 +66,7 @@ func (s *Server) proxyBookmark(w http.ResponseWriter, r *http.Request, route *Ro
 		rewriteRefererHeader(req, target)
 	}
 
-	proxy.Transport = buildUpstreamTransport(target.Scheme == "https" && route.InsecureSkipVerify)
+	proxy.Transport = s.bookmarkTransport(target.Host, target.Scheme == "https" && route.InsecureSkipVerify)
 
 	vibeScheme := s.vibeScheme()
 	proxy.ModifyResponse = func(resp *http.Response) error {
@@ -76,6 +77,19 @@ func (s *Server) proxyBookmark(w http.ResponseWriter, r *http.Request, route *Ro
 
 	route.TouchActivity()
 	proxy.ServeHTTP(w, r)
+}
+
+// bookmarkTransport returns the shared transport for a bookmark upstream.
+// One per (host, verification mode), cached for the daemon's lifetime: an
+// http.Transport owns an idle-connection pool, so building one per request
+// accumulated pools (and their fds) that only drained on the 90s idle timer.
+func (s *Server) bookmarkTransport(host string, insecure bool) *http.Transport {
+	key := fmt.Sprintf("%s|%t", host, insecure)
+	if t, ok := s.bookmarkTransports.Load(key); ok {
+		return t.(*http.Transport)
+	}
+	t, _ := s.bookmarkTransports.LoadOrStore(key, buildUpstreamTransport(insecure))
+	return t.(*http.Transport)
 }
 
 // buildUpstreamTransport returns an http.Transport suited for reverse-proxy

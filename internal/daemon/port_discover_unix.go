@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"bufio"
-	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -30,7 +29,7 @@ func portFromProcessGroup(route *Route) (int, bool) {
 // pidsInGroup returns all process IDs whose process group matches pgid,
 // via `ps -A -o pid=,pgid=`. Works on macOS and Linux.
 func pidsInGroup(pgid int) ([]int, error) {
-	out, err := exec.Command("ps", "-A", "-o", "pid=,pgid=").Output()
+	out, err := runTool("ps", "-A", "-o", "pid=,pgid=")
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +70,7 @@ func lsofListenPort(pids []int) (int, bool) {
 	for i, p := range pids {
 		ids[i] = strconv.Itoa(p)
 	}
-	out, err := exec.Command("lsof", "-a", "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-p", strings.Join(ids, ",")).Output()
+	out, err := runTool("lsof", "-a", "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-p", strings.Join(ids, ","))
 	if err != nil {
 		// lsof exits non-zero when there are no matching sockets — that's a
 		// legitimate "no listener yet" case, not an error we should propagate.

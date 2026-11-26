@@ -15,10 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -96,7 +94,7 @@ func (s *Server) ensurePeerListener() error {
 		return fmt.Errorf("peer listener: %w", err)
 	}
 	s.peerLn = ln
-	s.peerSrv = &http.Server{Handler: http.HandlerFunc(s.peerHandler)}
+	s.peerSrv = newHTTPServer(http.HandlerFunc(s.peerHandler))
 	go s.peerSrv.Serve(ln)
 	fmt.Printf("vibe peer listener on %s (mTLS, paired peers only)\n", ln.Addr())
 	return nil
@@ -190,6 +188,10 @@ func (s *Server) handlePeerRoutes(w http.ResponseWriter, r *http.Request) {
 			Running: rt.Running.Load(),
 			Ready:   rt.Ready.Load(),
 			Icon:    rt.Icon,
+			// Worktrees inherit their parent's bridge and advertise nothing:
+			// the viewer's bridge for the parent's port routes their
+			// callbacks by the state tag.
+			OAuthCallbackPort: rt.OAuthCallbackPort,
 		})
 	}
 	// Concurrently: a dark port can cost the full dial timeout (always on
@@ -214,6 +216,11 @@ func (s *Server) handlePeerRoutes(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256(body)
 	etag := fmt.Sprintf("%q", hex.EncodeToString(sum[:]))
 	w.Header().Set("ETag", etag)
+	// Our current name, on 304s too: a machine renamed after pairing would
+	// otherwise be listed under its old hostname forever (peer_sync.go
+	// adoptPeerName). A header, not a body field, so the ETag — and the
+	// cheap 304 path — is unaffected.
+	w.Header().Set(peerNameHeader, localPeerName())
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -242,16 +249,11 @@ func (d *discardWriter) WriteHeader(int)             {}
 // recovery pages replaced by a static self-refreshing page: those pages
 // drive /_api/ endpoints that this listener deliberately cannot serve.
 func (s *Server) peerServeRoute(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
-	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
-	tld := s.cfg.Daemon.TLD
-	if !strings.HasSuffix(host, "."+tld) {
+	name, ok := s.routeNameFromHost(r.Host)
+	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	name := strings.TrimSuffix(host, "."+tld)
 	route, ok := s.table.Get(name)
 	if !ok || route.Type == RouteBookmark {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -291,9 +293,13 @@ func (s *Server) peerServeRoute(w http.ResponseWriter, r *http.Request) {
 		route.SetFailure(nil)
 	}
 
+	route.Ready.Store(true) // as routeRequest does locally
 	route.TouchActivity()
-	target, _ := url.Parse(fmt.Sprintf("http://localhost:%d", route.Port))
+	target, transport := localUpstream(route)
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	if transport != nil {
+		proxy.Transport = transport
+	}
 	// Same upgrade-only Origin rewrite as the local proxy path — this is the
 	// hop that talks to the dev server, so the HMR-socket Origin gate
 	// (Next.js allowedDevOrigins etc.) is defused here. See routeRequest.
@@ -311,10 +317,15 @@ func (s *Server) peerServeRoute(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, context.Canceled) || req.Context().Err() != nil {
 			return
 		}
+		forgetUpstreamScheme(route)
 		// The route's port went dark mid-flight. The static page self-refreshes
 		// while this machine's own recovery machinery repairs the route.
 		s.servePeerStartingPage(rw, route)
 	}
+	// OAuth bridging, as on the local path: the remote viewer's daemon runs
+	// its own localhost bridge for this route (oauth_peer_bridge.go), so
+	// worktree state tags and bridge-host redirect rewrites matter here too.
+	proxy.ModifyResponse = s.oauthBridgeModifier(route, r)
 	proxy.ServeHTTP(w, r)
 }
 
@@ -326,21 +337,13 @@ func (s *Server) peerServeRoute(w http.ResponseWriter, r *http.Request) {
 // and a managed route whose recovery gave up waits for someone at this
 // machine).
 func (s *Server) servePeerStartingPage(w http.ResponseWriter, route *Route) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	name := template.HTMLEscapeString(route.Name)
-	head := themeHead(name + "." + s.cfg.Daemon.TLD)
+	data := messagePageData{Heading: route.Name + " is not running",
+		Lines: []string{"This route lives on another machine and its server is not running there. Start it on that machine, then reload this page."}}
 	if s.peerRouteRecovering(route) {
-		fmt.Fprintf(w, `<!doctype html><html><head>%s<meta http-equiv="refresh" content="2"><style>%s</style></head>
-<body><div class="wrap"><h1>%s is starting</h1>
-<p>This route lives on another machine and its server isn't answering yet. Retrying automatically…</p>
-</div></body></html>`, head, themeCSS, name)
-		return
+		data = messagePageData{Heading: route.Name + " is starting", RefreshSeconds: 2,
+			Lines: []string{"This route lives on another machine and its server is not answering yet. Retrying automatically…"}}
 	}
-	fmt.Fprintf(w, `<!doctype html><html><head>%s<style>%s</style></head>
-<body><div class="wrap"><h1>%s isn't running</h1>
-<p>This route lives on another machine and its server isn't running there. Start it on that machine, then reload this page.</p>
-</div></body></html>`, head, themeCSS, name)
+	renderPage(w, http.StatusServiceUnavailable, tmplMessagePage, s.routeHost(route.Name), &data)
 }
 
 // peerRouteRecovering reports whether this machine is bringing the route up

@@ -8,19 +8,23 @@ import (
 	"path/filepath"
 )
 
+// securityTool is addressed absolutely: TrustCA runs as root during setup,
+// where a PATH lookup would be a privilege-escalation surface.
+const securityTool = "/usr/bin/security"
+
 // TrustCA installs the CA certificate into the macOS System Keychain.
 // Requires root privileges.
 func TrustCA(certsDir string) error {
 	certPath := filepath.Join(certsDir, "ca.pem")
 
 	// Check if already trusted
-	out, err := exec.Command("security", "find-certificate", "-c", "local.vibe CA", "/Library/Keychains/System.keychain").CombinedOutput()
+	out, err := exec.Command(securityTool, "find-certificate", "-c", "local.vibe CA", "/Library/Keychains/System.keychain").CombinedOutput()
 	if err == nil && len(out) > 0 {
 		// Already trusted — remove old one first so we can update
-		_ = exec.Command("security", "delete-certificate", "-c", "local.vibe CA", "/Library/Keychains/System.keychain").Run()
+		_ = exec.Command(securityTool, "delete-certificate", "-c", "local.vibe CA", "/Library/Keychains/System.keychain").Run()
 	}
 
-	cmd := exec.Command("security", "add-trusted-cert",
+	cmd := exec.Command(securityTool, "add-trusted-cert",
 		"-d", "-r", "trustRoot",
 		"-k", "/Library/Keychains/System.keychain",
 		certPath,

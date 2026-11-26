@@ -157,6 +157,12 @@ func killProcessTree(name string, cmd *exec.Cmd) error {
 	return nil
 }
 
+// TerminateJobObject / TerminateProcess are already immediate and
+// unconditional — there is no SIGTERM-equivalent to escalate from — so the
+// force variants repeat the same call.
+func killProcessTreeForce(name string, cmd *exec.Cmd) error { return killProcessTree(name, cmd) }
+func killAdoptedProcessForce(pid int) error                 { return killAdoptedProcess(pid) }
+
 // killAdoptedProcess exists only to satisfy the shared ProcessManager API.
 // Windows never re-adopts a managed child across a daemon restart — the Job
 // Object's KILL_ON_JOB_CLOSE terminates children when the daemon exits — so
@@ -233,3 +239,7 @@ func jobPIDsForRoute(name string) ([]int, error) {
 	}
 	return pids, nil
 }
+
+// treeAlive: TerminateJobObject kills every job member at once, so the
+// leader's exit is the tree's exit.
+func treeAlive(pid int) bool { return processAlive(pid) }

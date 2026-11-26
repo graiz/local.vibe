@@ -2,13 +2,12 @@ package daemon
 
 import (
 	"fmt"
-	"html/template"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/netprobe"
+	"github.com/graiz/local.vibe/internal/peer"
 )
 
 // vibeScheme returns "https" when TLS is enabled, "http" otherwise. Used
@@ -26,8 +25,7 @@ func (s *Server) vibeScheme() string {
 // escaped by html/template's contextual escaper; we no longer hand-call
 // html.EscapeString on the way out.
 type dashboardData struct {
-	Head           template.HTML
-	CSS            template.CSS
+	pageShell
 	Scheme         string
 	TLD            string
 	Port           int
@@ -44,6 +42,10 @@ type dashboardData struct {
 	ShowGetStarted bool // inline Get Started card: only until 2 routes exist; after that it's a footer link + modal
 	Routes         []dashboardRoute
 	PeerGroups     []dashboardPeerGroup // experimental: paired machines' routes, read-only
+	// PeerAdmin shows the Peers section's "Add peer" control: peers are
+	// enabled and this is the dashboard proper (local.<tld> on a daemon
+	// port), the only origin whose POSTs to /_api/peers the gate accepts.
+	PeerAdmin bool
 }
 
 // dashboardPeerGroup is one paired machine's cached routes, rendered as a
@@ -58,13 +60,32 @@ type dashboardPeerGroup struct {
 // local route or an earlier-paired peer claims the same name: that name
 // resolves to the winner, so the row renders inert (no link) with a badge
 // instead of pretending to be reachable.
+// Status is the peer's own view of the route (peer.Status*), shown even on
+// a shadowed row: the name resolves elsewhere, but whether it runs over
+// there is still worth knowing.
 type dashboardPeerRoute struct {
 	Name       string
 	VibeURL    string
 	Icon       string
-	Ready      bool
+	Status     string
 	ShadowedBy string
 }
+
+// LEDClass maps Status to the row's status dot: green only when the peer
+// says the route answers, yellow while it starts, gray otherwise.
+func (r dashboardPeerRoute) LEDClass() string {
+	switch r.Status {
+	case peer.StatusReady:
+		return "led-green"
+	case peer.StatusStarting:
+		return "led-yellow"
+	default:
+		return "led-gray"
+	}
+}
+
+// Live reports whether the route currently answers on the peer.
+func (r dashboardPeerRoute) Live() bool { return r.Status == peer.StatusReady }
 
 // dashboardRoute is a single row in the dashboard, derived from a *Route.
 // Resolving the icon and "stopped" flag once here keeps the template free
@@ -117,18 +138,10 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	port := s.cfg.Daemon.Port
 	scheme := s.vibeScheme()
 
-	host := r.Host
-	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
-
 	unknownName := ""
-	if strings.HasSuffix(host, "."+tld) {
-		name := strings.TrimSuffix(host, "."+tld)
-		if name != "local" {
-			if _, ok := s.table.Get(name); !ok {
-				unknownName = name
-			}
+	if name, ok := s.routeNameFromHost(r.Host); ok && name != "local" {
+		if _, known := s.table.Get(name); !known {
+			unknownName = name
 		}
 	}
 
@@ -160,8 +173,6 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := dashboardData{
-		Head:           template.HTML(themeHead("local.vibe")),
-		CSS:            template.CSS(themeCSS),
 		Scheme:         scheme,
 		TLD:            tld,
 		Port:           port,
@@ -199,7 +210,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 
 		data.Routes = append(data.Routes, dashboardRoute{
 			Name:         rt.Name,
-			VibeURL:      fmt.Sprintf("%s://%s.%s", scheme, rt.Name, tld),
+			VibeURL:      s.routeURL(rt.Name),
 			URLDisplay:   urlDisplay,
 			Type:         rt.Type,
 			Port:         rt.Port,
@@ -223,6 +234,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	// Paired peers' routes (experimental), grouped per machine. Shadowing is
 	// computed here, not in the template: local names win, then earlier
 	// peers (peers.json order — the same precedence findPeerRoute applies).
+	data.PeerAdmin = s.peersEnabled() && s.localDetailsAllowed(r)
 	if s.peersEnabled() {
 		// The peer cache is in-memory and the poll ticks every 30s, so a
 		// render can race an empty cache (right after a daemon restart) or a
@@ -249,6 +261,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			group := dashboardPeerGroup{Peer: p.Name}
+			reachable := st.reachable()
 			for _, sum := range st.routes {
 				icon := iconPool[nameHash(sum.Name)%len(iconPool)]
 				if sum.Icon != "" {
@@ -262,11 +275,15 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 				} else {
 					claimed[sum.Name] = p.Name
 				}
+				status := peer.Status(sum.Running, sum.Ready, reachable)
+				if shadowedBy != "" {
+					status = peer.StatusShadowed
+				}
 				group.Routes = append(group.Routes, dashboardPeerRoute{
 					Name:       sum.Name,
-					VibeURL:    fmt.Sprintf("%s://%s.%s", scheme, sum.Name, tld),
+					VibeURL:    s.routeURL(sum.Name),
 					Icon:       icon,
-					Ready:      sum.Ready,
+					Status:     status,
 					ShadowedBy: shadowedBy,
 				})
 			}
@@ -277,23 +294,26 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 
 	// Worktrees that exist on disk but were never started. Until now these
 	// were reachable only by stopping the parent app to get its picker, so a
-	// worktree created while its app was running stayed invisible.
-	for _, rt := range routes {
-		for _, d := range s.discoverUnregisteredWorktrees(rt) {
-			name := d.Slug + "." + rt.Name
-			data.Routes = append(data.Routes, dashboardRoute{
-				Name:       name,
-				VibeURL:    fmt.Sprintf("%s://%s.%s", s.vibeScheme(), name, s.cfg.Daemon.TLD),
-				URLDisplay: "not started · " + d.Branch,
-				Type:       "managed",
-				Icon:       "🌿",
-				IsStopped:  true,
-				Parent:     rt.Name,
-				IsWorktree: true,
-				Discovered: true,
-				Path:       d.Path,
-				Branch:     d.Branch,
-			})
+	// worktree created while its app was running stayed invisible. Their
+	// paths are machine-local detail, so only the dashboard proper lists
+	// them — not the "unknown route" fallback render on an arbitrary Host.
+	if s.localDetailsAllowed(r) {
+		for _, rt := range routes {
+			for _, d := range s.discoverUnregisteredWorktrees(rt) {
+				data.Routes = append(data.Routes, dashboardRoute{
+					Name:       d.Name,
+					VibeURL:    s.routeURL(d.Name),
+					URLDisplay: "not started · " + d.Branch,
+					Type:       "managed",
+					Icon:       "🌿",
+					IsStopped:  true,
+					Parent:     rt.Name,
+					IsWorktree: true,
+					Discovered: true,
+					Path:       d.Path,
+					Branch:     d.Branch,
+				})
+			}
 		}
 	}
 
@@ -333,12 +353,7 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		prevGroup = groupKey(*rt)
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmplDashboard.Execute(w, data); err != nil {
-		// Headers are already written, so the response is half-rendered
-		// at best. Logging is the only remaining recourse.
-		fmt.Fprintf(w, "\n<!-- template error: %v -->\n", err)
-	}
+	renderPage(w, http.StatusOK, tmplDashboard, "local.vibe", &data)
 }
 
 // nameHash returns a stable hash for a route name, used to pick a default icon.

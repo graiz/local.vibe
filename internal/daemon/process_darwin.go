@@ -45,6 +45,37 @@ func killProcessTree(name string, cmd *exec.Cmd) error {
 	return cmd.Process.Signal(syscall.SIGTERM)
 }
 
+// killProcessTreeForce is the SIGKILL escalation for a group that ignored
+// SIGTERM (Stop's grace period lapsed with part of the tree still alive). It
+// signals -pid directly rather than looking the group up: the leader has
+// often already exited (a shell that honored TERM while its node grandchild
+// trapped it), and Getpgid on a dead leader fails. applySpawnAttrs makes every
+// child its own group leader, so pgid == pid; and a pgid cannot be recycled
+// while its group still has members, so -pid can only reach this tree.
+func killProcessTreeForce(name string, cmd *exec.Cmd) error {
+	_ = name
+	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 1 {
+		return nil
+	}
+	return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}
+
+// killAdoptedProcessForce is killAdoptedProcess's SIGKILL escalation. Only
+// valid right after killAdoptedProcess verified pid as a group leader (Stop's
+// sequence): if the leader has since exited, Getpgid fails but its group may
+// live on (a TERM-trapping grandchild), and that group's id cannot have been
+// recycled while it has members — so -pid is still only this tree. A live pid
+// that is NOT a group leader was never ours and is left alone.
+func killAdoptedProcessForce(pid int) error {
+	if pid <= 1 || pid == os.Getpid() {
+		return nil
+	}
+	if pgid, err := syscall.Getpgid(pid); err == nil && pgid != pid {
+		return nil
+	}
+	return syscall.Kill(-pid, syscall.SIGKILL)
+}
+
 // killAdoptedProcess terminates a managed child the daemon re-adopted after a
 // restart — it has the process-group leader PID but no *exec.Cmd. It signals
 // the whole process group, matching killProcessTree's semantics for children
@@ -70,4 +101,18 @@ func killAdoptedProcess(pid int) error {
 		return nil // not a group leader — not a child we spawned
 	}
 	return syscall.Kill(-pgid, syscall.SIGTERM)
+}
+
+// treeAlive reports whether any member of the process group led by pid is
+// still alive. Stop waits on this rather than the leader alone: the leader is
+// usually a login shell or npm that exits promptly on SIGTERM while the
+// grandchild actually holding the port (node) traps TERM and lives on.
+// kill(-pgid, 0) succeeds while any member exists (EPERM also means one
+// exists but isn't ours to signal); ESRCH means the group is empty.
+func treeAlive(pid int) bool {
+	if pid <= 1 {
+		return false
+	}
+	err := syscall.Kill(-pid, 0)
+	return err == nil || err == syscall.EPERM
 }

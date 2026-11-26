@@ -33,6 +33,9 @@ func (s *Server) onRouteRemoved(name string) {
 		delete(s.idleTimers, name)
 	}
 	s.timersMu.Unlock()
+	// A route re-registered under this name must not inherit the previous
+	// lost-access restart cooldown (lost_access.go).
+	s.lostAccessRestarts.Delete(name)
 }
 
 // armTTL schedules removal of a TTL route exactly at its expiry — one timer that
@@ -101,10 +104,7 @@ func (s *Server) idleCheck(name string) {
 		if idleFor >= timeout {
 			// Mark not-running before killing so the exit handler treats this as
 			// an intentional stop (no failure seeded).
-			route.Running.Store(false)
-			_ = s.procs.Stop(name)
-			route.Ready.Store(false)
-			route.ClearPID()
+			s.stopManaged(route)
 			s.rearmIdle(name, timeout) // keep governing a future restart
 			return
 		}
@@ -122,7 +122,11 @@ func (s *Server) rearmIdle(name string, d time.Duration) {
 		d = time.Second
 	}
 	s.timersMu.Lock()
-	if _, ok := s.idleTimers[name]; ok {
+	if old, ok := s.idleTimers[name]; ok {
+		// Stop before replacing: a Remove → Add that raced an in-flight
+		// idleCheck would otherwise leave two timer chains alive for the
+		// route's lifetime, with only one of them ever cancelled.
+		old.Stop()
 		s.idleTimers[name] = time.AfterFunc(d, func() { s.idleCheck(name) })
 	}
 	s.timersMu.Unlock()

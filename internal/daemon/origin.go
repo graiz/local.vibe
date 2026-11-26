@@ -90,13 +90,26 @@ func (s *Server) originTrusted(origin string) bool {
 	}
 	// A registered route's own origin. Matching on the exact host (not a
 	// substring) means "local.test.evil.com" can't pass as "local.test".
-	if strings.HasSuffix(host, "."+tld) {
-		name := strings.TrimSuffix(host, "."+tld)
-		if rt, ok := s.table.Get(name); ok && rt.Type != RouteBookmark {
-			return true
-		}
+	_, isRoute := s.originRouteName(origin)
+	return isRoute
+}
+
+// originRouteName reports whether origin is a registered non-bookmark route's
+// own .<tld> origin on a daemon port, and which route. apiHandler uses it to
+// confine such an origin to the route's own endpoints.
+func (s *Server) originRouteName(origin string) (string, bool) {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || !s.daemonPortTrusted(u.Port()) {
+		return "", false
 	}
-	return false
+	name, ok := s.routeNameFromHost(u.Host)
+	if !ok || name == "local" {
+		return "", false
+	}
+	if rt, ok := s.table.Get(name); ok && rt.Type != RouteBookmark {
+		return name, true
+	}
+	return "", false
 }
 
 // daemonPortTrusted reports whether an origin's port is one the daemon itself
@@ -116,13 +129,33 @@ func (s *Server) daemonPortTrusted(port string) bool {
 }
 
 // apiStateChanging reports whether an /_api/ request can alter daemon state,
-// and therefore needs the cross-site guard. Everything except GET qualifies;
-// GET /repair is included because it rewrites a route's registered port.
-func apiStateChanging(method, path string) bool {
-	if method != http.MethodGet {
+// and therefore needs the cross-site guard. Everything except GET qualifies.
+// Repair — which rewrites a route's registered port — is a POST for exactly
+// this reason: a GET arrives with no Origin from a same-origin fetch or an
+// <img src>, and Sec-Fetch-Site reads same-site for every .vibe page, so a
+// GET could never be guarded.
+func apiStateChanging(method string) bool {
+	return method != http.MethodGet
+}
+
+// routeDetailsAllowed reports whether a read about one route may include that
+// route's failure diagnostics — its log tail and recovery hints, which name
+// the command line and working directory. Allowed wherever localDetailsAllowed
+// is, plus the route's own host on a daemon port: that is where its start and
+// repair pages run. Another route's host (a proxy bookmark's third-party JS
+// reads /_api/ same-origin there) and DNS-rebound names get nothing.
+func (s *Server) routeDetailsAllowed(r *http.Request, route *Route) bool {
+	if s.localDetailsAllowed(r) {
 		return true
 	}
-	return strings.HasSuffix(path, "/repair")
+	if route.Type == RouteBookmark {
+		return false
+	}
+	host, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		host, port = r.Host, ""
+	}
+	return host == route.Name+"."+s.cfg.Daemon.TLD && s.daemonPortTrusted(port)
 }
 
 // localDetailsAllowed reports whether a read may include machine-local detail

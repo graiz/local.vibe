@@ -1,14 +1,11 @@
 package daemon
 
 import (
-	"fmt"
-	"html/template"
 	"net/http"
 )
 
 type repairPageData struct {
-	Head     template.HTML
-	CSS      template.CSS
+	pageShell
 	Name     string
 	TLD      string
 	Port     int
@@ -34,19 +31,11 @@ func (s *Server) serveStartingPage(w http.ResponseWriter, r *http.Request, route
 }
 
 func (s *Server) serveReconnectPage(w http.ResponseWriter, _ *http.Request, route *Route, starting bool) {
-	tld := s.cfg.Daemon.TLD
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
 	data := repairPageData{
-		Head:     template.HTML(themeHead(route.Name + "." + tld)),
-		CSS:      template.CSS(themeCSS),
 		Name:     route.Name,
-		TLD:      tld,
+		TLD:      s.cfg.Daemon.TLD,
 		Port:     route.Port,
 		Starting: starting,
 	}
-
-	if err := tmplRepairPage.Execute(w, data); err != nil {
-		fmt.Fprintf(w, "\n<!-- template error: %v -->\n", err)
-	}
+	renderPage(w, http.StatusOK, tmplRepairPage, s.routeHost(route.Name), &data)
 }

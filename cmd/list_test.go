@@ -11,14 +11,14 @@ import (
 )
 
 func TestDisplayPath(t *testing.T) {
-	home := filepath.FromSlash("/Users/greg")
+	home := filepath.FromSlash("/Users/al")
 	sep := string(filepath.Separator)
 	cases := []struct{ in, want string }{
 		{"", ""},
 		{home, "~"},
-		{filepath.FromSlash("/Users/greg/dev/app"), "~" + sep + filepath.FromSlash("dev/app")},
+		{filepath.FromSlash("/Users/al/dev/app"), "~" + sep + filepath.FromSlash("dev/app")},
 		// A sibling whose name merely starts with home is not under it.
-		{filepath.FromSlash("/Users/gregory/app"), filepath.FromSlash("/Users/gregory/app")},
+		{filepath.FromSlash("/Users/alice/app"), filepath.FromSlash("/Users/alice/app")},
 		{filepath.FromSlash("/opt/app"), filepath.FromSlash("/opt/app")},
 	}
 	for _, c := range cases {
@@ -33,13 +33,13 @@ func TestDisplayPath(t *testing.T) {
 
 func TestWriteRouteTableLong(t *testing.T) {
 	now := time.Now()
-	home := filepath.FromSlash("/Users/greg")
+	home := filepath.FromSlash("/Users/al")
 	routes := []client.RouteInfo{
-		{Name: "dialt", URL: "https://dialt.vibe", Port: 3012, Type: "managed", Running: true, Ready: true,
-			RegisteredAt: now, Dir: filepath.FromSlash("/Users/greg/dev/dialit"), Cmd: "node server.js"},
+		{Name: "shop", URL: "https://shop.vibe", Port: 3012, Type: "managed", Running: true, Ready: true,
+			RegisteredAt: now, Dir: filepath.FromSlash("/Users/al/dev/shopapp"), Cmd: "node server.js"},
 		{Name: "api", URL: "https://api.vibe", Port: 4000, Type: "sticky", Running: true, Ready: true, RegisteredAt: now},
 	}
-	wts := []client.WorktreeInfo{{Name: "fix.dialt", URL: "https://fix.dialt.vibe", Branch: "fix", Path: filepath.FromSlash("/Users/greg/dev/dialit-fix")}}
+	wts := []client.WorktreeInfo{{Name: "fix.shop", URL: "https://fix.shop.vibe", Branch: "fix", Path: filepath.FromSlash("/Users/al/dev/shopapp-fix")}}
 
 	var short bytes.Buffer
 	if err := writeRouteTable(&short, routes, wts, nil, false, home, now); err != nil {
@@ -60,14 +60,14 @@ func TestWriteRouteTableLong(t *testing.T) {
 	if f := strings.Fields(lines[0]); strings.Join(f[len(f)-2:], " ") != "DIR CMD" {
 		t.Errorf("header missing DIR/CMD: %q", lines[0])
 	}
-	dialit := "~" + string(filepath.Separator) + filepath.FromSlash("dev/dialit")
-	if !strings.Contains(lines[1], dialit) || !strings.HasSuffix(lines[1], "node server.js") {
-		t.Errorf("dialt row: %q", lines[1])
+	shopapp := "~" + string(filepath.Separator) + filepath.FromSlash("dev/shopapp")
+	if !strings.Contains(lines[1], shopapp) || !strings.HasSuffix(lines[1], "node server.js") {
+		t.Errorf("shop row: %q", lines[1])
 	}
 	if f := strings.Fields(lines[2]); strings.Join(f[len(f)-2:], " ") != "— —" {
 		t.Errorf("sticky row should dash DIR and CMD: %q", lines[2])
 	}
-	if !strings.Contains(lines[3], filepath.FromSlash("dev/dialit-fix")) {
+	if !strings.Contains(lines[3], filepath.FromSlash("dev/shopapp-fix")) {
 		t.Errorf("worktree row should show its path: %q", lines[3])
 	}
 }
@@ -85,9 +85,9 @@ func TestListFlagsCombine(t *testing.T) {
 
 func TestWriteRouteTablePeerRows(t *testing.T) {
 	now := time.Now()
-	routes := []client.RouteInfo{{Name: "dialt", URL: "https://dialt.vibe", Port: 3012, Type: "managed", Running: true, Ready: true, RegisteredAt: now}}
+	routes := []client.RouteInfo{{Name: "shop", URL: "https://shop.vibe", Port: 3012, Type: "managed", Running: true, Ready: true, RegisteredAt: now}}
 	peers := &client.PeersResponse{Enabled: true, Peers: []client.PeerInfo{
-		{Name: "imac", Routes: []client.PeerRouteInfo{{Name: "faces", Ready: true}, {Name: "dialt", Ready: true}}},
+		{Name: "imac", Reachable: true, Routes: []client.PeerRouteInfo{{Name: "photos", Ready: true}, {Name: "shop", Ready: true}}},
 	}}
 	for _, long := range []bool{false, true} {
 		var buf bytes.Buffer
@@ -103,10 +103,14 @@ func TestWriteRouteTablePeerRows(t *testing.T) {
 			want = 9
 		}
 		for _, l := range lines[1:] {
-			// "on imac" is one cell rendered as two fields.
+			// The peer note ("on imac[, shadowed by …]") is one cell of
+			// several words; count it once.
 			n := len(strings.Fields(l))
-			if strings.Contains(l, "on imac") {
-				n--
+			if i := strings.Index(l, "on imac"); i >= 0 {
+				n = len(strings.Fields(l[:i])) + 1
+				if long {
+					n += 2 // DIR and CMD dashes follow the note
+				}
 			} else if strings.Contains(l, " ago") {
 				n--
 			}
@@ -114,7 +118,13 @@ func TestWriteRouteTablePeerRows(t *testing.T) {
 				t.Errorf("long=%v: row has %d cells, want %d: %q", long, n, want, l)
 			}
 		}
-		if !strings.Contains(lines[2], "ready") || !strings.Contains(lines[3], "shadowed") {
+		// An unshadowed peer row shows the peer's status. A shadowed one
+		// says it lost — never the peer's own "ready"/"stopped", which beside
+		// a local route of the same name reads as that route's state.
+		if !strings.Contains(lines[2], "ready") ||
+			!strings.Contains(lines[3], "shadowed  ") && !strings.Contains(lines[3], "shadowed\t") && !strings.Contains(lines[3], " shadowed ") ||
+			strings.Contains(lines[3], "ready") ||
+			!strings.Contains(lines[3], "shadowed by this machine") {
 			t.Errorf("long=%v: peer statuses wrong:\n%s", long, buf.String())
 		}
 	}
