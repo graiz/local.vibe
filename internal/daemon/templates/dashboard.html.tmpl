@@ -110,7 +110,7 @@
   {{if not .PeersEnabled}}<p class="peer-empty">Browse other machines' .{{.TLD}} routes from here.</p>{{else if not .PeerGroups}}<p class="peer-empty">No machines paired yet. Show a code here, or add a machine that's showing one.</p>{{end}}
 {{end}}
 {{define "peer-group-head"}}
-    <div class="peer-group-title"><span class="peer-group-name">on {{.Peer}}</span>{{if .Admin}}<span class="peer-group-addr">{{.Host}}:{{.Port}}</span><span class="peer-group-status peer-group-{{.Status}}" title="{{.StatusDetail}}">{{.Status}}</span><span class="peer-group-key" title="key fingerprint">key {{.Key}}</span><span class="peer-group-btns"><button type="button" class="btn btn-sm" data-peer="{{.Peer}}" data-host="{{.Host}}" data-port="{{.Port}}" data-fp="{{.Fingerprint}}" onclick="openPeerEdit(this)">Edit</button><button type="button" class="btn btn-sm btn-danger" data-peer="{{.Peer}}" onclick="askRemovePeer(this)">Remove</button></span>{{end}}</div>
+    <div class="peer-group-title"><span class="peer-group-name"{{if .Admin}} title="{{.Host}}:{{.Port}}"{{end}}>on {{.Peer}}</span>{{if .Admin}}{{if eq .Status "unreachable"}}<span class="peer-group-status peer-group-unreachable" title="{{.StatusDetail}}">disconnected</span>{{end}}<span class="peer-group-btns"><button type="button" class="btn btn-sm" data-peer="{{.Peer}}" data-host="{{.Host}}" data-port="{{.Port}}" data-fp="{{.Fingerprint}}" onclick="openPeerEdit(this)">Edit</button><button type="button" class="btn btn-sm btn-danger" data-peer="{{.Peer}}" onclick="askRemovePeer(this)">Remove</button></span>{{end}}</div>
     <div class="peer-confirm peer-remove-confirm" style="display:none"></div>
 {{end}}
 {{if or .PeerGroups .PeerAdmin}}

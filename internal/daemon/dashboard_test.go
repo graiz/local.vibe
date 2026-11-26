@@ -230,13 +230,26 @@ func TestPeersSectionEnabled(t *testing.T) {
 	body := renderDashboard(t, s, "local.vibe")
 	for _, want := range []string{
 		`onclick="openPeerModal()"`, `onclick="openShowCode()"`, `onclick="turnOffPeers()"`,
-		"10.0.0.9:7444", "10.0.0.10:7444", "lonely",
+		`title="10.0.0.9:7444"`, `title="10.0.0.10:7444"`, "lonely",
 		`openPeerEdit(`, `askRemovePeer(`,
-		"4F2A\u00b791C3",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("enabled Peers section missing %q", want)
 		}
+	}
+	// The header stays quiet: the address is a hover tooltip, the key lives
+	// in the Edit dialog, and a status shows only when a peer is offline.
+	list := body[strings.Index(body, `id="peer-list"`):strings.Index(body, `id="peer-grid"`)]
+	for _, noise := range []string{">10.0.0.9:7444<", "4F2A\u00b791C3", ">connected<"} {
+		if strings.Contains(list, noise) {
+			t.Errorf("peer header shows %q; keep it to the name", noise)
+		}
+	}
+	unreachable := newBareServer(t)
+	unreachable.peerList = []peer.Peer{{Name: "box", Host: "10.0.0.9", Port: 7444, Fingerprint: "ff"}}
+	unreachable.peerStates["box"] = &peerState{lastErr: "dial tcp: timeout"}
+	if b := renderDashboard(t, unreachable, "local.vibe"); !strings.Contains(b, ">disconnected<") {
+		t.Error("an offline peer must say disconnected")
 	}
 }
 
