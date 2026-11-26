@@ -29,6 +29,8 @@ func replaceVibeBinary(srcDir, binary string) error {
 		os.Remove(tmpBin)
 		return fmt.Errorf("build failed: %w", err)
 	}
+	// Sign before the swap so the installed binary is never unsigned-new.
+	signLocalBuild(tmpBin)
 	if err := os.Rename(tmpBin, binary); err != nil {
 		os.Remove(tmpBin)
 		return fmt.Errorf("install failed: %w", err)
