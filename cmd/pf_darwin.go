@@ -57,10 +57,24 @@ var (
 // one — necessary only because replacing the main ruleset also replaced
 // everyone else's filter rules. An anchor adds rules without removing any, so
 // the blanket pass is both unnecessary and undesirable.
+//
+// The two `no rdr` lines come first and are load-bearing. xnu's pf matches an
+// rdr rule *in reverse* against state-less outbound packets: the SYN-ACK of a
+// DIRECT connection to 127.0.0.1:<HTTP port> (one that never went through the
+// :80 redirect — `vibe list`'s redirect check, doctor, the CLI's TCP
+// fallback, the service worker's probe) matched the 80→HTTP rule backwards
+// and left with its destination rewritten to port 80. The stack answered RST,
+// and the poisoned state that left behind dropped every later direct dial
+// until it expired (tcpdump: `7999 > 80 [S.]`). Exempting traffic FROM the
+// target ports (first match wins) stops that without touching the redirect:
+// redirected clients come from ephemeral ports, and replies on redirected
+// connections are translated by their state before any rule is evaluated.
 func pfAnchorRules() string {
-	return fmt.Sprintf("rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port %d\n"+
+	return fmt.Sprintf("no rdr on lo0 inet proto tcp from 127.0.0.1 port %d to any\n"+
+		"no rdr on lo0 inet proto tcp from 127.0.0.1 port %d to any\n"+
+		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port %d\n"+
 		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port %d\n",
-		pfHTTPPort, pfTLSPort)
+		pfHTTPPort, pfTLSPort, pfHTTPPort, pfTLSPort)
 }
 
 // writePFAnchorFile writes the anchor's rules with the currently configured
@@ -290,9 +304,19 @@ func anchorRulesLoaded() bool {
 	if err != nil {
 		return false
 	}
-	live := string(out)
-	return strings.Contains(live, fmt.Sprintf("-> 127.0.0.1 port %d", pfHTTPPort)) &&
-		strings.Contains(live, fmt.Sprintf("-> 127.0.0.1 port %d", pfTLSPort))
+	return anchorRulesCurrent(string(out))
+}
+
+// anchorRulesCurrent reports whether `pfctl -a com.vibe -s nat` output holds
+// all four current rules: both redirects AND both reverse-match exemptions.
+// An anchor with only the redirects (pre-exemption builds) is stale, so the
+// next pf-apply reloads it. pfctl prints ports as `port = N`.
+func anchorRulesCurrent(live string) bool {
+	has := func(sub string) bool { return strings.Contains(live, sub) }
+	return has(fmt.Sprintf("-> 127.0.0.1 port %d", pfHTTPPort)) &&
+		has(fmt.Sprintf("-> 127.0.0.1 port %d", pfTLSPort)) &&
+		has(fmt.Sprintf("no rdr on lo0 inet proto tcp from 127.0.0.1 port = %d to any", pfHTTPPort)) &&
+		has(fmt.Sprintf("no rdr on lo0 inet proto tcp from 127.0.0.1 port = %d to any", pfTLSPort))
 }
 
 // natRulesetReferencesAnchor reports whether `pfctl -s nat` output contains a

@@ -45,8 +45,10 @@ func PortOpen(port int, timeout time.Duration) bool {
 // This is strictly stronger than PortOpen, and the difference is not academic:
 // a VPN kill-switch can intercept a direct loopback connection, completing the
 // TCP handshake and then never forwarding anything. A dial-based probe calls
-// that healthy (and flaps between succeeding and failing run to run), while an
-// actual request hangs every time — which is what the user experiences.
+// that healthy, while an actual request hangs every time — which is what the
+// user experiences. (Direct dials to the daemon's own ports that flapped
+// between succeeding and failing were a different bug — xnu pf matching
+// vibe's rdr in reverse; see pfAnchorRules in cmd/pf_darwin.go.)
 // Requiring a 200 from the daemon's own endpoint also means an unrelated
 // server occupying the port isn't mistaken for vibe.
 //

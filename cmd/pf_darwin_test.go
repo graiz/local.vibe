@@ -228,3 +228,51 @@ func TestNATRulesetReferencesAnchor(t *testing.T) {
 		t.Error("a differently-named anchor was accepted as ours")
 	}
 }
+
+// xnu's pf matches an rdr rule in reverse against state-less OUTBOUND
+// packets: the SYN-ACK of a DIRECT connection to 127.0.0.1:7999 (one that
+// never went through the 80 redirect) matched `rdr … port 80 -> port 7999`
+// backwards and left with its destination rewritten to port 80 — so direct
+// dials to the daemon's own ports mostly failed (tcpdump: `7999 > 80 [S.]`).
+// `no rdr` for traffic FROM the target ports, ahead of the rdr lines
+// (first match wins), stops that without touching the redirect: redirected
+// clients come from ephemeral ports, and their replies are translated by
+// state before any rule is evaluated.
+func TestPFAnchorRulesExemptTargetPorts(t *testing.T) {
+	origHTTP, origTLS := pfHTTPPort, pfTLSPort
+	t.Cleanup(func() { pfHTTPPort, pfTLSPort = origHTTP, origTLS })
+	pfHTTPPort, pfTLSPort = 7999, 7443
+	lines := strings.Split(strings.TrimSpace(pfAnchorRules()), "\n")
+	want := []string{
+		"no rdr on lo0 inet proto tcp from 127.0.0.1 port 7999 to any",
+		"no rdr on lo0 inet proto tcp from 127.0.0.1 port 7443 to any",
+		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 7999",
+		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 7443",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("anchor rules:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// The live-anchor freshness check must treat the old two-line anchor as
+// stale, so pf-apply (boot / network change) upgrades machines to the
+// exempting rules. Fixtures are `pfctl -a com.vibe -s nat` output, which
+// prints ports as `port = N`.
+func TestAnchorRulesCurrent(t *testing.T) {
+	origHTTP, origTLS := pfHTTPPort, pfTLSPort
+	t.Cleanup(func() { pfHTTPPort, pfTLSPort = origHTTP, origTLS })
+	pfHTTPPort, pfTLSPort = 7999, 7443
+	old := "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 80 -> 127.0.0.1 port 7999\n" +
+		"rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port = 443 -> 127.0.0.1 port 7443\n"
+	current := "no rdr on lo0 inet proto tcp from 127.0.0.1 port = 7999 to any\n" +
+		"no rdr on lo0 inet proto tcp from 127.0.0.1 port = 7443 to any\n" + old
+	if anchorRulesCurrent(old) {
+		t.Error("old anchor (no exemptions) reported current — pf-apply would never upgrade it")
+	}
+	if !anchorRulesCurrent(current) {
+		t.Error("current anchor reported stale — pf-apply would reload it on every network change")
+	}
+	if anchorRulesCurrent(strings.ReplaceAll(current, "7999", "8999")) {
+		t.Error("anchor for other ports reported current")
+	}
+}
