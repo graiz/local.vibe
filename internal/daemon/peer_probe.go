@@ -168,17 +168,17 @@ func (r peerProbeResult) with(state string) peerProbeResult {
 	}
 	switch state {
 	case probeNone:
-		r.Message = fmt.Sprintf("No vibe peer service answered at %s:%d. On that machine: install local.vibe (clone github.com/graiz/local.vibe and run ./setup.sh, or setup.ps1 on Windows — see the README), open its dashboard, click Enable peers, then Show a code.", r.Host, r.Port)
+		r.Message = fmt.Sprintf("No vibe peer service answered at %s:%d. On that machine: install local.vibe (clone github.com/graiz/local.vibe and run ./setup.sh, or setup.ps1 on Windows — see the README), open its dashboard, click Enable peers, then Add peer — its code shows at the top.", r.Host, r.Port)
 	case probeBlocked:
 		r.Message = fmt.Sprintf("Couldn't reach %s. The machine may be offline or asleep — or macOS may be blocking vibe's local network access (System Settings → Privacy & Security → Local Network).", r.Host)
 	case probePairing:
 		r.Message = fmt.Sprintf("%s is showing a code. Enter it to pair; check that its key matches %s.", who, r.Key)
 	case probeTrustsUs:
-		r.Message = fmt.Sprintf("%s still trusts this machine (you removed it here). Show a code on %s to pair again.", who, who)
+		r.Message = fmt.Sprintf("%s still trusts this machine (you removed it here). Open Add peer on %s to show a code and pair again.", who, who)
 	case probePaired:
 		r.Message = fmt.Sprintf("Already paired as %s.", r.PairedAs)
 	case probeVibe:
-		r.Message = fmt.Sprintf("vibe is running at %s but isn't showing a code. Click Show a code in its dashboard (or run `vibe peer invite`).", r.Host)
+		r.Message = fmt.Sprintf("vibe is running at %s but isn't showing a code. Open Add peer in its dashboard (or run `vibe peer invite`).", r.Host)
 	case probeRemovedUs:
 		r.Message = fmt.Sprintf("Paired here as %s, but %s no longer trusts this machine. Remove it here, then pair again with a new code.", r.PairedAs, r.Host)
 	}

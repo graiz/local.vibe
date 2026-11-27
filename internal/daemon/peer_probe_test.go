@@ -52,7 +52,7 @@ func TestProbeNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := s.probePeerHost(context.Background(), "127.0.0.1", freeLoopbackPort(t))
-	if r.State != "none" || !strings.Contains(r.Message, "Enable peers") || !strings.Contains(r.Message, "Show a code") {
+	if r.State != "none" || !strings.Contains(r.Message, "Enable peers") || !strings.Contains(r.Message, "Add peer") || strings.Contains(r.Message, "Show a code") {
 		t.Fatalf("closed port: %+v", r)
 	}
 }

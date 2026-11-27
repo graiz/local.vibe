@@ -229,7 +229,7 @@ func TestPeersSectionEnabled(t *testing.T) {
 	s.peerStates["box"] = &peerState{lastOK: time.Now(), routes: []peer.RouteSummary{{Name: "app", Ready: true, Running: true}}}
 	body := renderDashboard(t, s, "local.vibe")
 	for _, want := range []string{
-		`onclick="openPeerModal()"`, `onclick="openShowCode()"`, `onclick="turnOffPeers()"`,
+		`onclick="openPeerModal()"`, `onclick="turnOffPeers()"`,
 		`title="10.0.0.9:7444"`, `title="10.0.0.10:7444"`, "lonely",
 		`openPeerEdit(`, `askRemovePeer(`,
 	} {
@@ -279,15 +279,29 @@ func TestInviteResponseCarriesKeyAndAddresses(t *testing.T) {
 func TestPeerModalMarkup(t *testing.T) {
 	s := newBareServer(t)
 	body := renderDashboard(t, s, "local.vibe")
-	for _, want := range []string{
-		`id="peer-found-lan"`, `id="peer-found-tailscale"`, `id="peer-typed-host"`,
-		`id="peer-edit-overlay"`, `id="peer-edit-fp"`, `readonly`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("dashboard missing %q", want)
-		}
-	}
 	if strings.Contains(body, "confirm(") {
 		t.Error("dashboard uses a browser confirm()")
+	}
+	// One Add peer screen: this machine's code on top (no key), a table of
+	// found machines with one action column (Pair / Unpair), and in-dialog
+	// views to enter the other machine's code and to confirm an unpair.
+	modal := body[strings.Index(body, `id="peer-overlay"`):strings.Index(body, `id="peer-edit-overlay"`)]
+	for _, want := range []string{
+		`id="peer-code-value"`, "Your code", "Enter it on the other machine",
+		`id="peer-devices"`, `id="peer-typed-host"`,
+		`id="peer-view-list"`, `id="peer-view-code"`, `id="peer-entry-code"`, "Enter the code shown on",
+		`id="peer-view-unpair"`, "Are you sure?",
+	} {
+		if !strings.Contains(modal, want) {
+			t.Errorf("Add peer modal missing %q", want)
+		}
+	}
+	for _, gone := range []string{`id="peer-code-overlay"`, `onclick="openShowCode()"`, `id="peer-code-key"`, "Their code", "says it"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("dashboard still has %q", gone)
+		}
+	}
+	if !strings.Contains(body, `id="peer-edit-fp"`) || !strings.Contains(body, "readonly") {
+		t.Error("edit dialog must keep the read-only fingerprint")
 	}
 }

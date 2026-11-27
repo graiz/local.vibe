@@ -185,7 +185,7 @@ func (s *Server) handlePeerAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	code, ok := peer.NormalizeCode(req.Code)
 	if !ok {
-		writeJSONError(w, http.StatusBadRequest, "that isn't a pairing code — codes look like K7QM-3XR9 (shown by Show a code / `vibe peer invite` on the other machine)")
+		writeJSONError(w, http.StatusBadRequest, "that isn't a pairing code — codes look like K7QM-3XR9 (shown at the top of Add peer, or by `vibe peer invite`, on the other machine)")
 		return
 	}
 	if req.Port == 0 {
