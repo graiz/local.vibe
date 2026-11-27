@@ -229,12 +229,23 @@ func TestPeersSectionEnabled(t *testing.T) {
 	s.peerStates["box"] = &peerState{lastOK: time.Now(), routes: []peer.RouteSummary{{Name: "app", Ready: true, Running: true}}}
 	body := renderDashboard(t, s, "local.vibe")
 	for _, want := range []string{
-		`onclick="openPeerModal()"`, `onclick="turnOffPeers()"`,
+		`onclick="openPeerModal()"`,
 		`title="10.0.0.9:7444"`, `title="10.0.0.10:7444"`, "lonely",
-		`openPeerEdit(`, `askRemovePeer(`,
+		`openPeerEdit(`,
+		// Remove lives in the Edit dialog, Turn off in the Add peer dialog,
+		// each with its own "are you sure" view.
+		`id="peer-edit-remove"`, `id="peer-edit-view-remove"`,
+		`id="peer-off-open"`, `id="peer-view-off"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("enabled Peers section missing %q", want)
+		}
+	}
+	// The section and group headers carry one button each: no inline
+	// Remove / Turn off strips beside them.
+	for _, gone := range []string{`askRemovePeer(this)`, `onclick="turnOffPeers()"`, "peer-off-confirm", "peer-remove-confirm"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("enabled Peers section still has %q", gone)
 		}
 	}
 	// The header stays quiet: the address is a hover tooltip, the key lives

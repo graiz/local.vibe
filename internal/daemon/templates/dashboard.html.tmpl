@@ -105,13 +105,11 @@
 <div class="empty" id="search-empty" style="display:none">No routes match &ldquo;<span id="search-empty-q"></span>&rdquo;</div>
 
 {{define "peers-head"}}
-  <h2>Peers<span class="tag">experimental</span>{{if .PeerAdmin}}{{if .PeersEnabled}}<span class="peer-actions"><button type="button" class="btn btn-sm" onclick="openPeerModal()">Add peer</button><button type="button" class="btn btn-sm btn-danger" onclick="turnOffPeers()">Turn off</button></span>{{else}}<span class="peer-actions"><button type="button" class="btn btn-sm" onclick="openEnablePeers()">Enable peers</button></span>{{end}}{{end}}</h2>
-  <div class="peer-confirm peer-off-confirm" style="display:none">Turn off peers? Nothing will listen on the network; your pairings are kept. <button type="button" class="btn btn-sm btn-danger" onclick="setPeersEnabled(false)">Turn off</button> <button type="button" class="btn btn-sm" onclick="showPeerOffConfirm(false)">Cancel</button></div>
+  <h2>Peers<span class="tag">experimental</span>{{if .PeerAdmin}}{{if .PeersEnabled}}<span class="peer-actions"><button type="button" class="btn btn-sm" onclick="openPeerModal()">Add peer</button></span>{{else}}<span class="peer-actions"><button type="button" class="btn btn-sm" onclick="openEnablePeers()">Enable peers</button></span>{{end}}{{end}}</h2>
   {{if not .PeersEnabled}}<p class="peer-empty">Browse other machines' .{{.TLD}} routes from here.</p>{{else if not .PeerGroups}}<p class="peer-empty">No machines paired yet. Open Add peer on both machines.</p>{{end}}
 {{end}}
 {{define "peer-group-head"}}
-    <div class="peer-group-title"><span class="peer-group-name"{{if .Admin}} title="{{.Host}}:{{.Port}}"{{end}}>on {{.Peer}}</span>{{if .Admin}}{{if eq .Status "unreachable"}}<span class="peer-group-status peer-group-unreachable" title="{{.StatusDetail}}">disconnected</span>{{end}}<span class="peer-group-btns"><button type="button" class="btn btn-sm" data-peer="{{.Peer}}" data-host="{{.Host}}" data-port="{{.Port}}" data-fp="{{.Fingerprint}}" onclick="openPeerEdit(this)">Edit</button><button type="button" class="btn btn-sm btn-danger" data-peer="{{.Peer}}" onclick="askRemovePeer(this)">Remove</button></span>{{end}}</div>
-    <div class="peer-confirm peer-remove-confirm" style="display:none"></div>
+    <div class="peer-group-title"><span class="peer-group-name"{{if .Admin}} title="{{.Host}}:{{.Port}}"{{end}}>on {{.Peer}}</span>{{if .Admin}}{{if eq .Status "unreachable"}}<span class="peer-group-status peer-group-unreachable" title="{{.StatusDetail}}">disconnected</span>{{end}}<span class="peer-group-btns"><button type="button" class="btn btn-sm" data-peer="{{.Peer}}" data-host="{{.Host}}" data-port="{{.Port}}" data-fp="{{.Fingerprint}}" onclick="openPeerEdit(this)">Edit</button></span>{{end}}</div>
 {{end}}
 {{if or .PeerGroups .PeerAdmin}}
 <section class="peer-section" id="peer-list" style="display:{{.ListDisplay}}">
@@ -271,6 +269,7 @@ Or open in a browser: {{.Scheme}}://local.{{.TLD}}/setup.md</textarea>
       <div class="peer-msg" id="peer-list-msg" style="display:none"></div>
     </div>
     <div class="modal-actions">
+      <button class="btn btn-danger" id="peer-off-open" style="margin-right:auto" onclick="showPeerView('off')">Turn off peers</button>
       <button class="btn" onclick="rescanPeers()">Search again</button>
       <button class="btn-add" onclick="closePeerModal()">Done</button>
     </div>
@@ -302,6 +301,18 @@ Or open in a browser: {{.Scheme}}://local.{{.TLD}}/setup.md</textarea>
       <button class="btn-add peer-btn-danger" id="peer-unpair-do" onclick="confirmUnpair()">Unpair</button>
     </div>
   </div>
+
+  <!-- turn-off view: are you sure? -->
+  <div class="peer-view" id="peer-view-off">
+    <div class="modal-body"><div class="peer-entry">
+      <div class="peer-entry-who peer-entry-strong">Turn off peers?</div>
+      <div class="peer-entry-hint">Nothing on this machine will listen on the network, and paired machines' routes disappear from here. Your pairings are kept for when you turn it back on.</div>
+    </div></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="showPeerView('list')">Cancel</button>
+      <button class="btn-add peer-btn-danger" onclick="setPeersEnabled(false)">Turn off</button>
+    </div>
+  </div>
 </div>
 </div>
 
@@ -311,8 +322,9 @@ Or open in a browser: {{.Scheme}}://local.{{.TLD}}/setup.md</textarea>
   <div class="modal-header"><div class="modal-header-text">
     <div class="modal-eyebrow">Peers · experimental</div>
     <h3 id="peer-edit-heading">Edit peer</h3>
-    <div class="modal-sub">Its key can't change — a different address only changes where this machine looks for it.</div>
+    <div class="modal-sub" id="peer-edit-sub">Its key can't change — a different address only changes where this machine looks for it.</div>
   </div></div>
+  <div class="peer-view on" id="peer-edit-view-form">
   <div class="modal-body">
     <div class="field-row">
       <div class="field"><label for="peer-edit-name">Name</label><input id="peer-edit-name" type="text" autocomplete="off" spellcheck="false"></div>
@@ -327,8 +339,21 @@ Or open in a browser: {{.Scheme}}://local.{{.TLD}}/setup.md</textarea>
     <div class="peer-msg" id="peer-edit-msg" style="display:none"></div>
   </div>
   <div class="modal-actions">
+    <button class="btn btn-danger" id="peer-edit-remove" style="margin-right:auto" onclick="showPeerEditView('remove')">Remove</button>
     <button class="btn" onclick="closePeerDialog('peer-edit-overlay')">Cancel</button>
     <button class="btn-add" id="peer-edit-save" onclick="savePeerEdit()">Save</button>
+  </div>
+  </div>
+  <div class="peer-view" id="peer-edit-view-remove">
+    <div class="modal-body"><div class="peer-entry">
+      <div class="peer-entry-who peer-entry-strong">Remove <strong id="peer-remove-name"></strong>?</div>
+      <div class="peer-entry-hint">This machine stops browsing its routes. To pair again you'll need a new code from it.</div>
+      <div class="peer-msg" id="peer-remove-msg" style="display:none"></div>
+    </div></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="showPeerEditView('form')">Cancel</button>
+      <button class="btn-add peer-btn-danger" id="peer-remove-do" onclick="confirmRemovePeer()">Remove</button>
+    </div>
   </div>
 </div>
 </div>
@@ -767,10 +792,6 @@ function closeGetStarted(){document.getElementById('getstarted-overlay').classLi
 // textContent only.
 function closePeerDialog(id){var o=document.getElementById(id);if(o)o.classList.remove('active')}
 function openEnablePeers(){var o=document.getElementById('peer-enable-overlay');if(o)o.classList.add('active')}
-function showPeerOffConfirm(on){
-  Array.prototype.slice.call(document.querySelectorAll('.peer-off-confirm')).forEach(function(el){el.style.display=on?'block':'none'});
-}
-function turnOffPeers(){showPeerOffConfirm(true)}
 function setPeersEnabled(on){
   var msg=document.getElementById('peer-enable-msg');
   vibeAPI('POST','/_api/peers/enabled',{body:{enabled:on}},function(status,data){
@@ -784,9 +805,10 @@ function setPeersEnabled(on){
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
 function peerStateLabel(st){return({pairing:'showing a code',vibe:'vibe here, no code',paired:'paired','trusts-us':'still trusts this machine','removed-us':'removed this machine',none:'no vibe found',blocked:'unreachable'})[st]||st}
 function showPeerView(v){
-  ['list','code','unpair'].forEach(function(n){document.getElementById('peer-view-'+n).classList.toggle('on',n===v)});
+  ['list','code','unpair','off'].forEach(function(n){document.getElementById('peer-view-'+n).classList.toggle('on',n===v)});
   var h=document.getElementById('peer-modal-heading'),sub=document.getElementById('peer-modal-sub');
   if(v==='list'){h.textContent='Add peer';sub.textContent='Pair this machine with another one running local.vibe.'}
+  if(v==='off'){h.textContent='Turn off peers';sub.textContent='You can turn it back on from the Peers section.'}
 }
 function msg(id,text,isErr){var m=document.getElementById(id);m.style.display=text?'block':'none';m.className='peer-msg'+(isErr?' peer-msg-err':'');m.textContent=text||''}
 // This machine's code, shown at the top whenever Add peer is open.
@@ -904,7 +926,7 @@ function openPeerEdit(btn){
   document.getElementById('peer-edit-host').value=btn.getAttribute('data-host');
   document.getElementById('peer-edit-port').value=btn.getAttribute('data-port');
   document.getElementById('peer-edit-fp').value=btn.getAttribute('data-fp');
-  editMsg('');document.getElementById('peer-edit-overlay').classList.add('active');
+  editMsg('');showPeerEditView('form');document.getElementById('peer-edit-overlay').classList.add('active');
 }
 function probeEditedPeer(){
   var host=document.getElementById('peer-edit-host').value.trim(),port=parseInt(document.getElementById('peer-edit-port').value,10)||0;
@@ -924,21 +946,19 @@ function savePeerEdit(){
     editMsg((data&&data.error)||'Could not save',true);
   });
 }
-function askRemovePeer(btn){
-  var name=btn.getAttribute('data-peer'),box=btn.closest('.peer-group,.peer-grid-group').querySelector('.peer-remove-confirm');
-  box.textContent='';
-  box.appendChild(document.createTextNode('Remove '+name+'? It will need a new code to pair again. '));
-  var yes=el('button','btn btn-sm btn-danger','Remove');yes.type='button';
-  var no=el('button','btn btn-sm','Cancel');no.type='button';
-  no.onclick=function(){box.style.display='none'};
-  yes.onclick=function(){
-    yes.disabled=true;
-    vibeAPI('DELETE','/_api/peers/'+encodeURIComponent(name),{},function(status,data){
-      if(status>=200&&status<300){reloadSoon(200);return}
-      yes.disabled=false;showToast((data&&data.error)||'Could not remove '+name);
-    });
-  };
-  box.appendChild(yes);box.appendChild(no);box.style.display='block';
+function showPeerEditView(v){
+  ['form','remove'].forEach(function(n){document.getElementById('peer-edit-view-'+n).classList.toggle('on',n===v)});
+  document.getElementById('peer-edit-heading').textContent=v==='remove'?'Remove peer':'Edit peer';
+  document.getElementById('peer-edit-sub').textContent=v==='remove'?'Its pairing is deleted from this machine.':"Its key can't change — a different address only changes where this machine looks for it.";
+  if(v==='remove'){document.getElementById('peer-remove-name').textContent=peerEditing;msg('peer-remove-msg','')}
+}
+function confirmRemovePeer(){
+  var name=peerEditing,btn=document.getElementById('peer-remove-do');btn.disabled=true;
+  vibeAPI('DELETE','/_api/peers/'+encodeURIComponent(name),{},function(status,data){
+    btn.disabled=false;
+    if(status>=200&&status<300){reloadSoon(200);return}
+    msg('peer-remove-msg',(data&&data.error)||'Could not remove '+name,true);
+  });
 }
 document.addEventListener('keydown',function(e){
   if(e.key!=='Escape')return;
