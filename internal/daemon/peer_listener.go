@@ -26,7 +26,7 @@ import (
 	"github.com/graiz/local.vibe/internal/peer"
 )
 
-func (s *Server) peersEnabled() bool { return s.cfg.Daemon.Peers.Enabled }
+func (s *Server) peersEnabled() bool { return s.peersOn.Load() }
 
 // loadPeerSubsystem loads peers.json and, when at least one peer is already
 // paired, brings up the identity, the LAN listener, and the sync loop. An
@@ -55,7 +55,7 @@ func (s *Server) loadPeerSubsystem() {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		return
 	}
-	go s.peerSyncLoop()
+	s.startPeerSync(true)
 }
 
 // ensurePeerIdentity lazily loads or creates the peer identity cert. Kept in
@@ -84,6 +84,11 @@ func (s *Server) ensurePeerListener() error {
 	defer s.peerMu.Unlock()
 	if s.peerLn != nil {
 		return nil
+	}
+	// Off means nothing listens — even if a pairing or invite that started
+	// before Turn off finishes afterwards.
+	if !s.peersEnabled() {
+		return fmt.Errorf("peer listener: peers are off")
 	}
 	if s.peerIdentity == nil {
 		return fmt.Errorf("peer listener: identity not initialized")
@@ -148,6 +153,10 @@ func (s *Server) peerHandler(w http.ResponseWriter, r *http.Request) {
 		s.handlePeerPair(w, r, fp)
 		return
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/peer/hello" {
+		s.handlePeerHello(w, fp)
+		return
+	}
 	if s.peerByFingerprint(fp) == nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -157,6 +166,22 @@ func (s *Server) peerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.peerServeRoute(w, r)
+}
+
+// handlePeerHello answers GET /peer/hello: this machine's name and whether a
+// code is open — to pinned peers, or to anyone during an open invite (the
+// TLS gate already admits exactly those; this keeps the rule explicit).
+// It is how a probe tells "showing a code" from a one-sided pairing.
+func (s *Server) handlePeerHello(w http.ResponseWriter, fp string) {
+	s.peerMu.Lock()
+	codeOpen := s.peerInviteCode != "" && time.Now().Before(s.peerInviteExpires)
+	s.peerMu.Unlock()
+	if !codeOpen && s.peerByFingerprint(fp) == nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(peerHello{Name: localPeerName(), CodeOpen: codeOpen})
 }
 
 // handlePeerRoutes returns the read-only route list a paired machine may

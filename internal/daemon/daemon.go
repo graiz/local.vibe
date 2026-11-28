@@ -11,9 +11,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/graiz/local.vibe/internal/cert"
@@ -90,16 +92,41 @@ type Server struct {
 	// list, invite state, the LAN mTLS listener, and per-peer route caches.
 	// All guarded by peerMu except where a field doc says otherwise.
 	// See peer_listener.go / peer_sync.go.
-	peerMu            sync.Mutex
-	peerIdentity      *tls.Certificate
-	peerFP            string
-	peerList          []peer.Peer
-	peerInviteCode    string
+	peerMu         sync.Mutex
+	peerIdentity   *tls.Certificate
+	peerFP         string
+	peerList       []peer.Peer
+	peerInviteCode string
+	// peerPairsInFlight counts pairings between consuming the code and
+	// saving the pin; the listener stays up while it is non-zero.
+	peerPairsInFlight int
 	peerInviteExpires time.Time
 	peerPairAttempts  int // proof checks reserved against the current invite (peerPairReserve)
 	peerSrv           *http.Server
 	peerLn            net.Listener
 	peerStates        map[string]*peerState
+	peerSyncStop      chan struct{} // closed to stop the current sync loop; nil when none runs
+	// peerTransports holds one connection pool per pinned peer fingerprint,
+	// shared by sync and relay. A transport per request leaked a TLS
+	// connection per request (100+ to one peer within minutes).
+	peerTransports map[string]*http.Transport
+	peerConnSets   map[string]*connSet // live connections per peer transport
+
+	// peersOn is the runtime peers switch (daemon.peers.enabled), flipped by
+	// setPeersEnabled without a restart. Atomic: read on the request path.
+	peersOn atomic.Bool
+	// peerToggleMu serializes setPeersEnabled: a dashboard "on" racing a CLI
+	// "off" must not interleave bring-up with teardown.
+	peerToggleMu sync.Mutex
+	// cfgMu serializes every mutate-and-save of s.cfg (the peers switch,
+	// the dashboard view preference): saveConfig marshals the whole struct.
+	cfgMu sync.Mutex
+	// peerSyncLoops counts running sync loops (0 or 1); tests assert it.
+	peerSyncLoops atomic.Int32
+
+	// Discovery sources, overridable in tests (nil = real interfaces / CLI).
+	discoverHostsFn  func() ([]netip.Addr, []string)
+	tailscaleNodesFn func(context.Context) ([]tailscaleNode, string)
 }
 
 // NewServer creates a daemon server with the given configuration. The
@@ -121,6 +148,7 @@ func NewServer(cfg *config.Config) *Server {
 	}
 	s.procs.SetExitHandler(s.handleManagedExit)
 	s.procs.SetEnvHook(s.oauthEnvForRoute)
+	s.peersOn.Store(cfg.Daemon.Peers.Enabled)
 	if cfg.Logging.MaxSizeMB > 0 {
 		s.procs.maxLogBytes = int64(cfg.Logging.MaxSizeMB) << 20
 	}
@@ -221,12 +249,8 @@ func (s *Server) Stop() {
 		s.dnsServer.Stop()
 	}
 	s.peerMu.Lock()
-	if s.peerSrv != nil {
-		_ = s.peerSrv.Close()
-	}
-	if s.peerLn != nil {
-		_ = s.peerLn.Close()
-	}
+	s.stopPeerSyncLocked()
+	s.closePeerListenerLocked()
 	s.peerMu.Unlock()
 	_ = os.Remove(s.cfg.Daemon.Socket)
 	_ = os.Remove(fmt.Sprintf("%s/daemon.pid", config.Dir()))
@@ -771,10 +795,14 @@ func (s *Server) saveStickyRoutes() error {
 	return nil
 }
 
-func (s *Server) saveConfig() {
+// saveConfig writes s.cfg to config.json. Caller holds cfgMu.
+func (s *Server) saveConfig() error {
 	path := filepath.Join(s.configDir(), "config.json")
-	data, _ := json.MarshalIndent(s.cfg, "", "  ")
-	_ = os.WriteFile(path, data, 0644)
+	data, err := json.MarshalIndent(s.cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 // findFreePort finds an available port starting from 3000, which is the

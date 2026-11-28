@@ -39,7 +39,7 @@ func newPeerTestServer(t *testing.T) (*Server, tls.Certificate, string) {
 	if err := s.ensurePeerListener(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.peerLn.Close() })
+	t.Cleanup(func() { closePeerLn(s) })
 	return s, clientID, s.peerLn.Addr().String()
 }
 

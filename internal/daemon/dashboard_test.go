@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -180,8 +183,163 @@ func TestDashboardAddPeerControl(t *testing.T) {
 	}
 
 	off := newBareServer(t)
-	off.cfg.Daemon.Peers.Enabled = false
-	if body := render(off, "local.vibe"); strings.Contains(body, `onclick="openPeerModal()"`) || strings.Contains(body, `id="peer-list"`) {
-		t.Error("peers disabled: no Peers section or Add peer control expected")
+	off.peersOn.Store(false)
+	if body := render(off, "local.vibe"); strings.Contains(body, `onclick="openPeerModal()"`) || !strings.Contains(body, `onclick="openEnablePeers()"`) {
+		t.Error("peers disabled: want the Enable peers control and no Add peer control")
+	}
+}
+
+func renderDashboard(t *testing.T, s *Server, host string) string {
+	t.Helper()
+	req := httptest.NewRequest("GET", "http://"+host+"/", nil)
+	req.Host = host
+	rec := httptest.NewRecorder()
+	s.serveDashboard(rec, req)
+	return rec.Body.String()
+}
+
+// Peers off: the dashboard proper offers Enable peers with the basics; a
+// route host gets no Peers section at all.
+func TestPeersSectionDisabled(t *testing.T) {
+	s := newDisabledServer(t)
+	body := renderDashboard(t, s, "local.vibe")
+	for _, want := range []string{
+		`onclick="openEnablePeers()"`,
+		"open another machine",
+		"Nothing is reachable until you pair",
+		"port 7444",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("disabled Peers section missing %q", want)
+		}
+	}
+	if strings.Contains(renderDashboard(t, s, "someapp.vibe"), "openEnablePeers()\"") {
+		t.Error("Enable control rendered on a route host")
+	}
+}
+
+// Peers on: header actions, and every paired machine gets a group header
+// with its address, status and Edit/Remove — including one that has never
+// synced (a management view can't hide unreachable machines).
+func TestPeersSectionEnabled(t *testing.T) {
+	s := newBareServer(t)
+	s.peerList = []peer.Peer{
+		{Name: "box", Host: "10.0.0.9", Port: 7444, Fingerprint: "4f2a91c3aa"},
+		{Name: "lonely", Host: "10.0.0.10", Port: 7444, Fingerprint: "bb"},
+	}
+	s.peerStates["box"] = &peerState{lastOK: time.Now(), routes: []peer.RouteSummary{{Name: "app", Ready: true, Running: true}}}
+	body := renderDashboard(t, s, "local.vibe")
+	for _, want := range []string{
+		`onclick="openPeerModal()"`,
+		`title="10.0.0.9:7444"`, `title="10.0.0.10:7444"`, "lonely",
+		`openPeerEdit(`,
+		// Remove lives in the Edit dialog, Turn off in the Add peer dialog,
+		// each with its own "are you sure" view.
+		`id="peer-edit-remove"`, `id="peer-edit-view-remove"`,
+		`id="peer-off-open"`, `id="peer-view-off"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("enabled Peers section missing %q", want)
+		}
+	}
+	// The section and group headers carry one button each: no inline
+	// Remove / Turn off strips beside them.
+	for _, gone := range []string{`askRemovePeer(this)`, `onclick="turnOffPeers()"`, "peer-off-confirm", "peer-remove-confirm"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("enabled Peers section still has %q", gone)
+		}
+	}
+	// The header stays quiet: the address is a hover tooltip, the key lives
+	// in the Edit dialog, and a status shows only when a peer is offline.
+	list := body[strings.Index(body, `id="peer-list"`):strings.Index(body, `id="peer-grid"`)]
+	for _, noise := range []string{">10.0.0.9:7444<", "4F2A\u00b791C3", ">connected<"} {
+		if strings.Contains(list, noise) {
+			t.Errorf("peer header shows %q; keep it to the name", noise)
+		}
+	}
+	unreachable := newBareServer(t)
+	unreachable.peerList = []peer.Peer{{Name: "box", Host: "10.0.0.9", Port: 7444, Fingerprint: "ff"}}
+	unreachable.peerStates["box"] = &peerState{lastErr: "dial tcp: timeout"}
+	if b := renderDashboard(t, unreachable, "local.vibe"); !strings.Contains(b, ">disconnected<") {
+		t.Error("an offline peer must say disconnected")
+	}
+}
+
+func TestInviteResponseCarriesKeyAndAddresses(t *testing.T) {
+	s := newBareServer(t)
+	t.Cleanup(func() { closePeerLn(s) })
+	req := httptest.NewRequest(http.MethodPost, "/_api/peers/invite", nil)
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+	var got struct {
+		Code      string   `json:"code"`
+		Key       string   `json:"key"`
+		Name      string   `json:"name"`
+		Addresses []string `json:"addresses"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("invite: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := peer.NormalizeCode(got.Code); !ok || got.Key == "" || got.Name != localPeerName() || got.Addresses == nil {
+		t.Fatalf("invite response = %+v", got)
+	}
+}
+
+// The Add-peer modal is a picker (LAN + Tailscale results and a typed
+// address), the edit dialog shows the full fingerprint read-only, and the
+// page never uses a browser confirm() (removal confirms inline).
+func TestPeerModalMarkup(t *testing.T) {
+	s := newBareServer(t)
+	body := renderDashboard(t, s, "local.vibe")
+	if strings.Contains(body, "confirm(") {
+		t.Error("dashboard uses a browser confirm()")
+	}
+	// One Add peer screen: this machine's code on top (no key), a table of
+	// found machines with one action column (Pair / Unpair), and in-dialog
+	// views to enter the other machine's code and to confirm an unpair.
+	modal := body[strings.Index(body, `id="peer-overlay"`):strings.Index(body, `id="peer-edit-overlay"`)]
+	// Closing the dialog (or leaving the page) withdraws the code it opened.
+	for _, want := range []string{
+		"/_api/peers/invite/close", "addEventListener('pagehide',withdrawMyCode)",
+		// A reply landing after the dialog closed withdraws its code at once,
+		// and a bfcache restore opens a fresh one (pagehide withdrew it).
+		"if(seq!==peerCodeSeq||!peerModalOpen()){if(data&&data.code)closeCode(data.code);return}",
+		"addEventListener('pageshow'",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`id="peer-code-value"`, "Your code", "Enter it on the other machine",
+		`id="peer-devices"`, `id="peer-typed-host"`,
+		`id="peer-view-list"`, `id="peer-view-code"`, `id="peer-entry-code"`, "Enter the code shown on",
+		`id="peer-view-unpair"`, "Are you sure?",
+	} {
+		if !strings.Contains(modal, want) {
+			t.Errorf("Add peer modal missing %q", want)
+		}
+	}
+	for _, gone := range []string{`id="peer-code-overlay"`, `onclick="openShowCode()"`, `id="peer-code-key"`, "Their code", "says it"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("dashboard still has %q", gone)
+		}
+	}
+	if !strings.Contains(body, `id="peer-edit-fp"`) || !strings.Contains(body, "readonly") {
+		t.Error("edit dialog must keep the read-only fingerprint")
+	}
+}
+
+// Review: the device table hides the port only when it is the configured peer
+// port — read from config, never a hardcoded 7444.
+func TestPeerTableUsesConfiguredPort(t *testing.T) {
+	s := newBareServer(t)
+	s.cfg.Daemon.Peers.Port = 7555
+	body := renderDashboard(t, s, "local.vibe")
+	if strings.Contains(body, "7444") {
+		t.Error("dashboard hardcodes the default peer port 7444")
+	}
+	if !regexp.MustCompile(`peerListenPort=\s*7555\b`).MatchString(body) { // html/template pads JS values
+		t.Error("dashboard doesn't carry the configured peer port")
 	}
 }

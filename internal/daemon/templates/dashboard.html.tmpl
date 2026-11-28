@@ -49,7 +49,7 @@
 {{template "route-colgroup"}}
 <thead><tr>
   <th class="sortable" onclick="sortTable('name')">Name<span class="sort-arrow" id="arrow-name"></span></th>
-  <th>Type</th>
+  <th class="th-type">Type</th>
   <th class="sortable" onclick="sortTable('port')">Port<span class="sort-arrow" id="arrow-port"></span></th>
   <th class="hide-mobile sortable" onclick="sortTable('age')">Age<span class="sort-arrow" id="arrow-age"></span></th>
   <th style="text-align:right">Actions</th>
@@ -104,13 +104,20 @@
 
 <div class="empty" id="search-empty" style="display:none">No routes match &ldquo;<span id="search-empty-q"></span>&rdquo;</div>
 
+{{define "peers-head"}}
+  <h2>Peers<span class="tag">experimental</span>{{if .PeerAdmin}}{{if .PeersEnabled}}<span class="peer-actions"><button type="button" class="btn btn-sm" onclick="openPeerModal()">Add peer</button></span>{{else}}<span class="peer-actions"><button type="button" class="btn btn-sm" onclick="openEnablePeers()">Enable peers</button></span>{{end}}{{end}}</h2>
+  {{if not .PeersEnabled}}<p class="peer-empty">Browse other machines' .{{.TLD}} routes from here.</p>{{else if not .PeerGroups}}<p class="peer-empty">No machines paired yet. Open Add peer on both machines.</p>{{end}}
+{{end}}
+{{define "peer-group-head"}}
+    <div class="peer-group-title"><span class="peer-group-name"{{if .Admin}} title="{{.Host}}:{{.Port}}"{{end}}>on {{.Peer}}</span>{{if .Admin}}{{if eq .Status "unreachable"}}<span class="peer-group-status peer-group-unreachable" title="{{.StatusDetail}}">disconnected</span>{{end}}<span class="peer-group-btns"><button type="button" class="btn btn-sm" data-peer="{{.Peer}}" data-host="{{.Host}}" data-port="{{.Port}}" data-fp="{{.Fingerprint}}" onclick="openPeerEdit(this)">Edit</button></span>{{end}}</div>
+{{end}}
 {{if or .PeerGroups .PeerAdmin}}
 <section class="peer-section" id="peer-list" style="display:{{.ListDisplay}}">
-  <h2>Peers<span class="tag">experimental</span>{{if $.PeerAdmin}}<button type="button" class="btn btn-sm peer-add-btn" onclick="openPeerModal()">Add peer</button>{{end}}</h2>
-  {{if not .PeerGroups}}<p class="peer-empty">No machines paired yet. Add one to browse its routes from here.</p>{{end}}
+  {{template "peers-head" .}}
   {{range .PeerGroups}}
   <div class="peer-group">
-    <div class="peer-group-title">on {{.Peer}}</div>
+    {{template "peer-group-head" .}}
+    {{if .Routes}}
     <table class="route-table">
     {{template "route-colgroup"}}
     <tbody>
@@ -124,15 +131,15 @@
     </tr>
     {{end}}
     </tbody></table>
+    {{end}}
   </div>
   {{end}}
 </section>
 <section class="peer-section" id="peer-grid" style="display:{{.GridDisplay}}">
-  <h2>Peers<span class="tag">experimental</span>{{if $.PeerAdmin}}<button type="button" class="btn btn-sm peer-add-btn" onclick="openPeerModal()">Add peer</button>{{end}}</h2>
-  {{if not .PeerGroups}}<p class="peer-empty">No machines paired yet. Add one to browse its routes from here.</p>{{end}}
+  {{template "peers-head" .}}
   {{range .PeerGroups}}
   <div class="peer-grid-group">
-    <div class="peer-grid-title">on {{.Peer}}</div>
+    {{template "peer-group-head" .}}
     <div class="grid-container">
     {{range .Routes}}
     {{if .ShadowedBy}}
@@ -202,39 +209,151 @@ Or open in a browser: {{.Scheme}}://local.{{.TLD}}/setup.md</textarea>
 </div>
 </div>
 
+<!-- Enable peers (experimental) -->
+{{if .PeerAdmin}}
+<div class="modal-overlay" id="peer-enable-overlay" onclick="if(event.target===this)closePeerDialog('peer-enable-overlay')">
+<div class="modal" role="dialog" aria-labelledby="peer-enable-heading">
+  <div class="modal-header"><div class="modal-header-text">
+    <div class="modal-eyebrow">Peers · experimental</div>
+    <h3 id="peer-enable-heading">Enable peers</h3>
+    <div class="modal-sub">Browse other machines' .{{.TLD}} routes from this one.</div>
+  </div></div>
+  <div class="modal-body">
+    <ul class="peer-basics">
+      <li>Peers let you open another machine's .{{.TLD}} routes from this one, over an encrypted connection between the two vibe daemons.</li>
+      <li>Nothing is reachable until you pair: a machine must show a one-time code and you must enter it. Pairing pins both machines' keys.</li>
+      <li>vibe only listens on the network (port {{.PeerPort}}) while you have paired machines or a code is showing — and only paired machines, or one holding the current code, get through. Turning peers off stops it and keeps your pairings for next time.</li>
+    </ul>
+    <div class="peer-msg" id="peer-enable-msg" style="display:none"></div>
+  </div>
+  <div class="modal-actions">
+    <button class="btn" onclick="closePeerDialog('peer-enable-overlay')">Cancel</button>
+    <button class="btn-add" id="peer-enable-submit" onclick="setPeersEnabled(true)">Enable</button>
+  </div>
+</div>
+</div>
+
+{{end}}
+
 <!-- Add peer (experimental) -->
 {{if .PeerAdmin}}
 <div class="modal-overlay" id="peer-overlay" onclick="if(event.target===this)closePeerModal()">
-<div class="modal" role="dialog" aria-labelledby="peer-modal-heading">
-  <div class="modal-header">
-    <div class="modal-header-text">
-      <div class="modal-eyebrow">Peers · experimental</div>
-      <h3 id="peer-modal-heading">Add peer</h3>
-      <div class="modal-sub">Pair with another machine running local.vibe to browse its routes from here.</div>
+<div class="modal peer-picker" role="dialog" aria-labelledby="peer-modal-heading">
+  <div class="modal-header"><div class="modal-header-text">
+    <div class="modal-eyebrow">Peers · experimental</div>
+    <h3 id="peer-modal-heading">Add peer</h3>
+    <div class="modal-sub" id="peer-modal-sub">Pair this machine with another one running local.vibe.</div>
+  </div></div>
+
+  <!-- list view: this machine's code + found machines -->
+  <div class="peer-view on" id="peer-view-list">
+    <div class="modal-body">
+      <div class="peer-mycode">
+        <div class="peer-mycode-eyebrow">Your code</div>
+        <div class="peer-mycode-value" id="peer-code-value">…</div>
+        <div class="peer-mycode-how">Enter it on the other machine — <strong>Add peer</strong>, pick <strong id="peer-code-name">this machine</strong>.</div>
+        <div class="peer-mycode-timer" id="peer-code-expiry"></div>
+        <button type="button" class="btn btn-sm" id="peer-code-new" style="display:none" onclick="openMyCode()">Show a new code</button>
+      </div>
+      <div class="peer-divider">or pair with another machine<span class="spinner" id="peer-scan-spin"></span></div>
+      <div class="peer-dev-wrap"><table class="peer-dev-table">
+        <thead><tr><th>Name</th><th>IP</th><th class="via">Via</th><th></th></tr></thead>
+        <tbody id="peer-devices"></tbody>
+      </table></div>
+      <div class="peer-notes" id="peer-notes"></div>
+      <div class="peer-found-head">Or enter an address</div>
+      <div class="peer-typed">
+        <input id="peer-typed-host" type="text" placeholder="host or host:port" autocomplete="off" spellcheck="false">
+        <button type="button" class="btn btn-sm" onclick="checkTypedPeer()">Check</button>
+      </div>
+      <div class="peer-msg" id="peer-list-msg" style="display:none"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" id="peer-off-open" style="margin-right:auto" onclick="showPeerView('off')">Turn off peers</button>
+      <button class="btn" onclick="rescanPeers()">Search again</button>
+      <button class="btn-add" onclick="closePeerModal()">Done</button>
     </div>
   </div>
+
+  <!-- code view: enter the other machine's code -->
+  <div class="peer-view" id="peer-view-code">
+    <div class="modal-body"><div class="peer-entry">
+      <div class="peer-entry-who">Enter the code shown on <strong id="peer-entry-name"></strong></div>
+      <input id="peer-entry-code" type="text" placeholder="K7QM-3XR9" maxlength="11" autocomplete="off" spellcheck="false" autocapitalize="characters">
+      <div class="peer-entry-hint" id="peer-entry-hint"></div>
+      <div class="peer-msg" id="peer-entry-msg" style="display:none"></div>
+    </div></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="showPeerView('list')">Back</button>
+      <button class="btn-add" id="peer-entry-done" onclick="submitPeerCode()">Done</button>
+    </div>
+  </div>
+
+  <!-- unpair view: are you sure? -->
+  <div class="peer-view" id="peer-view-unpair">
+    <div class="modal-body"><div class="peer-entry">
+      <div class="peer-entry-who peer-entry-strong">Unpair <strong id="peer-unpair-name"></strong>?</div>
+      <div class="peer-entry-hint">Are you sure? To pair again you'll need a new code from it.</div>
+      <div class="peer-msg" id="peer-unpair-msg" style="display:none"></div>
+    </div></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="showPeerView('list')">Cancel</button>
+      <button class="btn-add peer-btn-danger" id="peer-unpair-do" onclick="confirmUnpair()">Unpair</button>
+    </div>
+  </div>
+
+  <!-- turn-off view: are you sure? -->
+  <div class="peer-view" id="peer-view-off">
+    <div class="modal-body"><div class="peer-entry">
+      <div class="peer-entry-who peer-entry-strong">Turn off peers?</div>
+      <div class="peer-entry-hint">Nothing on this machine will listen on the network, and paired machines' routes disappear from here. Your pairings are kept for when you turn it back on.</div>
+    </div></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="showPeerView('list')">Cancel</button>
+      <button class="btn-add peer-btn-danger" onclick="setPeersEnabled(false)">Turn off</button>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- Edit peer (experimental) -->
+<div class="modal-overlay" id="peer-edit-overlay" onclick="if(event.target===this)closePeerDialog('peer-edit-overlay')">
+<div class="modal" role="dialog" aria-labelledby="peer-edit-heading">
+  <div class="modal-header"><div class="modal-header-text">
+    <div class="modal-eyebrow">Peers · experimental</div>
+    <h3 id="peer-edit-heading">Edit peer</h3>
+    <div class="modal-sub" id="peer-edit-sub">Its key can't change — a different address only changes where this machine looks for it.</div>
+  </div></div>
+  <div class="peer-view on" id="peer-edit-view-form">
   <div class="modal-body">
-    <p class="hint" style="margin:0 0 14px">On the other machine, click <strong>Add peer → Generate invite code</strong> in its dashboard (or run <code>vibe peer invite</code>), then enter its address and the code here. Codes expire after five minutes.</p>
     <div class="field-row">
-      <div class="field">
-        <label for="peer-host">Host</label>
-        <input id="peer-host" type="text" placeholder="imac.local or 100.x.y.z" autocomplete="off" spellcheck="false">
-      </div>
-      <div class="field" style="max-width:110px">
-        <label for="peer-code">Code</label>
-        <input id="peer-code" type="text" inputmode="numeric" placeholder="123456" autocomplete="off" maxlength="6">
-      </div>
+      <div class="field"><label for="peer-edit-name">Name</label><input id="peer-edit-name" type="text" autocomplete="off" spellcheck="false"></div>
     </div>
-    <div class="peer-invite">
-      <div class="peer-invite-text">Adding <em>this</em> machine from another one?</div>
-      <button type="button" class="btn btn-sm" id="peer-invite-btn" onclick="generatePeerInvite()">Generate invite code</button>
-      <div class="peer-invite-code" id="peer-invite-code" style="display:none"></div>
+    <div class="field-row">
+      <div class="field"><label for="peer-edit-host">Host</label><input id="peer-edit-host" type="text" autocomplete="off" spellcheck="false" onblur="probeEditedPeer()"></div>
+      <div class="field" style="max-width:110px"><label for="peer-edit-port">Port</label><input id="peer-edit-port" type="text" inputmode="numeric" autocomplete="off" onblur="probeEditedPeer()"></div>
     </div>
-    <div class="peer-msg" id="peer-msg" style="display:none"></div>
+    <div class="field-row">
+      <div class="field"><label for="peer-edit-fp">Key fingerprint</label><input id="peer-edit-fp" type="text" readonly></div>
+    </div>
+    <div class="peer-msg" id="peer-edit-msg" style="display:none"></div>
   </div>
   <div class="modal-actions">
-    <button class="btn" onclick="closePeerModal()">Cancel</button>
-    <button class="btn-add" id="peer-add-submit" onclick="submitPeerAdd()">Pair</button>
+    <button class="btn btn-danger" id="peer-edit-remove" style="margin-right:auto" onclick="showPeerEditView('remove')">Remove</button>
+    <button class="btn" onclick="closePeerDialog('peer-edit-overlay')">Cancel</button>
+    <button class="btn-add" id="peer-edit-save" onclick="savePeerEdit()">Save</button>
+  </div>
+  </div>
+  <div class="peer-view" id="peer-edit-view-remove">
+    <div class="modal-body"><div class="peer-entry">
+      <div class="peer-entry-who peer-entry-strong">Remove <strong id="peer-remove-name"></strong>?</div>
+      <div class="peer-entry-hint">This machine stops browsing its routes. To pair again you'll need a new code from it.</div>
+      <div class="peer-msg" id="peer-remove-msg" style="display:none"></div>
+    </div></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="showPeerEditView('form')">Cancel</button>
+      <button class="btn-add peer-btn-danger" id="peer-remove-do" onclick="confirmRemovePeer()">Remove</button>
+    </div>
   </div>
 </div>
 </div>
@@ -669,60 +788,205 @@ function deleteRoute(){
 function openGetStarted(){document.getElementById('getstarted-overlay').classList.add('active')}
 function closeGetStarted(){document.getElementById('getstarted-overlay').classList.remove('active')}
 
-// Add peer (experimental). Pairing needs a one-time code from the other
-// machine; the same modal can generate this machine's code for the reverse.
-function peerMsg(text,isErr){
-  var m=document.getElementById('peer-msg');
-  m.style.display=text?'block':'none';
-  m.className='peer-msg'+(isErr?' peer-msg-err':'');
-  m.textContent=text||'';
+// Peers switch + Add peer (experimental). Server text goes in via
+// textContent only.
+function closePeerDialog(id){var o=document.getElementById(id);if(o)o.classList.remove('active')}
+function openEnablePeers(){var o=document.getElementById('peer-enable-overlay');if(o)o.classList.add('active')}
+function setPeersEnabled(on){
+  var msg=document.getElementById('peer-enable-msg');
+  vibeAPI('POST','/_api/peers/enabled',{body:{enabled:on}},function(status,data){
+    if(status>=200&&status<300){reloadSoon(300);return}
+    var text=(data&&data.error)||(status?'Could not change the peers setting':'Could not reach the vibe daemon');
+    if(on&&msg){msg.style.display='block';msg.className='peer-msg peer-msg-err';msg.textContent=text}else{showToast(text)}
+  });
+}
+// Add peer picker, edit and remove (experimental). Everything a machine
+// reports about itself (name, messages) is untrusted: textContent only.
+function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
+function peerStateLabel(st){return({pairing:'showing a code',vibe:'vibe here, no code',paired:'paired','trusts-us':'still trusts this machine','removed-us':'removed this machine',none:'no vibe found',blocked:'unreachable'})[st]||st}
+function showPeerView(v){
+  ['list','code','unpair','off'].forEach(function(n){document.getElementById('peer-view-'+n).classList.toggle('on',n===v)});
+  var h=document.getElementById('peer-modal-heading'),sub=document.getElementById('peer-modal-sub');
+  if(v==='list'){h.textContent='Add peer';sub.textContent='Pair this machine with another one running local.vibe.'}
+  if(v==='off'){h.textContent='Turn off peers';sub.textContent='You can turn it back on from the Peers section.'}
+}
+function msg(id,text,isErr){var m=document.getElementById(id);m.style.display=text?'block':'none';m.className='peer-msg'+(isErr?' peer-msg-err':'');m.textContent=text||''}
+// This machine's code, shown at the top whenever Add peer is open.
+var peerListenPort={{.PeerPort}}; // the configured peer port: omitted from addresses
+var peerCodeTimer=null,peerOpenCode='',peerCodeSeq=0;
+// Withdraw a code this dialog opened: an unpaired machine is findable only
+// while its code is on screen. keepalive so it still goes out on page unload.
+function closeCode(code){
+  if(!code)return;
+  try{fetch('/_api/peers/invite/close',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({code:code})})}catch(e){}
+}
+function withdrawMyCode(){peerCodeSeq++;var c=peerOpenCode;peerOpenCode='';closeCode(c)}
+function peerModalOpen(){var o=document.getElementById('peer-overlay');return !!(o&&o.classList.contains('active'))}
+function openMyCode(){
+  var val=document.getElementById('peer-code-value'),exp=document.getElementById('peer-code-expiry'),again=document.getElementById('peer-code-new');
+  val.textContent='…';val.classList.remove('peer-code-expired');exp.textContent='';again.style.display='none';
+  if(peerCodeTimer){clearInterval(peerCodeTimer);peerCodeTimer=null}
+  var seq=++peerCodeSeq;
+  vibeAPI('POST','/_api/peers/invite',{},function(status,data){
+    // The dialog closed (or a newer request replaced this one) before the
+    // reply landed: nothing will show this code, so withdraw it now.
+    if(seq!==peerCodeSeq||!peerModalOpen()){if(data&&data.code)closeCode(data.code);return}
+    if(!(status>=200&&status<300&&data&&data.code)){val.textContent='—';exp.textContent=(data&&data.error)||'Could not open a code';return}
+    val.textContent=data.code;peerOpenCode=data.code;
+    document.getElementById('peer-code-name').textContent=data.name||'this machine';
+    var until=new Date(data.expires_at).getTime();
+    function tick(){
+      var left=Math.max(0,Math.round((until-Date.now())/1000));
+      if(left<=0){exp.textContent='This code expired.';val.classList.add('peer-code-expired');again.style.display='';clearInterval(peerCodeTimer);peerCodeTimer=null;return}
+      exp.textContent='Valid for '+Math.floor(left/60)+':'+('0'+(left%60)).slice(-2)+' · findable only while shown';
+    }
+    tick();peerCodeTimer=setInterval(tick,1000);
+  });
+}
+// One row per machine; one action column: Pair, Unpair, or a status note.
+function peerAction(r){
+  if(r.state==='pairing'||r.state==='trusts-us')return 'pair';
+  if(r.state==='paired'||r.state==='removed-us')return 'unpair';
+  return '';
+}
+function renderDevice(r,tbody){
+  var tr=el('tr',peerAction(r)?'':'dim');
+  tr.appendChild(el('td','',r.paired_as||r.name||r.dns_name||r.host));
+  tr.appendChild(el('td','ip',r.host+(r.port&&r.port!==peerListenPort?':'+r.port:'')));
+  tr.appendChild(el('td','via',r.source==='tailscale'?'Tailscale':(r.source==='lan'?'network':'address')));
+  var td=el('td','act'),act=peerAction(r);
+  if(act==='pair'){var b=el('button','btn act-item','Pair');b.type='button';b.onclick=function(){startPair(r)};td.appendChild(b)}
+  else if(act==='unpair'){var u=el('button','btn act-item unpair','Unpair');u.type='button';u.onclick=function(){startUnpair(r)};td.appendChild(u)}
+  else{var n=el('span','act-item note',r.state==='vibe'?'no code':(r.state==='blocked'?'unreachable':'no vibe'));n.title=r.message||'';td.appendChild(n)}
+  tr.appendChild(td);tbody.appendChild(tr);
+}
+function rescanPeers(){
+  var tbody=document.getElementById('peer-devices'),notes=document.getElementById('peer-notes'),spin=document.getElementById('peer-scan-spin');
+  tbody.textContent='';notes.textContent='';spin.style.display='';msg('peer-list-msg','');
+  var row=el('tr');var c=el('td','peer-dev-empty','Searching…');c.colSpan=4;row.appendChild(c);tbody.appendChild(row);
+  vibeAPI('POST','/_api/peers/discover',{timeout:10000},function(status,data){
+    spin.style.display='none';tbody.textContent='';
+    if(!(status>=200&&status<300&&data)){msg('peer-list-msg',(data&&data.error)||'Search failed',true);return}
+    // Paired first, then machines showing a code, then the rest.
+    var rank=function(r){var a=peerAction(r);return a==='unpair'?0:(a==='pair'?1:2)};
+    (data.candidates||[]).slice().sort(function(a,b){return rank(a)-rank(b)}).forEach(function(r){renderDevice(r,tbody)});
+    if(!(data.candidates||[]).length){var e=el('tr');var t=el('td','peer-dev-empty','No machines found. On the other machine, open Peers → Add peer.');t.colSpan=4;e.appendChild(t);tbody.appendChild(e)}
+    (data.notes||[]).forEach(function(n){notes.appendChild(el('div','hint',n))});
+  });
+}
+function parseHostPort(v){
+  v=v.trim();var m=v.match(/^\[(.+)\]:(\d+)$/)||v.match(/^([^:]+):(\d+)$/);
+  return m?{host:m[1],port:parseInt(m[2],10)}:{host:v,port:0};
+}
+function checkTypedPeer(){
+  var hp=parseHostPort(document.getElementById('peer-typed-host').value);if(!hp.host)return;
+  msg('peer-list-msg','Checking…');
+  vibeAPI('POST','/_api/peers/probe',{body:hp},function(status,data){
+    if(!(status>=200&&status<300&&data)){msg('peer-list-msg',(data&&data.error)||'Check failed',true);return}
+    msg('peer-list-msg',peerAction(data)?'':data.message,data.state==='none'||data.state==='blocked');
+    data.source='address';renderDevice(data,document.getElementById('peer-devices'));
+  });
+}
+var peerTarget=null;
+function startPair(r){
+  peerTarget=r;var name=r.name||r.dns_name||r.host;
+  document.getElementById('peer-modal-heading').textContent='Pair with '+name;
+  document.getElementById('peer-modal-sub').textContent="Pairing lets the two machines browse each other's routes.";
+  document.getElementById('peer-entry-name').textContent=name;
+  document.getElementById('peer-entry-hint').textContent='On '+name+': Peers → Add peer shows its code at the top.';
+  var input=document.getElementById('peer-entry-code');input.value='';msg('peer-entry-msg','');
+  showPeerView('code');setTimeout(function(){input.focus()},30);
+}
+function submitPeerCode(){
+  var code=document.getElementById('peer-entry-code').value.trim(),done=document.getElementById('peer-entry-done');
+  if(code.replace(/[-\s]/g,'').length!==8){msg('peer-entry-msg','Codes look like K7QM-3XR9.',true);return}
+  done.disabled=true;done.textContent='Pairing…';msg('peer-entry-msg','');
+  var r=peerTarget;
+  vibeAPI('POST','/_api/peers',{body:{host:r.host,port:r.port,code:code,fingerprint:r.fingerprint||''}},function(status,data){
+    done.disabled=false;done.textContent='Done';
+    if(status>=200&&status<300){msg('peer-entry-msg','Paired with '+((data&&data.name)||r.host)+'.');reloadSoon(900);return}
+    msg('peer-entry-msg',(data&&data.error)||(status?'Pairing failed':'Could not reach the vibe daemon'),true);
+  });
+}
+function startUnpair(r){
+  peerTarget=r;var name=r.paired_as||r.name||r.host;
+  document.getElementById('peer-modal-heading').textContent='Unpair '+name;
+  document.getElementById('peer-modal-sub').textContent="It stops sharing routes with this machine.";
+  document.getElementById('peer-unpair-name').textContent=name;msg('peer-unpair-msg','');
+  showPeerView('unpair');
+}
+function confirmUnpair(){
+  var r=peerTarget,name=r.paired_as||r.name,btn=document.getElementById('peer-unpair-do');
+  btn.disabled=true;
+  vibeAPI('DELETE','/_api/peers/'+encodeURIComponent(name),{},function(status,data){
+    btn.disabled=false;
+    if(status>=200&&status<300){reloadSoon(200);return}
+    msg('peer-unpair-msg',(data&&data.error)||'Could not unpair '+name,true);
+  });
 }
 function openPeerModal(){
   var o=document.getElementById('peer-overlay');if(!o)return;
-  peerMsg('');
-  document.getElementById('peer-invite-code').style.display='none';
-  o.classList.add('active');
-  setTimeout(function(){document.getElementById('peer-host').focus()},50);
+  document.getElementById('peer-typed-host').value='';
+  showPeerView('list');o.classList.add('active');openMyCode();rescanPeers();
 }
-function closePeerModal(){var o=document.getElementById('peer-overlay');if(o)o.classList.remove('active')}
-function submitPeerAdd(){
-  var host=document.getElementById('peer-host').value.trim();
-  var code=document.getElementById('peer-code').value.trim();
-  if(!host||!/^[0-9]{6}$/.test(code)){peerMsg('Enter the other machine\'s host and its 6-digit code.',true);return}
-  var btn=document.getElementById('peer-add-submit');
-  btn.disabled=true;btn.textContent='Pairing…';peerMsg('');
-  vibeAPI('POST','/_api/peers',{body:{host:host,code:code}},function(status,data){
-    btn.disabled=false;btn.textContent='Pair';
-    if(status>=200&&status<300){
-      peerMsg('Paired with '+((data&&data.name)||host)+'. Loading its routes…',false);
-      reloadSoon(1200);
-      return;
-    }
-    peerMsg((data&&data.error)||(status?'Pairing failed':'Could not reach the vibe daemon'),true);
+function closePeerModal(){
+  if(peerModalOpen()){withdrawMyCode();if(peerCodeTimer){clearInterval(peerCodeTimer);peerCodeTimer=null}}
+  closePeerDialog('peer-overlay');
+}
+window.addEventListener('pagehide',withdrawMyCode);
+// Back/forward cache: pagehide withdrew the code, so a restored page would
+// show a dead one. Open a fresh code if the dialog is still up.
+window.addEventListener('pageshow',function(e){if(e.persisted&&peerModalOpen())openMyCode()});
+
+var peerEditing=null;
+function editMsg(text,isErr){var m=document.getElementById('peer-edit-msg');m.style.display=text?'block':'none';m.className='peer-msg'+(isErr?' peer-msg-err':'');m.textContent=text||''}
+function openPeerEdit(btn){
+  peerEditing=btn.getAttribute('data-peer');
+  document.getElementById('peer-edit-name').value=peerEditing;
+  document.getElementById('peer-edit-host').value=btn.getAttribute('data-host');
+  document.getElementById('peer-edit-port').value=btn.getAttribute('data-port');
+  document.getElementById('peer-edit-fp').value=btn.getAttribute('data-fp');
+  editMsg('');showPeerEditView('form');document.getElementById('peer-edit-overlay').classList.add('active');
+}
+function probeEditedPeer(){
+  var host=document.getElementById('peer-edit-host').value.trim(),port=parseInt(document.getElementById('peer-edit-port').value,10)||0;
+  if(!host)return;
+  vibeAPI('POST','/_api/peers/probe',{body:{host:host,port:port}},function(status,data){
+    if(status>=200&&status<300&&data)editMsg(peerStateLabel(data.state)+' — '+data.message,data.state==='none'||data.state==='blocked'||data.state==='removed-us');
   });
 }
-function generatePeerInvite(){
-  var btn=document.getElementById('peer-invite-btn'),out=document.getElementById('peer-invite-code');
-  btn.disabled=true;
-  vibeAPI('POST','/_api/peers/invite',{},function(status,data){
+function savePeerEdit(){
+  var body={},name=document.getElementById('peer-edit-name').value.trim(),host=document.getElementById('peer-edit-host').value.trim(),port=parseInt(document.getElementById('peer-edit-port').value,10);
+  if(name&&name!==peerEditing)body.name=name;
+  body.host=host;if(port)body.port=port;
+  var save=document.getElementById('peer-edit-save');save.disabled=true;
+  vibeAPI('PUT','/_api/peers/'+encodeURIComponent(peerEditing),{body:body},function(status,data){
+    save.disabled=false;
+    if(status>=200&&status<300){reloadSoon(300);return}
+    editMsg((data&&data.error)||'Could not save',true);
+  });
+}
+function showPeerEditView(v){
+  ['form','remove'].forEach(function(n){document.getElementById('peer-edit-view-'+n).classList.toggle('on',n===v)});
+  document.getElementById('peer-edit-heading').textContent=v==='remove'?'Remove peer':'Edit peer';
+  document.getElementById('peer-edit-sub').textContent=v==='remove'?'Its pairing is deleted from this machine.':"Its key can't change — a different address only changes where this machine looks for it.";
+  if(v==='remove'){document.getElementById('peer-remove-name').textContent=peerEditing;msg('peer-remove-msg','')}
+}
+function confirmRemovePeer(){
+  var name=peerEditing,btn=document.getElementById('peer-remove-do');btn.disabled=true;
+  vibeAPI('DELETE','/_api/peers/'+encodeURIComponent(name),{},function(status,data){
     btn.disabled=false;
-    if(status>=200&&status<300&&data&&data.code){
-      var mins=Math.max(1,Math.round((new Date(data.expires_at)-Date.now())/60000));
-      out.textContent='';
-      var c=document.createElement('code');c.textContent=data.code;
-      out.appendChild(c);
-      out.appendChild(document.createTextNode(' — enter this on the other machine within '+mins+' min (peer port '+data.port+').'));
-      out.style.display='block';
-      return;
-    }
-    peerMsg((data&&data.error)||'Could not open an invite',true);
+    if(status>=200&&status<300){reloadSoon(200);return}
+    msg('peer-remove-msg',(data&&data.error)||'Could not remove '+name,true);
   });
 }
 document.addEventListener('keydown',function(e){
-  var o=document.getElementById('peer-overlay');
-  if(!o||!o.classList.contains('active'))return;
-  if(e.key==='Escape'){closePeerModal()}
-  else if(e.key==='Enter'&&(e.target.id==='peer-host'||e.target.id==='peer-code')){submitPeerAdd()}
+  if(e.key!=='Escape')return;
+  closePeerModal();['peer-edit-overlay','peer-enable-overlay'].forEach(closePeerDialog);
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&e.target&&e.target.id==='peer-typed-host')checkTypedPeer();
+  if(e.key==='Enter'&&e.target&&e.target.id==='peer-entry-code')submitPeerCode();
 });
 function copyText(taId,btnId){
   var ta=document.getElementById(taId);

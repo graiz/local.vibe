@@ -6,6 +6,7 @@ package daemon
 // stale cache (misses self-correct on the next successful refresh).
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,13 +53,19 @@ func (st *peerState) reachable() bool {
 // The first refresh runs immediately: the cache is in-memory, so after a
 // daemon restart a ticker-only loop would leave the dashboard's peer section
 // empty for a full interval.
-func (s *Server) peerSyncLoop() {
-	s.refreshAllPeers(false)
+func (s *Server) peerSyncLoop(stop <-chan struct{}, immediate bool) {
+	s.peerSyncLoops.Add(1)
+	defer s.peerSyncLoops.Add(-1)
+	if immediate {
+		s.refreshAllPeers(false)
+	}
 	ticker := time.NewTicker(peerSyncInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-s.quit:
+			return
+		case <-stop:
 			return
 		case <-ticker.C:
 			s.refreshAllPeers(false)
@@ -81,7 +89,12 @@ func (s *Server) peerStateFor(name string) *peerState {
 	st, ok := s.peerStates[name]
 	if !ok {
 		st = &peerState{}
-		s.peerStates[name] = st
+		// Checked under peerMu, which the Turn off teardown also takes: a
+		// refresh that passed its peersEnabled check just before Turn off
+		// gets a throwaway state instead of re-populating the cleared map.
+		if s.peersOn.Load() {
+			s.peerStates[name] = st
+		}
 	}
 	return st
 }
@@ -91,10 +104,18 @@ func (s *Server) peerStateFor(name string) *peerState {
 // no other client-side tls.Config on the peer channel.
 func (s *Server) peerTransport(fingerprint string) (*http.Transport, error) {
 	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	if !s.peersOn.Load() {
+		// Same reasoning as peerStateFor: never rebuild a pooled transport
+		// (and its live connections) after Turn off dropped them.
+		return nil, errors.New(peersDisabledMsg)
+	}
 	id := s.peerIdentity
-	s.peerMu.Unlock()
 	if id == nil {
 		return nil, errors.New("peer identity not initialized")
+	}
+	if t, ok := s.peerTransports[fingerprint]; ok {
+		return t, nil
 	}
 	verify := func(got string) error {
 		if got != fingerprint {
@@ -102,13 +123,96 @@ func (s *Server) peerTransport(fingerprint string) (*http.Transport, error) {
 		}
 		return nil
 	}
-	return &http.Transport{TLSClientConfig: peer.ClientTLSConfig(*id, verify)}, nil
+	conns := &connSet{}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	t := &http.Transport{
+		TLSClientConfig:     peer.ClientTLSConfig(*id, verify),
+		MaxIdleConnsPerHost: 4,
+		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   false,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return conns.track(c), nil
+		},
+	}
+	if s.peerConnSets == nil {
+		s.peerConnSets = make(map[string]*connSet)
+	}
+	s.peerConnSets[fingerprint] = conns
+	if s.peerTransports == nil {
+		s.peerTransports = make(map[string]*http.Transport)
+	}
+	s.peerTransports[fingerprint] = t
+	return t, nil
+}
+
+// dropPeerTransportLocked closes and forgets a peer's pooled connections.
+// Caller holds peerMu.
+func (s *Server) dropPeerTransportLocked(fingerprint string) {
+	if t, ok := s.peerTransports[fingerprint]; ok {
+		t.CloseIdleConnections()
+		delete(s.peerTransports, fingerprint)
+	}
+	// Idle-close leaves in-flight relays and upgraded WebSockets running on
+	// connections the pool no longer owns; cut those too (remove / off).
+	if cs, ok := s.peerConnSets[fingerprint]; ok {
+		cs.closeAll()
+		delete(s.peerConnSets, fingerprint)
+	}
+}
+
+// connSet tracks a transport's live connections so they can all be closed,
+// not just the idle ones.
+type connSet struct {
+	mu    sync.Mutex
+	conns map[net.Conn]struct{}
+}
+
+func (cs *connSet) track(c net.Conn) net.Conn {
+	cs.mu.Lock()
+	if cs.conns == nil {
+		cs.conns = make(map[net.Conn]struct{})
+	}
+	cs.conns[c] = struct{}{}
+	cs.mu.Unlock()
+	return &trackedConn{Conn: c, set: cs}
+}
+
+func (cs *connSet) closeAll() {
+	cs.mu.Lock()
+	all := cs.conns
+	cs.conns = nil
+	cs.mu.Unlock()
+	for c := range all {
+		_ = c.Close()
+	}
+}
+
+type trackedConn struct {
+	net.Conn
+	set  *connSet
+	once sync.Once
+}
+
+func (t *trackedConn) Close() error {
+	t.once.Do(func() {
+		t.set.mu.Lock()
+		delete(t.set.conns, t.Conn)
+		t.set.mu.Unlock()
+	})
+	return t.Conn.Close()
 }
 
 // refreshPeerRoutes fetches one peer's route list. Throttled unless force,
 // single-flighted, ETag-aware. Errors keep the stale cache and record
 // lastErr; the route names only change on a successful 200.
 func (s *Server) refreshPeerRoutes(p peer.Peer, force bool) {
+	if !s.peersEnabled() {
+		return // off: no dials, no transports, no peer SANs
+	}
 	st := s.peerStateFor(p.Name)
 	s.peerMu.Lock()
 	recent := time.Since(st.lastRefresh) < peerRefreshThrottle
@@ -215,6 +319,9 @@ func (s *Server) adoptPeerName(p peer.Peer, raw string) {
 	for i := range s.peerList {
 		switch {
 		case s.peerList[i].Fingerprint == p.Fingerprint:
+			if s.peerList[i].NameSetByUser {
+				return // a name the user typed sticks
+			}
 			if s.peerList[i].Name != p.Name {
 				return // renamed concurrently; the next sync re-checks
 			}

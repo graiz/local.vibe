@@ -49,6 +49,9 @@ step "Building vibe..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 go build -o vibe .
+# Sign with this Mac's own signing identity if it has one, so macOS keeps
+# vibe's privacy grants (camera, Documents, Local Network) across updates.
+./vibe codesign ./vibe || true
 ok "Built successfully"
 
 # ── Install binary ────────────────────────────────────────
@@ -57,7 +60,11 @@ INSTALL_DIR="/opt/homebrew/bin"
 if [[ ! -d "$INSTALL_DIR" ]]; then
   INSTALL_DIR="/usr/local/bin"
 fi
-cp vibe "$INSTALL_DIR/vibe" 2>/dev/null || sudo cp vibe "$INSTALL_DIR/vibe"
+# Copy beside, then rename into place: never rewrite the installed binary in
+# place — a running daemon executes it, and macOS kills a signed binary that
+# changes under it.
+{ cp vibe "$INSTALL_DIR/vibe.new" && mv -f "$INSTALL_DIR/vibe.new" "$INSTALL_DIR/vibe"; } 2>/dev/null \
+  || { sudo cp vibe "$INSTALL_DIR/vibe.new" && sudo mv -f "$INSTALL_DIR/vibe.new" "$INSTALL_DIR/vibe"; }
 ok "Installed to $INSTALL_DIR/vibe"
 
 # ── System setup (requires sudo) ─────────────────────────

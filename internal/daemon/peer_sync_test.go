@@ -47,7 +47,7 @@ func pairAB(t *testing.T, a, b *Server) (string, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.peerLn.Close() })
+	t.Cleanup(func() { closePeerLn(b) })
 	host, port := splitAddr(t, b.peerLn.Addr().String())
 	if err := a.ensurePeerIdentity(); err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func pairAB(t *testing.T, a, b *Server) (string, int) {
 	}
 	t.Cleanup(func() {
 		if a.peerLn != nil {
-			a.peerLn.Close()
+			closePeerLn(a)
 		}
 	})
 	return host, port
@@ -126,7 +126,7 @@ func TestPeerSyncKeepsStaleCacheOnFailure(t *testing.T) {
 
 	// Kill B's listener, then force a refresh: the stale cache must survive
 	// and the failure must be recorded.
-	b.peerLn.Close()
+	closePeerLn(b)
 	a.refreshAllPeers(true)
 
 	p, _, ok := a.peerRouteFromCache("face")

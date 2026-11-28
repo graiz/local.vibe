@@ -15,6 +15,9 @@ type Peer struct {
 	Port        int       `json:"port"`
 	Fingerprint string    `json:"fingerprint"`
 	AddedAt     time.Time `json:"added_at"`
+	// NameSetByUser marks a name the user typed (dashboard edit / vibe peer
+	// edit). Automatic pickup of the machine's own new name skips it.
+	NameSetByUser bool `json:"name_set_by_user,omitempty"`
 }
 
 // LoadPeers reads <dir>/peers.json. A missing file is (nil, nil): no peers.

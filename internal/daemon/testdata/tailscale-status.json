@@ -1,0 +1,8 @@
+{
+  "Self": {"HostName": "box-a", "DNSName": "box-a.example-tailnet.ts.net.", "TailscaleIPs": ["100.91.0.1", "fd7a:115c:a1e0::1"], "Online": true},
+  "Peer": {
+    "nodekey:aaa": {"HostName": "box-c", "DNSName": "box-c.example-tailnet.ts.net.", "TailscaleIPs": ["100.91.0.2", "fd7a:115c:a1e0::2"], "Online": true},
+    "nodekey:bbb": {"HostName": "sleepy", "DNSName": "sleepy.example-tailnet.ts.net.", "TailscaleIPs": ["100.91.0.3"], "Online": false},
+    "nodekey:ccc": {"HostName": "v6only", "DNSName": "v6only.example-tailnet.ts.net.", "TailscaleIPs": ["fd7a:115c:a1e0::4"], "Online": true}
+  }
+}

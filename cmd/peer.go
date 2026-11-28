@@ -12,6 +12,7 @@ import (
 
 	"github.com/graiz/local.vibe/internal/client"
 	"github.com/graiz/local.vibe/internal/config"
+	"github.com/graiz/local.vibe/internal/peer"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +26,7 @@ var peersCmd = &cobra.Command{
 			return err
 		}
 		if !resp.Enabled {
-			fmt.Println("peers are disabled — set daemon.peers.enabled=true in ~/.vibe/config.json and restart the daemon")
+			fmt.Println(`peers are off — run "vibe peers enable" or use the switch in the dashboard's Peers section`)
 			return nil
 		}
 		if len(resp.Peers) == 0 {
@@ -78,6 +79,32 @@ var peersCmd = &cobra.Command{
 	},
 }
 
+func setPeers(on bool) error {
+	if err := client.New().PeersSetEnabled(on); err != nil {
+		return err
+	}
+	if on {
+		fmt.Println(`peers on — show a code with "vibe peer invite" (or the dashboard), or pair with "vibe peer add <host> --code <code>"`)
+	} else {
+		fmt.Println("peers off — nothing listens on the network; pairings are kept")
+	}
+	return nil
+}
+
+var peersEnableCmd = &cobra.Command{
+	Use:   "enable",
+	Short: "Turn the peers feature on (no restart needed)",
+	Args:  cobra.NoArgs,
+	RunE:  func(cmd *cobra.Command, args []string) error { return setPeers(true) },
+}
+
+var peersDisableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Turn the peers feature off; pairings are kept",
+	Args:  cobra.NoArgs,
+	RunE:  func(cmd *cobra.Command, args []string) error { return setPeers(false) },
+}
+
 var peerCmd = &cobra.Command{
 	Use:   "peer",
 	Short: "Pair with other vibe machines (experimental)",
@@ -93,7 +120,7 @@ var peerInviteCmd = &cobra.Command{
 			return err
 		}
 		hostname, _ := os.Hostname()
-		fmt.Printf("invite code: %s (valid until %s)\n\n", resp.Code, resp.ExpiresAt.Format("15:04:05"))
+		fmt.Printf("invite code: %s   key %s   (valid until %s)\n\n", resp.Code, resp.Key, resp.ExpiresAt.Format("15:04:05"))
 		fmt.Printf("on the other machine, run:\n\n  vibe peer add %s --code %s\n", hostname, resp.Code)
 		if resp.Port != config.DefaultPeerPort {
 			fmt.Printf("\n(this machine's peer port is %d — add --port %d)\n", resp.Port, resp.Port)
@@ -120,8 +147,30 @@ var peerAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("paired with %s (%s:%d)\nfingerprint %s\n", p.Name, p.Host, p.Port, p.Fingerprint)
+		fmt.Printf("paired with %s (%s:%d)\nkey %s — should match the key shown on %s\nfingerprint %s\n", p.Name, p.Host, p.Port, peer.ShortKey(p.Fingerprint), p.Name, p.Fingerprint)
 		fmt.Println("their routes will appear in `vibe list` and resolve as https://<name>.vibe")
+		return nil
+	},
+}
+
+var (
+	peerEditName string
+	peerEditHost string
+	peerEditPort int
+)
+
+var peerEditCmd = &cobra.Command{
+	Use:   "edit <name>",
+	Short: "Change a paired peer's local name, host or port (its key never changes)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if peerEditName == "" && peerEditHost == "" && peerEditPort == 0 {
+			return fmt.Errorf("nothing to change — pass --name, --host or --port")
+		}
+		if err := client.New().PeerUpdate(args[0], peerEditName, peerEditHost, peerEditPort); err != nil {
+			return err
+		}
+		fmt.Printf("updated %s\n", args[0])
 		return nil
 	},
 }
@@ -143,6 +192,11 @@ var peerRemoveCmd = &cobra.Command{
 func init() {
 	peerAddCmd.Flags().StringVar(&peerAddCode, "code", "", "invite code from the other machine")
 	peerAddCmd.Flags().IntVar(&peerAddPort, "port", config.DefaultPeerPort, "peer listener port on the other machine")
+	peersCmd.AddCommand(peersEnableCmd, peersDisableCmd)
+	peerEditCmd.Flags().StringVar(&peerEditName, "name", "", "new local name")
+	peerEditCmd.Flags().StringVar(&peerEditHost, "host", "", "new host")
+	peerEditCmd.Flags().IntVar(&peerEditPort, "port", 0, "new peer port")
+	peerCmd.AddCommand(peerEditCmd)
 	peerCmd.AddCommand(peerInviteCmd)
 	peerCmd.AddCommand(peerAddCmd)
 	peerCmd.AddCommand(peerRemoveCmd)

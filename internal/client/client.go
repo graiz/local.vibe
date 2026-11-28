@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -303,6 +304,7 @@ type PeerInviteResponse struct {
 	Code      string    `json:"code"`
 	ExpiresAt time.Time `json:"expires_at"`
 	Port      int       `json:"port"`
+	Key       string    `json:"key"`
 }
 
 // Peers lists paired peers and their cached routes. Callers that only
@@ -321,6 +323,41 @@ func (c *Client) Peers() (*PeersResponse, error) {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// PeersSetEnabled turns the peers feature on or off at runtime.
+func (c *Client) PeersSetEnabled(on bool) error {
+	data, status, err := c.do("POST", "/_api/peers/enabled", map[string]bool{"enabled": on})
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return apiError(data, status)
+	}
+	return nil
+}
+
+// PeerUpdate edits a paired peer's local name, host or port; empty / zero
+// values leave a field unchanged.
+func (c *Client) PeerUpdate(name, newName, host string, port int) error {
+	body := map[string]any{}
+	if newName != "" {
+		body["name"] = newName
+	}
+	if host != "" {
+		body["host"] = host
+	}
+	if port != 0 {
+		body["port"] = port
+	}
+	data, status, err := c.do("PUT", "/_api/peers/"+url.PathEscape(name), body)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return apiError(data, status)
+	}
+	return nil
 }
 
 // PeerInvite opens a one-time pairing window on this machine's daemon.

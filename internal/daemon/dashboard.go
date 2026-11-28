@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/graiz/local.vibe/internal/config"
 	"github.com/graiz/local.vibe/internal/netprobe"
 	"github.com/graiz/local.vibe/internal/peer"
 )
@@ -46,6 +47,10 @@ type dashboardData struct {
 	// enabled and this is the dashboard proper (local.<tld> on a daemon
 	// port), the only origin whose POSTs to /_api/peers the gate accepts.
 	PeerAdmin bool
+	// PeersEnabled is the runtime peers switch; with PeerAdmin it picks the
+	// section's Enable vs. Add/Show/Turn-off controls.
+	PeersEnabled bool
+	PeerPort     int // configured peer listener port, for the Enable dialog
 }
 
 // dashboardPeerGroup is one paired machine's cached routes, rendered as a
@@ -54,6 +59,15 @@ type dashboardData struct {
 type dashboardPeerGroup struct {
 	Peer   string
 	Routes []dashboardPeerRoute
+	// Admin-only detail (dashboard proper): where the peer is, whether it
+	// syncs, and its key for comparison. Not rendered on other hosts.
+	Admin        bool
+	Host         string
+	Port         int
+	Fingerprint  string
+	Key          string // peer.ShortKey(Fingerprint)
+	Status       string // connected | unreachable | syncing
+	StatusDetail string // last sync error, when unreachable
 }
 
 // dashboardPeerRoute is one peer route row. ShadowedBy is non-empty when a
@@ -145,7 +159,9 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.cfgMu.Lock()
 	viewMode := s.cfg.Dashboard.View
+	s.cfgMu.Unlock()
 	if viewMode == "" {
 		viewMode = "list"
 	}
@@ -234,7 +250,12 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	// Paired peers' routes (experimental), grouped per machine. Shadowing is
 	// computed here, not in the template: local names win, then earlier
 	// peers (peers.json order — the same precedence findPeerRoute applies).
-	data.PeerAdmin = s.peersEnabled() && s.localDetailsAllowed(r)
+	data.PeerAdmin = s.localDetailsAllowed(r)
+	data.PeersEnabled = s.peersEnabled()
+	data.PeerPort = s.cfg.Daemon.Peers.Port
+	if data.PeerPort == 0 {
+		data.PeerPort = config.DefaultPeerPort
+	}
 	if s.peersEnabled() {
 		// The peer cache is in-memory and the poll ticks every 30s, so a
 		// render can race an empty cache (right after a daemon restart) or a
@@ -257,11 +278,29 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		s.peerMu.Lock()
 		for _, p := range s.peerList {
 			st, ok := s.peerStates[p.Name]
-			if !ok || len(st.routes) == 0 {
+			if !ok {
+				st = &peerState{}
+			}
+			// Off the dashboard proper the section is a read-only route
+			// list: skip machines with nothing to show there. On it, every
+			// paired machine appears — a management view can't hide the
+			// unreachable ones.
+			if !data.PeerAdmin && len(st.routes) == 0 {
 				continue
 			}
-			group := dashboardPeerGroup{Peer: p.Name}
 			reachable := st.reachable()
+			group := dashboardPeerGroup{
+				Peer: p.Name, Admin: data.PeerAdmin,
+				Host: p.Host, Port: p.Port, Fingerprint: p.Fingerprint, Key: peer.ShortKey(p.Fingerprint),
+			}
+			switch {
+			case reachable:
+				group.Status = "connected"
+			case st.lastErr != "":
+				group.Status, group.StatusDetail = "unreachable", st.lastErr
+			default:
+				group.Status = "syncing"
+			}
 			for _, sum := range st.routes {
 				icon := iconPool[nameHash(sum.Name)%len(iconPool)]
 				if sum.Icon != "" {

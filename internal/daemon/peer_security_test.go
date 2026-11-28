@@ -42,7 +42,7 @@ func TestInviteWindowExposesOnlyPairing(t *testing.T) {
 	if _, _, err := b.openPeerInvite(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.peerLn.Close() })
+	t.Cleanup(func() { closePeerLn(b) })
 	b.table.Add(&Route{Name: "face", Type: RouteSticky, Port: 1, RegisteredAt: time.Now()})
 
 	strangerID, err := peer.EnsureIdentity(t.TempDir())
@@ -115,6 +115,70 @@ func TestPeerRoutesNeverCarryDirOrCmd(t *testing.T) {
 	for _, leak := range []string{"s3cret", "/Users/someone", `"cmd"`, `"dir"`} {
 		if strings.Contains(string(body), leak) {
 			t.Errorf("/peer/routes leaked %q: %s", leak, body)
+		}
+	}
+}
+
+// The dashboard peer-management endpoints change what this machine trusts,
+// what it exposes on the network, and what it probes. Only the dashboard and
+// local clients may call them — never a route's page (whose origin includes
+// every third-party script the app loads), a bookmark's proxied site, another
+// machine's peer route, or a cross-site page. And the peer listener never
+// serves them at all.
+func TestNewPeerEndpointsRefuseForeignOrigins(t *testing.T) {
+	s := newBareServer(t)
+	s.table.Add(&Route{Name: "app", Type: RouteManaged, Port: 4100, Cmd: "x", RegisteredAt: time.Now()})
+	s.table.Add(&Route{Name: "bm", Type: RouteBookmark, ExternalURL: "https://example.com", RegisteredAt: time.Now()})
+	s.peerList = []peer.Peer{{Name: "box", Host: "127.0.0.1", Port: 1, Fingerprint: "ff"}}
+	s.peerStates["box"] = &peerState{lastOK: time.Now(), routes: []peer.RouteSummary{{Name: "face", Ready: true, Running: true}}}
+
+	endpoints := []struct{ method, path, body string }{
+		{http.MethodPost, "/_api/peers/enabled", `{"enabled":true}`},
+		{http.MethodPost, "/_api/peers/discover", `{}`},
+		{http.MethodPost, "/_api/peers/probe", `{"host":"127.0.0.1","port":1}`},
+		{http.MethodPost, "/_api/peers/invite/close", `{"code":"K7QM-3XR9"}`},
+		{http.MethodPut, "/_api/peers/box", `{"host":"10.0.0.1"}`},
+	}
+	call := func(e struct{ method, path, body string }, host, origin, fetchSite string) int {
+		req := httptest.NewRequest(e.method, e.path, strings.NewReader(e.body))
+		req.Host = host
+		req.Header.Set("Content-Type", "application/json")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		if fetchSite != "" {
+			req.Header.Set("Sec-Fetch-Site", fetchSite)
+		}
+		w := httptest.NewRecorder()
+		s.apiHandler(w, req)
+		return w.Code
+	}
+	for _, e := range endpoints {
+		for _, bad := range []struct{ host, origin, site string }{
+			{"app.vibe", "https://app.vibe", "same-origin"},      // a managed route's own page
+			{"bm.vibe", "https://bm.vibe", "same-origin"},        // a bookmark's proxied site
+			{"face.vibe", "https://face.vibe", "same-origin"},    // another machine's peer route
+			{"local.vibe", "https://evil.example", "cross-site"}, // any other site
+		} {
+			if code := call(e, bad.host, bad.origin, bad.site); code != http.StatusForbidden {
+				t.Errorf("%s %s from %s = %d; want 403", e.method, e.path, bad.origin, code)
+			}
+		}
+		if code := call(e, "local.vibe", "https://local.vibe", "same-origin"); code == http.StatusForbidden {
+			t.Errorf("%s %s from the dashboard = 403; want allowed", e.method, e.path)
+		}
+		if code := call(e, "127.0.0.1", "", ""); code == http.StatusForbidden {
+			t.Errorf("%s %s from a local client = 403; want allowed", e.method, e.path)
+		}
+	}
+
+	// The peer listener 404s the whole daemon API, these endpoints included.
+	for _, e := range endpoints {
+		req := httptest.NewRequest(e.method, e.path, strings.NewReader(e.body))
+		w := httptest.NewRecorder()
+		s.peerHandler(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("peer listener %s %s = %d; want 404", e.method, e.path, w.Code)
 		}
 	}
 }
