@@ -17,10 +17,15 @@ import (
 func (s *Server) setPeersEnabled(on bool) error {
 	s.peerToggleMu.Lock()
 	defer s.peerToggleMu.Unlock()
+	s.cfgMu.Lock()
 	prev := s.cfg.Daemon.Peers.Enabled
 	s.cfg.Daemon.Peers.Enabled = on
-	if err := s.saveConfig(); err != nil {
+	err := s.saveConfig()
+	if err != nil {
 		s.cfg.Daemon.Peers.Enabled = prev // a failed save changes nothing
+	}
+	s.cfgMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("saving config: %w", err)
 	}
 	if on {
@@ -102,11 +107,20 @@ func (s *Server) maybeStopPeerListener() {
 	s.peerMu.Lock()
 	defer s.peerMu.Unlock()
 	inviteOpen := s.peerInviteCode != "" && time.Now().Before(s.peerInviteExpires)
-	if len(s.peerList) > 0 || inviteOpen {
+	if len(s.peerList) > 0 || inviteOpen || s.peerPairsInFlight > 0 {
 		return
 	}
 	s.peerInviteCode = ""
 	s.closePeerListenerLocked()
+}
+
+// endPeerPairing marks an in-flight pairing finished and, if it left nothing
+// paired and no code open, stops the listener.
+func (s *Server) endPeerPairing() {
+	s.peerMu.Lock()
+	s.peerPairsInFlight--
+	s.peerMu.Unlock()
+	s.maybeStopPeerListener()
 }
 
 // handlePeersSetEnabled is POST /_api/peers/enabled {"enabled": bool}.

@@ -92,11 +92,14 @@ type Server struct {
 	// list, invite state, the LAN mTLS listener, and per-peer route caches.
 	// All guarded by peerMu except where a field doc says otherwise.
 	// See peer_listener.go / peer_sync.go.
-	peerMu            sync.Mutex
-	peerIdentity      *tls.Certificate
-	peerFP            string
-	peerList          []peer.Peer
-	peerInviteCode    string
+	peerMu         sync.Mutex
+	peerIdentity   *tls.Certificate
+	peerFP         string
+	peerList       []peer.Peer
+	peerInviteCode string
+	// peerPairsInFlight counts pairings between consuming the code and
+	// saving the pin; the listener stays up while it is non-zero.
+	peerPairsInFlight int
 	peerInviteExpires time.Time
 	peerPairAttempts  int // proof checks reserved against the current invite (peerPairReserve)
 	peerSrv           *http.Server
@@ -115,6 +118,9 @@ type Server struct {
 	// peerToggleMu serializes setPeersEnabled: a dashboard "on" racing a CLI
 	// "off" must not interleave bring-up with teardown.
 	peerToggleMu sync.Mutex
+	// cfgMu serializes every mutate-and-save of s.cfg (the peers switch,
+	// the dashboard view preference): saveConfig marshals the whole struct.
+	cfgMu sync.Mutex
 	// peerSyncLoops counts running sync loops (0 or 1); tests assert it.
 	peerSyncLoops atomic.Int32
 
@@ -791,6 +797,7 @@ func (s *Server) saveStickyRoutes() error {
 	return nil
 }
 
+// saveConfig writes s.cfg to config.json. Caller holds cfgMu.
 func (s *Server) saveConfig() error {
 	path := filepath.Join(s.configDir(), "config.json")
 	data, err := json.MarshalIndent(s.cfg, "", "  ")

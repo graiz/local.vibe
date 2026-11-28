@@ -1,6 +1,9 @@
 package cmd
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const twoIdentities = `  1) 9BEB1EC9A86FBC3CB29E47C1746D310FBF9967D1 "Apple Development: Someone (ABCDE12345)"
   2) 1111111111111111111111111111111111111111 "Developer ID Application: Someone (ABCDE12345)"
@@ -27,5 +30,16 @@ func TestPickSigningIdentity(t *testing.T) {
 		if id != c.wantID || kind != c.wantKind {
 			t.Errorf("%s: got (%q, %q); want (%q, %q)", c.name, id, kind, c.wantID, c.wantKind)
 		}
+	}
+}
+
+// Review: a Developer ID signature asks Apple's timestamp server by default,
+// so `vibe dev` offline (or behind a VPN) failed to sign and re-triggered the
+// privacy prompts. Local builds never need a secure timestamp.
+func TestCodesignArgsSkipTimestamp(t *testing.T) {
+	args := codesignArgs("ABC123", "/tmp/vibe")
+	want := []string{"--force", "--sign", "ABC123", "--identifier", codesignIdentifier, "--timestamp=none", "/tmp/vibe"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Fatalf("codesign args = %q; want %q", args, want)
 	}
 }

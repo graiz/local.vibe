@@ -89,7 +89,12 @@ func (s *Server) peerStateFor(name string) *peerState {
 	st, ok := s.peerStates[name]
 	if !ok {
 		st = &peerState{}
-		s.peerStates[name] = st
+		// Checked under peerMu, which the Turn off teardown also takes: a
+		// refresh that passed its peersEnabled check just before Turn off
+		// gets a throwaway state instead of re-populating the cleared map.
+		if s.peersOn.Load() {
+			s.peerStates[name] = st
+		}
 	}
 	return st
 }
@@ -100,6 +105,11 @@ func (s *Server) peerStateFor(name string) *peerState {
 func (s *Server) peerTransport(fingerprint string) (*http.Transport, error) {
 	s.peerMu.Lock()
 	defer s.peerMu.Unlock()
+	if !s.peersOn.Load() {
+		// Same reasoning as peerStateFor: never rebuild a pooled transport
+		// (and its live connections) after Turn off dropped them.
+		return nil, errors.New(peersDisabledMsg)
+	}
 	id := s.peerIdentity
 	if id == nil {
 		return nil, errors.New("peer identity not initialized")

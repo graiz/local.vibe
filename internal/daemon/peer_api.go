@@ -121,6 +121,27 @@ func (s *Server) handlePeerInvite(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// handlePeerInviteClose is POST /_api/peers/invite/close {"code"}: the
+// dashboard withdraws the code its Add peer dialog opened when the dialog
+// closes, so an unpaired machine stops being findable then. Only that code:
+// one opened elsewhere (`vibe peer invite`) is left alone.
+func (s *Server) handlePeerInviteClose(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Code == "" {
+		writeJSONError(w, http.StatusBadRequest, "code is required")
+		return
+	}
+	s.peerMu.Lock()
+	if s.peerInviteCode != "" && s.peerInviteCode == req.Code {
+		s.peerInviteCode = ""
+	}
+	s.peerMu.Unlock()
+	s.maybeStopPeerListener()
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 // localPeerAddresses lists this machine's private-LAN and Tailscale IPv4
 // addresses — what to type on the other machine. Never nil.
 func localPeerAddresses() []string {

@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -166,5 +169,85 @@ func TestPeerProbeEndpointGated(t *testing.T) {
 	s.apiHandler(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("probe from a route origin = %d; want 403", w.Code)
+	}
+}
+
+// fakePeerListener is a peer-identity TLS listener that admits any client and
+// then runs serve on each connection — a stand-in for a slow or older peer.
+func fakePeerListener(t *testing.T, serve func(c *tls.Conn)) (s *Server, port int) {
+	t.Helper()
+	s = newBareServer(t)
+	if err := s.ensurePeerIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	cfg := peer.ServerTLSConfig(*s.peerIdentity, func(string) bool { return true })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				tc := tls.Server(c, cfg)
+				if tc.Handshake() == nil {
+					serve(tc)
+				}
+			}()
+		}
+	}()
+	_, port = splitAddr(t, ln.Addr().String())
+	return s, port
+}
+
+// Review: a paired peer that is merely slow to answer /peer/hello (deadline
+// hit mid-discovery) is still paired — never "removed this machine", which
+// would offer Unpair on a healthy pairing.
+func TestProbeSlowPairedPeerIsNotRemovedUs(t *testing.T) {
+	stall := make(chan struct{})
+	t.Cleanup(func() { close(stall) })
+	target, port := fakePeerListener(t, func(*tls.Conn) { <-stall })
+	prober := newBareServer(t)
+	if err := prober.ensurePeerIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	pin(prober, "slowbox", target.peerFP)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if r := prober.probePeerHost(ctx, "127.0.0.1", port); r.State != probePaired || r.PairedAs != "slowbox" {
+		t.Fatalf("slow pinned peer: %+v; want paired", r)
+	}
+
+	// Unpinned and slow: we know nothing about it — not "vibe, no code".
+	other := newBareServer(t)
+	if err := other.ensurePeerIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel2()
+	if r := other.probePeerHost(ctx2, "127.0.0.1", port); r.State != probeNone {
+		t.Fatalf("slow unpinned host: %+v; want none", r)
+	}
+}
+
+// Review: a paired machine still on a build without /peer/hello (it answers
+// 404 through route proxying) shows as paired, not "no vibe found".
+func TestProbeOlderPairedPeerIsPaired(t *testing.T) {
+	target, port := fakePeerListener(t, func(c *tls.Conn) {
+		_, _ = http.ReadRequest(bufio.NewReader(c))
+		_, _ = io.WriteString(c, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+	})
+	prober := newBareServer(t)
+	if err := prober.ensurePeerIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	pin(prober, "oldbox", target.peerFP)
+	if r := prober.probePeerHost(context.Background(), "127.0.0.1", port); r.State != probePaired || r.PairedAs != "oldbox" {
+		t.Fatalf("older pinned peer: %+v; want paired", r)
 	}
 }

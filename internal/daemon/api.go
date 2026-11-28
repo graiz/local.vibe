@@ -367,6 +367,7 @@ var apiRoutes = []apiRoute{
 	{method: http.MethodPost, pattern: "/peers/discover", localOnly: true, handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerDiscover(w, r) }},
 	{method: http.MethodPost, pattern: "/peers/probe", localOnly: true, handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerProbe(w, r) }},
 	{method: http.MethodPost, pattern: "/peers/enabled", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeersSetEnabled(w, r) }},
+	{method: http.MethodPost, pattern: "/peers/invite/close", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerInviteClose(w, r) }},
 	{method: http.MethodPost, pattern: "/peers/invite", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerInvite(w, r) }},
 	{method: http.MethodPost, pattern: "/peers", handler: func(s *Server, w http.ResponseWriter, r *http.Request, _ string) { s.handlePeerAdd(w, r) }},
 	{method: http.MethodDelete, pattern: "/peers/{name}", handler: (*Server).handlePeerRemove},
@@ -1413,8 +1414,10 @@ func (s *Server) handleSetPreferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.View == "list" || req.View == "grid" {
+		s.cfgMu.Lock()
 		s.cfg.Dashboard.View = req.View
 		_ = s.saveConfig()
+		s.cfgMu.Unlock()
 	}
 	json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -297,6 +298,12 @@ func TestPeerModalMarkup(t *testing.T) {
 	// found machines with one action column (Pair / Unpair), and in-dialog
 	// views to enter the other machine's code and to confirm an unpair.
 	modal := body[strings.Index(body, `id="peer-overlay"`):strings.Index(body, `id="peer-edit-overlay"`)]
+	// Closing the dialog (or leaving the page) withdraws the code it opened.
+	for _, want := range []string{"/_api/peers/invite/close", "addEventListener('pagehide',withdrawMyCode)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing %q", want)
+		}
+	}
 	for _, want := range []string{
 		`id="peer-code-value"`, "Your code", "Enter it on the other machine",
 		`id="peer-devices"`, `id="peer-typed-host"`,
@@ -314,5 +321,19 @@ func TestPeerModalMarkup(t *testing.T) {
 	}
 	if !strings.Contains(body, `id="peer-edit-fp"`) || !strings.Contains(body, "readonly") {
 		t.Error("edit dialog must keep the read-only fingerprint")
+	}
+}
+
+// Review: the device table hides the port only when it is the configured peer
+// port — read from config, never a hardcoded 7444.
+func TestPeerTableUsesConfiguredPort(t *testing.T) {
+	s := newBareServer(t)
+	s.cfg.Daemon.Peers.Port = 7555
+	body := renderDashboard(t, s, "local.vibe")
+	if strings.Contains(body, "7444") {
+		t.Error("dashboard hardcodes the default peer port 7444")
+	}
+	if !regexp.MustCompile(`peerListenPort=\s*7555\b`).MatchString(body) { // html/template pads JS values
+		t.Error("dashboard doesn't carry the configured peer port")
 	}
 }

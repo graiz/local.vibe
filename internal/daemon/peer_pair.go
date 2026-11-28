@@ -151,12 +151,16 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 	consumed := s.peerInviteCode == code
 	if consumed {
 		s.peerInviteCode = ""
+		s.peerPairsInFlight++ // keeps the listener up until the pin is saved
 	}
 	s.peerMu.Unlock()
 	if !consumed {
 		deny()
 		return
 	}
+	// After the reply is written: closing the listener from under it would
+	// cut the very connection that completes the other side's pairing.
+	defer func() { time.AfterFunc(200*time.Millisecond, s.endPeerPairing) }()
 
 	host := strings.TrimSpace(req.Host)
 	if host == "" {

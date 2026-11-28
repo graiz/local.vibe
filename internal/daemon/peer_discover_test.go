@@ -176,3 +176,35 @@ func TestDiscoverNotesNeverNull(t *testing.T) {
 		t.Fatalf("response = %s; want notes as []", b)
 	}
 }
+
+// Review: a big LAN sweep must not starve Tailscale probes. They used to queue
+// behind every LAN host on one semaphore, so on a /22 a paired Tailscale
+// machine could miss the 3s window entirely.
+func TestDiscoverTailscaleNotStarvedByLAN(t *testing.T) {
+	prev := discoverParallel
+	discoverParallel = 2
+	t.Cleanup(func() { discoverParallel = prev })
+	f := newProbeFixture(t)
+	if _, _, err := f.target.openPeerInvite(); err != nil {
+		t.Fatal(err)
+	}
+	s := f.prober
+	s.cfg.Daemon.Peers.Port = f.port
+	s.discoverHostsFn = func() ([]netip.Addr, []string) {
+		var hosts []netip.Addr
+		for i := 0; i < 64; i++ { // TEST-NET-1: never answers
+			hosts = append(hosts, netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)}))
+		}
+		return hosts, nil
+	}
+	s.tailscaleNodesFn = func(context.Context) ([]tailscaleNode, string) {
+		return []tailscaleNode{{Name: "tsbox", IP: netip.MustParseAddr("127.0.0.1")}}, ""
+	}
+	resp := s.discoverPeers(context.Background())
+	for _, c := range resp.Candidates {
+		if c.Source == "tailscale" && c.State == probePairing {
+			return
+		}
+	}
+	t.Fatalf("tailscale node missing or not probed: %+v", resp.Candidates)
+}

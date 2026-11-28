@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strconv"
 	"syscall"
 	"time"
@@ -99,19 +100,28 @@ func (s *Server) probePeerHost(ctx context.Context, host string, port int) peerP
 		r.PairedAs = p.Name
 	}
 
-	hello, admitted := fetchHello(tc)
+	hello, admitted, timedOut := fetchHello(tc)
 	switch {
+	case timedOut && r.PairedAs != "":
+		// Slow, not rejected: the handshake already showed our pinned key.
+		return r.with(probePaired)
+	case timedOut:
+		return r.with(probeNone) // said nothing in time: nothing we can tell
 	case !admitted && r.PairedAs != "":
 		return r.with(probeRemovedUs)
 	case !admitted:
 		return r.with(probeVibe)
-	case hello == nil:
-		return r.with(probeNone) // TLS service on the port, but not vibe
 	}
-	r.Name = sanitizeClaimedName(hello.Name)
+	if hello != nil {
+		r.Name = sanitizeClaimedName(hello.Name)
+	}
 	switch {
 	case r.PairedAs != "":
+		// A pinned peer that admits us is paired even when it predates
+		// /peer/hello (an older build answers 404 through route proxying).
 		return r.with(probePaired)
+	case hello == nil:
+		return r.with(probeNone) // TLS service on the port, but not vibe
 	case hello.CodeOpen:
 		return r.with(probePairing)
 	default:
@@ -121,24 +131,31 @@ func (s *Server) probePeerHost(ctx context.Context, host string, port int) peerP
 
 // fetchHello sends GET /peer/hello on an established TLS conn. admitted is
 // false when the server rejected our certificate (alert/reset/EOF on read);
-// hello is nil when it answered but not as a vibe peer.
-func fetchHello(tc *tls.Conn) (hello *peerHello, admitted bool) {
+// timedOut means the deadline passed first, which says nothing about whether
+// we'd have been admitted; hello is nil when it answered but not as a vibe
+// peer.
+func fetchHello(tc *tls.Conn) (hello *peerHello, admitted, timedOut bool) {
 	if _, err := io.WriteString(tc, "GET /peer/hello HTTP/1.1\r\nHost: peer\r\nConnection: close\r\n\r\n"); err != nil {
-		return nil, false
+		return nil, false, isTimeout(err)
 	}
 	resp, err := http.ReadResponse(bufio.NewReader(tc), nil)
 	if err != nil {
-		return nil, false
+		return nil, false, isTimeout(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, true
+		return nil, true, false
 	}
 	var h peerHello
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&h); err != nil || h.Name == "" {
-		return nil, true
+		return nil, true, false
 	}
-	return &h, true
+	return &h, true, false
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout())
 }
 
 func sanitizeClaimedName(name string) string {

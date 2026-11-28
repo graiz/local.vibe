@@ -43,3 +43,11 @@ func pickSigningIdentity(findIdentityOut, env string) (id, kind string) {
 	}
 	return "", ""
 }
+
+// codesignArgs is the codesign command line for a local build. No secure
+// timestamp: a Developer ID signature asks Apple's timestamp server by
+// default, which fails offline or behind a VPN — and a failed sign falls back
+// to ad-hoc, re-triggering every privacy prompt. Local builds don't need one.
+func codesignArgs(id, path string) []string {
+	return []string{"--force", "--sign", id, "--identifier", codesignIdentifier, "--timestamp=none", path}
+}

@@ -136,6 +136,7 @@ func TestNewPeerEndpointsRefuseForeignOrigins(t *testing.T) {
 		{http.MethodPost, "/_api/peers/enabled", `{"enabled":true}`},
 		{http.MethodPost, "/_api/peers/discover", `{}`},
 		{http.MethodPost, "/_api/peers/probe", `{"host":"127.0.0.1","port":1}`},
+		{http.MethodPost, "/_api/peers/invite/close", `{"code":"K7QM-3XR9"}`},
 		{http.MethodPut, "/_api/peers/box", `{"host":"10.0.0.1"}`},
 	}
 	call := func(e struct{ method, path, body string }, host, origin, fetchSite string) int {

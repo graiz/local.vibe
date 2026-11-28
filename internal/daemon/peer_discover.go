@@ -24,8 +24,10 @@ import (
 const (
 	sweepMaxAddresses = 1024
 	discoverDeadline  = 3 * time.Second
-	discoverParallel  = 128
 )
+
+// discoverParallel bounds concurrent LAN probes (a var for tests).
+var discoverParallel = 128
 
 type discoverCandidate struct {
 	peerProbeResult
@@ -217,11 +219,19 @@ func (s *Server) discoverPeers(ctx context.Context) discoverResponse {
 	tsDone := make(chan tsResult, 1)
 	go func() { n, note := tsFn(ctx); tsDone <- tsResult{n, note} }()
 
-	sem := make(chan struct{}, discoverParallel)
+	// LAN and Tailscale probes each get their own concurrency budget: on one
+	// shared semaphore a big LAN sweep queued ahead of every Tailscale node,
+	// and on a /22 a paired Tailscale machine could miss the deadline.
+	lanSem := make(chan struct{}, discoverParallel)
+	tsSem := make(chan struct{}, discoverParallel)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var lan, ts []discoverCandidate
 	probe := func(host, source string, node tailscaleNode) {
+		sem := lanSem
+		if source != "lan" {
+			sem = tsSem
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -247,9 +257,13 @@ func (s *Server) discoverPeers(ctx context.Context) discoverResponse {
 	}
 
 	lanHosts, notes := hostsFn()
-	for _, h := range lanHosts {
-		probe(h.String(), "lan", tailscaleNode{})
-	}
+	lanQueued := make(chan struct{})
+	go func() {
+		defer close(lanQueued)
+		for _, h := range lanHosts {
+			probe(h.String(), "lan", tailscaleNode{})
+		}
+	}()
 	select {
 	case r := <-tsDone:
 		if r.note != "" {
@@ -261,6 +275,7 @@ func (s *Server) discoverPeers(ctx context.Context) discoverResponse {
 	case <-ctx.Done():
 		notes = append(notes, "Tailscale didn't answer in time; enter an address if a machine is missing")
 	}
+	<-lanQueued // every wg.Add has happened before Wait
 	wg.Wait()
 
 	if notes == nil {

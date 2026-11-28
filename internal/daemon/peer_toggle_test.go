@@ -263,3 +263,107 @@ func closePeerLn(s *Server) {
 	defer s.peerMu.Unlock()
 	s.closePeerListenerLocked()
 }
+
+func postInviteClose(t *testing.T, s *Server, code string) int {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/_api/peers/invite/close", strings.NewReader(`{"code":"`+code+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiHandler(w, req)
+	return w.Code
+}
+
+// Review: closing Add peer withdraws the code it opened, so an unpaired
+// machine stops being findable then — not five minutes later. A different
+// (e.g. CLI-opened) code is left alone.
+func TestCloseInviteWithdrawsCodeAndStopsListener(t *testing.T) {
+	s := newBareServer(t)
+	code, _, err := s.openPeerInvite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := postInviteClose(t, s, "ZZZZ-9999"); c != http.StatusOK {
+		t.Fatalf("close with another code = %d", c)
+	}
+	if !listenerUp(s) {
+		t.Fatal("closing someone else's code stopped the listener")
+	}
+	if c := postInviteClose(t, s, code); c != http.StatusOK {
+		t.Fatalf("close = %d", c)
+	}
+	s.peerMu.Lock()
+	open := s.peerInviteCode
+	s.peerMu.Unlock()
+	if open != "" || listenerUp(s) {
+		t.Fatalf("after close: code %q, listener up %v", open, listenerUp(s))
+	}
+}
+
+// Review: between consuming the code and saving the pin, a pairing in flight
+// keeps the listener up — an expiry or failed-proof timer firing then must
+// not cut the connection and leave the pairing one-sided.
+func TestPairInFlightKeepsListener(t *testing.T) {
+	s := newBareServer(t)
+	if _, _, err := s.openPeerInvite(); err != nil {
+		t.Fatal(err)
+	}
+	s.peerMu.Lock()
+	s.peerInviteCode = "" // consumed by the pairing
+	s.peerPairsInFlight++
+	s.peerMu.Unlock()
+	s.maybeStopPeerListener()
+	if !listenerUp(s) {
+		t.Fatal("listener stopped under an in-flight pairing")
+	}
+	s.endPeerPairing()
+	if listenerUp(s) {
+		t.Fatal("listener still up after the pairing ended with nothing paired")
+	}
+}
+
+// Review: a refresh or relay that passed its peersEnabled check just before
+// Turn off must not put peer state or a pooled transport back afterwards.
+func TestNoPeerStateRecreatedAfterDisable(t *testing.T) {
+	b := newBareServer(t)
+	a := newBareServer(t)
+	pairAB(t, a, b)
+	p := a.peerList[0]
+	if err := a.setPeersEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	// What the in-flight refresh does next, after its check passed.
+	_ = a.peerStateFor(p.Name)
+	if _, err := a.peerTransport(p.Fingerprint); err == nil {
+		t.Error("peerTransport built a transport while peers are off")
+	}
+	a.peerMu.Lock()
+	states, transports := len(a.peerStates), len(a.peerTransports)
+	a.peerMu.Unlock()
+	if states != 0 || transports != 0 {
+		t.Fatalf("after disable: %d peer states, %d transports; want 0, 0", states, transports)
+	}
+}
+
+// Review: the peers switch and the list/grid preference both mutate and save
+// the shared config; concurrently they must not race (run with -race) and
+// the file must end up with both changes.
+func TestConfigWritersDoNotRace(t *testing.T) {
+	s := newDisabledServer(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			_ = s.setPeersEnabled(i%2 == 0)
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodPut, "/_api/preferences", strings.NewReader(`{"view":"grid"}`))
+		req.Header.Set("Content-Type", "application/json")
+		s.apiHandler(httptest.NewRecorder(), req)
+	}
+	<-done
+	_ = s.setPeersEnabled(false)
+	if cfg := configSaysEnabled(t, s); !strings.Contains(cfg, `"view": "grid"`) {
+		t.Fatalf("config.json lost the view preference: %s", cfg)
+	}
+}

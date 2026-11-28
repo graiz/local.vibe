@@ -159,7 +159,9 @@ func (s *Server) serveDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.cfgMu.Lock()
 	viewMode := s.cfg.Dashboard.View
+	s.cfgMu.Unlock()
 	if viewMode == "" {
 		viewMode = "list"
 	}

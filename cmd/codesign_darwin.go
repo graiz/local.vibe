@@ -18,7 +18,7 @@ func signLocalBuild(path string) {
 	if id == "" {
 		return
 	}
-	cmd := exec.Command("/usr/bin/codesign", "--force", "--sign", id, "--identifier", codesignIdentifier, path)
+	cmd := exec.Command("/usr/bin/codesign", codesignArgs(id, path)...)
 	if msg, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: couldn't sign the build (%v): %s — macOS may re-ask for permissions\n", err, msg)
 		return
