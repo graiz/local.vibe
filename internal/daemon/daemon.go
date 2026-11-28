@@ -138,9 +138,7 @@ func (s *Server) Start() error {
 	if err := loadStickyRoutes(s.table, s.configDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not load persisted routes: %v\n", err)
 	}
-	if err := s.reconcileOAuthBridgeListeners(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not start oauth callback bridge listeners: %v\n", err)
-	}
+	s.reconcileOAuthBridgeListenersLogged()
 
 	s.startedAt = time.Now()
 

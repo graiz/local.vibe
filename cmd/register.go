@@ -38,6 +38,9 @@ var registerCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("registered: %s → %s\n", name, resp.URL)
+		for _, w := range resp.Warnings {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", w)
+		}
 		return nil
 	},
 }

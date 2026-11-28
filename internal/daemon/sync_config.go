@@ -92,6 +92,15 @@ func (s *Server) syncRouteFromVibeJSON(route *Route) error {
 		if err := s.validateOAuthBridgeConfig(route.Name, route.Port, newOAuth); err != nil {
 			return err
 		}
+		if newOAuth != route.OAuthCallbackPort {
+			warn, err := s.oauthCallbackAppPortCollision(route.Name, newOAuth)
+			if err != nil {
+				return err
+			}
+			if warn != "" {
+				fmt.Fprintf(os.Stderr, "warning: route %q: %s\n", route.Name, warn)
+			}
+		}
 	}
 	if msg := s.reservePortsClaim(route.Name, newReserve); msg != "" {
 		return fmt.Errorf("%s", msg)
@@ -109,7 +118,7 @@ func (s *Server) syncRouteFromVibeJSON(route *Route) error {
 		return nil
 	}
 
-	if err := s.reconcileOAuthBridgeListeners(); err != nil {
+	if err := oauthBridgeErr(s.reconcileOAuthBridgeListeners(), newOAuth); err != nil {
 		return fmt.Errorf("oauth bridge reconcile: %w", err)
 	}
 	return s.saveStickyRoutes()

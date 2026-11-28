@@ -39,6 +39,12 @@ type ProcessManager struct {
 	// closed once the old tree is gone. Start waits on it so a restart
 	// never races the process it is replacing.
 	stopping map[string]chan struct{}
+	// starting reserves a route name while its spawn is in flight. Start
+	// releases mu for the spawn itself (log open, env hook, cmd.Start and —
+	// on Windows — the Job Object syscalls in afterSpawn), so a slow spawn
+	// can't block callers for every other route (issue #13). The channel is
+	// closed when the spawn resolves; same-name Start/Stop/IsRunning wait.
+	starting map[string]chan struct{}
 
 	// onExit is invoked (event-based, no polling) when a managed child exits
 	// after having started running — from cmd.Wait for spawned children, and
@@ -74,6 +80,7 @@ func NewProcessManager() *ProcessManager {
 		procs:       make(map[string]*exec.Cmd),
 		adopted:     make(map[string]int),
 		stopping:    make(map[string]chan struct{}),
+		starting:    make(map[string]chan struct{}),
 		stopGrace:   defaultStopGrace,
 		maxLogBytes: defaultMaxLogBytes,
 	}
@@ -142,18 +149,50 @@ func (pm *ProcessManager) Adopt(name string, pid int) {
 	})
 }
 
-// Start launches the command for a managed route.
-// It returns the PID of the child process.
-func (pm *ProcessManager) Start(route *Route) (int, error) {
-	pm.mu.Lock()
+// awaitStartLocked blocks until no spawn for name is in flight. Called with
+// pm.mu held; returns with it held. Same-name callers wait so they see the
+// spawn's outcome rather than a gap: a Stop issued mid-spawn kills the new
+// child instead of reporting "not running" and leaving it alive, and
+// IsRunning reports the finished spawn.
+func (pm *ProcessManager) awaitStartLocked(name string) {
 	for {
-		ch, ok := pm.stopping[route.Name]
+		ch, ok := pm.starting[name]
 		if !ok {
-			break
+			return
 		}
 		pm.mu.Unlock()
 		<-ch
 		pm.mu.Lock()
+	}
+}
+
+// Start launches the command for a managed route.
+// It returns the PID of the child process.
+//
+// pm.mu guards only the map reads and writes. The spawn itself runs unlocked
+// under a per-name reservation (pm.starting) — see issue #13: holding the
+// mutex across cmd.Start and the Windows Job Object syscalls let one slow
+// spawn stall IsRunning/Stop/OwnsPID for every route.
+func (pm *ProcessManager) Start(route *Route) (int, error) {
+	pm.mu.Lock()
+	// Wait out both an in-flight Stop (a restart must never race the tree it
+	// replaces) and an in-flight Start (a second Start returns the first's
+	// pid instead of spawning a duplicate). One loop, re-checking both after
+	// every wake: a Stop can begin while we wait on a Start and vice versa.
+	for {
+		if ch, ok := pm.stopping[route.Name]; ok {
+			pm.mu.Unlock()
+			<-ch
+			pm.mu.Lock()
+			continue
+		}
+		if ch, ok := pm.starting[route.Name]; ok {
+			pm.mu.Unlock()
+			<-ch
+			pm.mu.Lock()
+			continue
+		}
+		break
 	}
 
 	if cmd, ok := pm.procs[route.Name]; ok && cmd.Process != nil {
@@ -181,6 +220,23 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 		return 0, fmt.Errorf("no command configured for %s", route.Name)
 	}
 
+	// Reserve the name and drop the lock for the spawn. The deferred release
+	// covers every exit, including a panicking env hook: a leaked reservation
+	// would wedge every later Start/Stop/IsRunning for this route.
+	spawnDone := make(chan struct{})
+	pm.starting[route.Name] = spawnDone
+	envHook := pm.envHook
+	pm.mu.Unlock()
+	committed := false
+	defer func() {
+		if !committed {
+			pm.mu.Lock()
+			delete(pm.starting, route.Name)
+			pm.mu.Unlock()
+			close(spawnDone)
+		}
+	}()
+
 	cmd := buildShellCommand(route.Cmd)
 	cmd.Dir = route.Dir
 	applySpawnAttrs(cmd)
@@ -194,8 +250,8 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	// Extra route-derived bindings the daemon supplies (e.g. the OAuth base
 	// URL for a route with a callback bridge). Appended last so they win over
 	// anything inherited from the daemon's own environment.
-	if pm.envHook != nil {
-		cmd.Env = append(cmd.Env, pm.envHook(route)...)
+	if envHook != nil {
+		cmd.Env = append(cmd.Env, envHook(route)...)
 	}
 
 	logDir := config.Dir()
@@ -204,7 +260,6 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 	rotateLog(logPath, pm.maxLogBytes)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
-		pm.mu.Unlock()
 		return 0, fmt.Errorf("open log %s: %w", logPath, err)
 	}
 	cmd.Stdout = logFile
@@ -212,15 +267,18 @@ func (pm *ProcessManager) Start(route *Route) (int, error) {
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
-		pm.mu.Unlock()
 		return 0, fmt.Errorf("start %q: %w", route.Cmd, err)
 	}
 	afterSpawn(route.Name, cmd)
 
+	pm.mu.Lock()
 	pm.procs[route.Name] = cmd
 	delete(pm.adopted, route.Name) // a real spawn supersedes any prior adoption
+	delete(pm.starting, route.Name)
+	committed = true
 	pid := cmd.Process.Pid
 	pm.mu.Unlock()
+	close(spawnDone)
 
 	// One goroutine owns the child's lifetime via cmd.Wait. The first second is
 	// a "startup window": an exit there is an immediate failure that Start
@@ -377,6 +435,11 @@ func readTail(path string, max int64) ([]byte, error) {
 // with an entry in pm.stopping that a concurrent Start (or Stop) waits on.
 func (pm *ProcessManager) Stop(name string) error {
 	pm.mu.Lock()
+	// A Stop arriving mid-spawn waits for the spawn to resolve, so it kills
+	// the new child rather than reporting "not running" and leaving it alive.
+	// Start never reserves while a Stop is in flight, so after this wait the
+	// stopping check below is the only remaining case.
+	pm.awaitStartLocked(name)
 	if ch, ok := pm.stopping[name]; ok {
 		// Another Stop already owns this teardown (the idle timer racing
 		// handleStop, say). Wait for it rather than registering a second
@@ -485,6 +548,7 @@ func rotateLog(path string, max int64) {
 func (pm *ProcessManager) IsRunning(name string) bool {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
+	pm.awaitStartLocked(name)
 
 	if cmd, ok := pm.procs[name]; ok && cmd.Process != nil {
 		return processAlive(cmd.Process.Pid)

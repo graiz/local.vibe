@@ -181,6 +181,9 @@ func startNew(name string, port int, command string, oauthCallbackPort int, rese
 		fmt.Printf("started: %s → %s\n", name, resp.URL)
 	}
 	fmt.Printf("  stop with: vibe stop %s\n", name)
+	for _, w := range resp.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
 	return nil
 }
 
