@@ -299,7 +299,13 @@ func TestPeerModalMarkup(t *testing.T) {
 	// views to enter the other machine's code and to confirm an unpair.
 	modal := body[strings.Index(body, `id="peer-overlay"`):strings.Index(body, `id="peer-edit-overlay"`)]
 	// Closing the dialog (or leaving the page) withdraws the code it opened.
-	for _, want := range []string{"/_api/peers/invite/close", "addEventListener('pagehide',withdrawMyCode)"} {
+	for _, want := range []string{
+		"/_api/peers/invite/close", "addEventListener('pagehide',withdrawMyCode)",
+		// A reply landing after the dialog closed withdraws its code at once,
+		// and a bfcache restore opens a fresh one (pagehide withdrew it).
+		"if(seq!==peerCodeSeq||!peerModalOpen()){if(data&&data.code)closeCode(data.code);return}",
+		"addEventListener('pageshow'",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("dashboard missing %q", want)
 		}

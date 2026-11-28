@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,25 +50,55 @@ func TestCodesignArgsSkipTimestamp(t *testing.T) {
 // A fresh install must be signed the same way `vibe dev` builds are: setup.sh
 // and `vibe install` used a plain copy, so macOS re-prompted for privacy
 // grants on every update until the user happened to run `vibe dev`.
-func TestInstallSignsDestination(t *testing.T) {
-	var signed []string
-	prev := signBuild
-	signBuild = func(p string) { signed = append(signed, p) }
-	t.Cleanup(func() { signBuild = prev })
-
+//
+// And it must never rewrite the installed file in place: the daemon runs from
+// that path, and modifying a running signed Mach-O gets it (and the next exec)
+// killed. So: copy to a temp file, sign that, rename over dest.
+func TestInstallSignsThenSwaps(t *testing.T) {
 	dir := t.TempDir()
 	src, dest := filepath.Join(dir, "vibe-src"), filepath.Join(dir, "bin", "vibe")
-	if err := os.WriteFile(src, []byte("binary"), 0755); err != nil {
+	if err := os.WriteFile(src, []byte("new"), 0755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("old"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	running, err := os.Open(dest) // the daemon's view of its own binary
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+
+	var signed []string
+	prev := signBuild
+	signBuild = func(p string) {
+		signed = append(signed, p)
+		if got, _ := os.ReadFile(dest); string(got) != "old" {
+			t.Errorf("dest already replaced (%q) before signing finished", got)
+		}
+		if got, _ := os.ReadFile(p); string(got) != "new" {
+			t.Errorf("signed file holds %q; want the new build", got)
+		}
+	}
+	t.Cleanup(func() { signBuild = prev })
+
 	if err := installTo(src, dest); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := os.ReadFile(dest); string(got) != "binary" {
-		t.Fatalf("dest = %q", got)
+	if got, _ := os.ReadFile(dest); string(got) != "new" {
+		t.Fatalf("dest = %q; want new", got)
 	}
-	if len(signed) != 1 || signed[0] != dest {
-		t.Fatalf("signed %v; want [%s]", signed, dest)
+	if old, _ := io.ReadAll(running); string(old) != "old" {
+		t.Fatalf("the running binary's file was rewritten in place: reads %q", old)
+	}
+	if len(signed) != 1 || signed[0] == dest || filepath.Dir(signed[0]) != filepath.Dir(dest) {
+		t.Fatalf("signed %v; want one temp file beside %s", signed, dest)
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(dest), "*.tmp*")); len(left) != 0 {
+		t.Fatalf("temp files left behind: %v", left)
 	}
 }
 
@@ -77,6 +108,7 @@ func TestCodesignCommandSignsPath(t *testing.T) {
 	signBuild = func(p string) { signed = append(signed, p) }
 	t.Cleanup(func() { signBuild = prev })
 	rootCmd.SetArgs([]string{"codesign", "/tmp/some-vibe"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) }) // rootCmd is shared by the package's tests
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatal(err)
 	}

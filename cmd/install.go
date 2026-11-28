@@ -36,17 +36,34 @@ var installCmd = &cobra.Command{
 	},
 }
 
-// installTo copies the binary to dest and signs the copy the way `vibe dev`
-// signs its builds (macOS only; a no-op elsewhere), so an installed vibe keeps
-// its privacy grants across updates too.
+// installTo installs the binary at dest, signed the way `vibe dev` signs its
+// builds (macOS only; a no-op elsewhere) so an installed vibe keeps its
+// privacy grants across updates too. It copies to a temp file beside dest,
+// signs that, and renames it into place — never rewriting dest in place: the
+// daemon runs from that path, and modifying a running signed Mach-O gets it
+// (and the next exec of that file) killed.
 func installTo(self, dest string) error {
-	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-		return fmt.Errorf("create install dir %s: %w", filepath.Dir(dest), err)
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create install dir %s: %w", dir, err)
 	}
-	if err := copyFile(self, dest); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(dest)+".tmp*")
+	if err != nil {
 		return fmt.Errorf("install to %s: %w\n(try running with elevated privileges)", dest, err)
 	}
-	signBuild(dest)
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath) // no-op once renamed
+	if err := copyFile(self, tmpPath); err != nil {
+		return fmt.Errorf("install to %s: %w", dest, err)
+	}
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		return fmt.Errorf("install to %s: %w", dest, err)
+	}
+	signBuild(tmpPath)
+	if err := os.Rename(tmpPath, dest); err != nil {
+		return fmt.Errorf("install to %s: %w\n(try running with elevated privileges)", dest, err)
+	}
 	return nil
 }
 

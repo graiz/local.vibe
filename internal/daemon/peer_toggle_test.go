@@ -367,3 +367,27 @@ func TestConfigWritersDoNotRace(t *testing.T) {
 		t.Fatalf("config.json lost the view preference: %s", cfg)
 	}
 }
+
+// Re-review: the guard must cover proof verification (600k PBKDF2 rounds, the
+// slow part), not start after it. A code that expires while a correct proof
+// is being checked must not take the listener down under that request.
+func TestReservedAttemptKeepsListenerThroughVerification(t *testing.T) {
+	s := newBareServer(t)
+	if _, _, err := s.openPeerInvite(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.peerPairReserve(); !ok {
+		t.Fatal("reserve failed on an open invite")
+	}
+	s.peerMu.Lock()
+	s.peerInviteExpires = time.Now().Add(-time.Second) // expired mid-verification
+	s.peerMu.Unlock()
+	s.maybeStopPeerListener() // the expiry timer firing now
+	if !listenerUp(s) {
+		t.Fatal("listener stopped while a reserved attempt was being verified")
+	}
+	s.endPeerPairing()
+	if listenerUp(s) {
+		t.Fatal("listener still up after the attempt ended, nothing paired, code expired")
+	}
+}

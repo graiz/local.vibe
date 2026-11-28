@@ -813,19 +813,24 @@ function showPeerView(v){
 function msg(id,text,isErr){var m=document.getElementById(id);m.style.display=text?'block':'none';m.className='peer-msg'+(isErr?' peer-msg-err':'');m.textContent=text||''}
 // This machine's code, shown at the top whenever Add peer is open.
 var peerListenPort={{.PeerPort}}; // the configured peer port: omitted from addresses
-var peerCodeTimer=null,peerOpenCode='';
-// Withdraw the code this dialog opened: an unpaired machine is findable only
+var peerCodeTimer=null,peerOpenCode='',peerCodeSeq=0;
+// Withdraw a code this dialog opened: an unpaired machine is findable only
 // while its code is on screen. keepalive so it still goes out on page unload.
-function withdrawMyCode(){
-  if(!peerOpenCode)return;
-  var code=peerOpenCode;peerOpenCode='';
+function closeCode(code){
+  if(!code)return;
   try{fetch('/_api/peers/invite/close',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({code:code})})}catch(e){}
 }
+function withdrawMyCode(){peerCodeSeq++;var c=peerOpenCode;peerOpenCode='';closeCode(c)}
+function peerModalOpen(){var o=document.getElementById('peer-overlay');return !!(o&&o.classList.contains('active'))}
 function openMyCode(){
   var val=document.getElementById('peer-code-value'),exp=document.getElementById('peer-code-expiry'),again=document.getElementById('peer-code-new');
   val.textContent='…';val.classList.remove('peer-code-expired');exp.textContent='';again.style.display='none';
   if(peerCodeTimer){clearInterval(peerCodeTimer);peerCodeTimer=null}
+  var seq=++peerCodeSeq;
   vibeAPI('POST','/_api/peers/invite',{},function(status,data){
+    // The dialog closed (or a newer request replaced this one) before the
+    // reply landed: nothing will show this code, so withdraw it now.
+    if(seq!==peerCodeSeq||!peerModalOpen()){if(data&&data.code)closeCode(data.code);return}
     if(!(status>=200&&status<300&&data&&data.code)){val.textContent='—';exp.textContent=(data&&data.error)||'Could not open a code';return}
     val.textContent=data.code;peerOpenCode=data.code;
     document.getElementById('peer-code-name').textContent=data.name||'this machine';
@@ -925,11 +930,13 @@ function openPeerModal(){
   showPeerView('list');o.classList.add('active');openMyCode();rescanPeers();
 }
 function closePeerModal(){
-  var o=document.getElementById('peer-overlay');
-  if(o&&o.classList.contains('active')){withdrawMyCode();if(peerCodeTimer){clearInterval(peerCodeTimer);peerCodeTimer=null}}
+  if(peerModalOpen()){withdrawMyCode();if(peerCodeTimer){clearInterval(peerCodeTimer);peerCodeTimer=null}}
   closePeerDialog('peer-overlay');
 }
 window.addEventListener('pagehide',withdrawMyCode);
+// Back/forward cache: pagehide withdrew the code, so a restored page would
+// show a dead one. Open a fresh code if the dialog is still up.
+window.addEventListener('pageshow',function(e){if(e.persisted&&peerModalOpen())openMyCode()});
 
 var peerEditing=null;
 function editMsg(text,isErr){var m=document.getElementById('peer-edit-msg');m.style.display=text?'block':'none';m.className='peer-msg'+(isErr?' peer-msg-err':'');m.textContent=text||''}

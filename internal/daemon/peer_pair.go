@@ -94,6 +94,11 @@ func (s *Server) peerPairReserve() (code string, ok bool) {
 		return "", false
 	}
 	s.peerPairAttempts++
+	// In flight from here, not from after the proof check: verification is
+	// 600k PBKDF2 rounds, the slowest step, and an expiry or failed-proof
+	// timer firing during it must not close the listener under this request.
+	// The caller releases it with endPeerPairing on every exit.
+	s.peerPairsInFlight++
 	return code, true
 }
 
@@ -137,12 +142,13 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 		deny()
 		return
 	}
+	// Release after the reply is written: if this attempt left nothing
+	// paired and no code open, endPeerPairing stops the listener — but never
+	// from under the connection answering the other side.
+	defer func() { time.AfterFunc(200*time.Millisecond, s.endPeerPairing) }()
 	if !peer.VerifyProof(req.Proof, code, clientFP, localFP) {
 		s.peerPairFailed(code)
 		deny()
-		// If that closed the invite on an unpaired machine, stop listening —
-		// after this 403 has been written, not from under it.
-		time.AfterFunc(200*time.Millisecond, s.maybeStopPeerListener)
 		return
 	}
 	// One-time: consume the invite before pinning, so two concurrent correct
@@ -151,16 +157,12 @@ func (s *Server) handlePeerPair(w http.ResponseWriter, r *http.Request, clientFP
 	consumed := s.peerInviteCode == code
 	if consumed {
 		s.peerInviteCode = ""
-		s.peerPairsInFlight++ // keeps the listener up until the pin is saved
 	}
 	s.peerMu.Unlock()
 	if !consumed {
 		deny()
 		return
 	}
-	// After the reply is written: closing the listener from under it would
-	// cut the very connection that completes the other side's pairing.
-	defer func() { time.AfterFunc(200*time.Millisecond, s.endPeerPairing) }()
 
 	host := strings.TrimSpace(req.Host)
 	if host == "" {
