@@ -78,11 +78,15 @@ func TestDiscoverReportsCandidates(t *testing.T) {
 	}
 	s := f.prober
 	s.cfg.Daemon.Peers.Port = f.port
+	// The "nothing there" hosts are RFC 5737 TEST-NET addresses, not other
+	// 127/8 ones: on Linux and Windows all of 127/8 reaches loopback, where the
+	// fixture's wildcard-bound peer listener answers (macOS has only
+	// 127.0.0.1 on lo0, which hid this).
 	s.discoverHostsFn = func() ([]netip.Addr, []string) {
-		return []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2")}, nil
+		return []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("192.0.2.2")}, nil
 	}
 	s.tailscaleNodesFn = func(context.Context) ([]tailscaleNode, string) {
-		return []tailscaleNode{{Name: "nas", IP: netip.MustParseAddr("127.0.0.3")}}, ""
+		return []tailscaleNode{{Name: "nas", IP: netip.MustParseAddr("192.0.2.3")}}, ""
 	}
 	resp := s.discoverPeers(context.Background())
 	var lan, ts []discoverCandidate
