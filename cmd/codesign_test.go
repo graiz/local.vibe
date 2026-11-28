@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -41,5 +43,44 @@ func TestCodesignArgsSkipTimestamp(t *testing.T) {
 	want := []string{"--force", "--sign", "ABC123", "--identifier", codesignIdentifier, "--timestamp=none", "/tmp/vibe"}
 	if strings.Join(args, " ") != strings.Join(want, " ") {
 		t.Fatalf("codesign args = %q; want %q", args, want)
+	}
+}
+
+// A fresh install must be signed the same way `vibe dev` builds are: setup.sh
+// and `vibe install` used a plain copy, so macOS re-prompted for privacy
+// grants on every update until the user happened to run `vibe dev`.
+func TestInstallSignsDestination(t *testing.T) {
+	var signed []string
+	prev := signBuild
+	signBuild = func(p string) { signed = append(signed, p) }
+	t.Cleanup(func() { signBuild = prev })
+
+	dir := t.TempDir()
+	src, dest := filepath.Join(dir, "vibe-src"), filepath.Join(dir, "bin", "vibe")
+	if err := os.WriteFile(src, []byte("binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := installTo(src, dest); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(dest); string(got) != "binary" {
+		t.Fatalf("dest = %q", got)
+	}
+	if len(signed) != 1 || signed[0] != dest {
+		t.Fatalf("signed %v; want [%s]", signed, dest)
+	}
+}
+
+func TestCodesignCommandSignsPath(t *testing.T) {
+	var signed []string
+	prev := signBuild
+	signBuild = func(p string) { signed = append(signed, p) }
+	t.Cleanup(func() { signBuild = prev })
+	rootCmd.SetArgs([]string{"codesign", "/tmp/some-vibe"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if len(signed) != 1 || signed[0] != "/tmp/some-vibe" {
+		t.Fatalf("signed %v", signed)
 	}
 }

@@ -28,17 +28,36 @@ var installCmd = &cobra.Command{
 			return nil
 		}
 
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			return fmt.Errorf("create install dir %s: %w", filepath.Dir(dest), err)
+		if err := installTo(self, dest); err != nil {
+			return err
 		}
-
-		if err := copyFile(self, dest); err != nil {
-			return fmt.Errorf("install to %s: %w\n(try running with elevated privileges)", dest, err)
-		}
-
 		fmt.Printf("installed → %s\n", dest)
 		return nil
 	},
+}
+
+// installTo copies the binary to dest and signs the copy the way `vibe dev`
+// signs its builds (macOS only; a no-op elsewhere), so an installed vibe keeps
+// its privacy grants across updates too.
+func installTo(self, dest string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return fmt.Errorf("create install dir %s: %w", filepath.Dir(dest), err)
+	}
+	if err := copyFile(self, dest); err != nil {
+		return fmt.Errorf("install to %s: %w\n(try running with elevated privileges)", dest, err)
+	}
+	signBuild(dest)
+	return nil
+}
+
+// codesignCmd signs a built binary in place — setup.sh runs it on the binary
+// it just built, before copying it into place.
+var codesignCmd = &cobra.Command{
+	Use:    "codesign <path>",
+	Short:  "Sign a built vibe binary with this machine's signing identity (macOS)",
+	Hidden: true,
+	Args:   cobra.ExactArgs(1),
+	Run:    func(cmd *cobra.Command, args []string) { signBuild(args[0]) },
 }
 
 func copyFile(src, dst string) error {
@@ -60,4 +79,5 @@ func copyFile(src, dst string) error {
 
 func init() {
 	rootCmd.AddCommand(installCmd)
+	rootCmd.AddCommand(codesignCmd)
 }

@@ -49,6 +49,9 @@ step "Building vibe..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 go build -o vibe .
+# Sign with this Mac's own signing identity if it has one, so macOS keeps
+# vibe's privacy grants (camera, Documents, Local Network) across updates.
+./vibe codesign ./vibe || true
 ok "Built successfully"
 
 # ── Install binary ────────────────────────────────────────

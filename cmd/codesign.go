@@ -12,6 +12,9 @@ import (
 // (Go's default) is keyed by content hash, so every rebuild re-prompts.
 const codesignIdentifier = "local.vibe"
 
+// signBuild is signLocalBuild, swappable in tests.
+var signBuild = signLocalBuild
+
 var identityLine = regexp.MustCompile(`^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^":]+):`)
 
 // pickSigningIdentity chooses the identity to sign with from `security
